@@ -1,8 +1,9 @@
 //! The page in front of Chromium, as the box's own extension reports it.
 //!
-//! Chromium in the box has no DevTools port, so that nothing in the box (the Bot's shell
-//! included) can drive the browser or read its cookies. To still know which page is in
-//! front, the image loads a small extension (`docker/active-tab`) with only the `tabs`
+//! The box's own Chromium has a DevTools port on the box's loopback (`BOX_CDP_PORT`), which
+//! anything in the box can reach. A Bot's own Chromium has none, so that nothing else in the box
+//! can drive it or read its cookies. To know which page is in front on every screen, the image
+//! loads a small extension (`docker/active-tab`) with only the `tabs`
 //! permission. It sends the front tab's URL over native messaging to `box-active-tab`, which
 //! keeps the latest in [`ACTIVE_TAB_FILE`]; `GET /v1/chrome/active-tab` reads it back.
 //!
