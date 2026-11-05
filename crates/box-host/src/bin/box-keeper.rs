@@ -7,22 +7,27 @@
 //! `box-egress-tunnel` and voxl do in their own way.
 //!
 //! It starts `entrypoint.sh` for the desktop, hands `box-host` and `box-exec` what each needs in
-//! a staged file they unlink, and keeps one voxl per screen. voxl takes its password from argv or
+//! a staged file they unlink, and keeps one voxl per screen. It starts them on what it can see for
+//! itself, the display accepting clients and the egress bearer unlinked, and not on anyone's word:
+//! anything running as the box user can write to its fifo, so the fifo only carries Bots' screens. voxl takes its password from argv or
 //! its environment only, so it gets it in its environment, which only it can read.
 
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufReader, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use box_common::{env_bool, env_nonempty, make_undumpable, read_secret_from_env};
-use box_desktop::{display_number, slots_dir, VIEWER_PORT_BASE};
-use box_host::keeper::{may_have_viewer, restart_delay, Request, STABLE};
+use box_common::{
+    ensure_viewer_password_strength, env_bool, env_nonempty, make_undumpable, read_secret_from_env,
+};
+use box_desktop::{display_number, slots_dir, DesktopConfig, VIEWER_PORT_BASE};
+use box_host::keeper::{may_have_viewer, next_line, restart_delay, Request, STABLE};
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
 
@@ -31,8 +36,36 @@ const DEFAULT_CTL: &str = "/tmp/box-viewer.ctl";
 const SECRET_DIR_PREFIX: &str = "box-secrets.";
 const TICK: Duration = Duration::from_millis(200);
 const STOP_PATIENCE: Duration = Duration::from_secs(8);
-/// How long a daemon gets to read and unlink what was staged for it.
-const UNLINK_PATIENCE: Duration = Duration::from_secs(3);
+/// How often to look for the desktop before the daemons are up: this is on the wake path.
+const START_POLL: Duration = Duration::from_millis(10);
+/// How long a daemon gets to read and unlink what was staged for it. A busy machine is the only
+/// reason to need more than milliseconds, and running out stops the box.
+const UNLINK_PATIENCE: Duration = Duration::from_secs(10);
+
+/// What this box runs. The keeper decides it once and tells `entrypoint.sh`, so the two cannot
+/// read a flag differently.
+#[derive(Clone, Copy)]
+struct Features {
+    desktop: bool,
+    egress: bool,
+}
+
+impl Features {
+    fn from_env() -> Self {
+        Self {
+            desktop: env_bool("BOX_DESKTOP", true),
+            egress: env_bool("BOX_EGRESS_TUNNEL", false),
+        }
+    }
+}
+
+fn flag(on: bool) -> &'static str {
+    if on {
+        "1"
+    } else {
+        "0"
+    }
+}
 
 struct Secrets {
     token: String,
@@ -59,19 +92,23 @@ fn secret(name: &str) -> Result<Option<String>, String> {
 }
 
 impl Secrets {
-    fn load() -> Result<Self, String> {
+    fn load(features: Features) -> Result<Self, String> {
         let token = secret("BOX_TOKEN")?.ok_or("BOX_TOKEN or BOX_TOKEN_FILE must be set")?;
         let host_token = secret("BOX_HOST_TOKEN")?.unwrap_or_else(|| token.clone());
         let viewer_password = secret("BOX_VIEWER_PASSWORD")?;
-        if env_bool("BOX_DESKTOP", true) && viewer_password.is_none() {
+        if features.desktop && viewer_password.is_none() {
             return Err(
                 "BOX_VIEWER_PASSWORD or BOX_VIEWER_PASSWORD_FILE must be set when BOX_DESKTOP=1 \
                  (independent of BOX_TOKEN)"
                     .into(),
             );
         }
+        // Here, before anything starts: voxl must never come up on a password box-exec refuses.
+        if let Some(password) = &viewer_password {
+            ensure_viewer_password_strength(password).map_err(|err| err.to_string())?;
+        }
         let egress_bearer = secret("BOX_EGRESS_TUNNEL_BEARER")?;
-        if env_bool("BOX_EGRESS_TUNNEL", false) && egress_bearer.is_none() {
+        if features.egress && egress_bearer.is_none() {
             return Err("BOX_EGRESS_TUNNEL=1 requires BOX_EGRESS_TUNNEL_BEARER or \
                  BOX_EGRESS_TUNNEL_BEARER_FILE"
                 .into());
@@ -142,6 +179,8 @@ struct Viewer {
 }
 
 struct Viewers {
+    /// `None` on a box with no desktop, which has no viewer. voxl makes up its own password when
+    /// it is given none and logs it, so it never starts without this.
     password: Option<String>,
     main: u16,
     slots: PathBuf,
@@ -151,17 +190,14 @@ struct Viewers {
 }
 
 impl Viewers {
-    fn spawn(&self, slot: u16) -> std::io::Result<Child> {
+    fn spawn(&self, slot: u16, password: &str) -> std::io::Result<Child> {
         let log = OpenOptions::new()
             .create(true)
             .append(true)
             .open(format!("/tmp/voxl-{slot}.log"))?;
         Command::new("voxl")
             .env("DISPLAY", format!(":{slot}"))
-            .env(
-                "VOXL_PASSWORD",
-                self.password.as_deref().unwrap_or_default(),
-            )
+            .env("VOXL_PASSWORD", password)
             .args([
                 "--addr=0.0.0.0".to_string(),
                 format!("--port={}", VIEWER_PORT_BASE + slot),
@@ -178,7 +214,10 @@ impl Viewers {
     }
 
     fn up(&mut self, slot: u16) {
-        if self.running.contains_key(&slot) || !may_have_viewer(slot, self.main, &self.slots) {
+        if self.password.is_none()
+            || self.running.contains_key(&slot)
+            || !may_have_viewer(slot, self.main, &self.slots)
+        {
             return;
         }
         let now = Instant::now();
@@ -226,8 +265,9 @@ impl Viewers {
                 let viewer = &self.running[&slot];
                 viewer.child.is_none() && now >= viewer.retry_at
             };
-            if due {
-                match self.spawn(slot) {
+            let password = self.password.clone().filter(|_| due);
+            if let Some(password) = password {
+                match self.spawn(slot, &password) {
                     Ok(child) => {
                         let viewer = self.running.get_mut(&slot).expect("a key of the map");
                         viewer.child = Some(child);
@@ -285,27 +325,28 @@ fn listen(path: PathBuf) -> mpsc::UnboundedReceiver<String> {
             return;
         };
         let mut reader = BufReader::new(file);
-        loop {
-            let mut line = Vec::new();
-            match reader.by_ref().take(64).read_until(b'\n', &mut line) {
-                Ok(0) | Err(_) => return,
-                Ok(_) => {
-                    let text = String::from_utf8_lossy(&line).into_owned();
-                    if lines.send(text).is_err() {
-                        return;
-                    }
-                }
+        while let Ok(Some(line)) = next_line(&mut reader) {
+            if lines.send(line).is_err() {
+                return;
             }
         }
     });
     receiver
 }
 
+/// True once the daemons can start: the display takes clients, and the tunnel has unlinked its
+/// bearer, so that no exec child can ever exist while a staged copy does.
+fn desktop_is_up(features: Features, display: &DesktopConfig, egress_file: Option<&Path>) -> bool {
+    let display_up = !features.desktop || UnixStream::connect(display.x11_socket_path()).is_ok();
+    display_up && !egress_file.is_some_and(Path::exists)
+}
+
 /// Start a daemon on its staged files, then wait until it has unlinked them. `box-exec` goes last,
-/// so no exec child can ever exist while a staged copy does.
+/// so no exec child can ever exist while a staged copy does. A copy still there after the wait is
+/// a secret on disk nobody is going to clear, so the box does not go on.
 async fn start_daemon(name: &str, display: &str, env: &[(&str, &Path)]) -> Result<Child, String> {
     let home = env_nonempty("HOME").unwrap_or_else(|| "/home/box".into());
-    let child = Command::new(name)
+    let mut child = Command::new(name)
         .envs(env.iter().copied())
         // What the entrypoint sets for the desktop, for the daemons and their exec children.
         .env("DISPLAY", display)
@@ -316,7 +357,13 @@ async fn start_daemon(name: &str, display: &str, env: &[(&str, &Path)]) -> Resul
         .spawn()
         .map_err(|err| format!("{name}: {err}"))?;
     let deadline = Instant::now() + UNLINK_PATIENCE;
-    while env.iter().any(|(_, path)| path.exists()) && Instant::now() < deadline {
+    while env.iter().any(|(_, path)| path.exists()) {
+        let exited = matches!(child.try_wait(), Ok(Some(_)));
+        if exited || Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("{name} did not take its secrets; stopping the box"));
+        }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
     Ok(child)
@@ -338,39 +385,99 @@ async fn stop(mut children: Vec<Child>) {
     }
 }
 
+struct Daemons {
+    token: String,
+    host_token: String,
+    viewer_password: Option<String>,
+    staging: Staging,
+}
+
+impl Daemons {
+    /// `box-host`, then `box-exec`. Everything staged is gone when this returns.
+    async fn start(self, display: &str) -> Result<Vec<(&'static str, Child)>, String> {
+        let stage = &self.staging;
+        let host_files = [
+            ("BOX_TOKEN_FILE", stage.stage("host.token", &self.token)?),
+            (
+                "BOX_HOST_TOKEN_FILE",
+                stage.stage("host.host_token", &self.host_token)?,
+            ),
+        ];
+        let mut exec_files = vec![
+            ("BOX_TOKEN_FILE", stage.stage("exec.token", &self.token)?),
+            (
+                "BOX_HOST_TOKEN_FILE",
+                stage.stage("exec.host_token", &self.host_token)?,
+            ),
+        ];
+        if let Some(password) = &self.viewer_password {
+            exec_files.push((
+                "BOX_VIEWER_PASSWORD_FILE",
+                stage.stage("exec.viewer", password)?,
+            ));
+        }
+        let host_env: Vec<(&str, &Path)> =
+            host_files.iter().map(|(k, v)| (*k, v.as_path())).collect();
+        let exec_env: Vec<(&str, &Path)> =
+            exec_files.iter().map(|(k, v)| (*k, v.as_path())).collect();
+        let host = start_daemon("box-host", display, &host_env).await?;
+        let exec = match start_daemon("box-exec", display, &exec_env).await {
+            Ok(exec) => exec,
+            Err(err) => {
+                stop(vec![host]).await;
+                return Err(err);
+            }
+        };
+        Ok(vec![("box-host", host), ("box-exec", exec)])
+    }
+}
+
 async fn run() -> Result<i32, String> {
-    let secrets = Secrets::load()?;
+    let features = Features::from_env();
     let Secrets {
         token,
         host_token,
         viewer_password,
         egress_bearer,
-    } = secrets;
+    } = Secrets::load(features)?;
     let staging = Staging::new()?;
     let ctl = PathBuf::from(env_nonempty("BOX_VIEWER_CTL").unwrap_or_else(|| DEFAULT_CTL.into()));
     make_fifo(&ctl)?;
     let mut requests = listen(ctl);
 
     let mut desktop = Command::new(ENTRYPOINT);
-    desktop.stdin(Stdio::null());
-    if let Some(bearer) = &egress_bearer {
-        desktop.env("BOX_EGRESS_BEARER_STAGED", staging.stage("egress", bearer)?);
-    }
+    desktop
+        .stdin(Stdio::null())
+        .env("BOX_DESKTOP", flag(features.desktop))
+        .env("BOX_EGRESS_TUNNEL", flag(features.egress));
+    let egress_file = match egress_bearer.as_deref().filter(|_| features.egress) {
+        Some(bearer) => Some(staging.stage("egress", bearer)?),
+        None => None,
+    };
     drop(egress_bearer);
+    if let Some(path) = &egress_file {
+        desktop.env("BOX_EGRESS_BEARER_STAGED", path);
+    }
     let mut desktop = desktop
         .spawn()
         .map_err(|err| format!("{ENTRYPOINT}: {err}"))?;
 
-    let display = env_nonempty("BOX_DISPLAY").unwrap_or_else(|| ":1".into());
+    let display_config = DesktopConfig::from_env();
+    let display = display_config.display.clone();
+    let main_slot = display_number(&display).unwrap_or(1);
     let mut viewers = Viewers {
-        password: viewer_password.clone(),
-        main: display_number(&display).unwrap_or(1),
+        password: viewer_password.clone().filter(|_| features.desktop),
+        main: main_slot,
         slots: slots_dir(),
         running: HashMap::new(),
         leaving: Vec::new(),
     };
-    let mut secrets = Some((token, host_token, viewer_password));
-    let mut staging = Some(staging);
+    let mut waiting = Some(Daemons {
+        token,
+        host_token,
+        viewer_password,
+        staging,
+    });
     let mut daemons: Vec<(&str, Child)> = Vec::new();
 
     let mut terminate_signal = signal(SignalKind::terminate()).map_err(|err| err.to_string())?;
@@ -384,34 +491,21 @@ async fn run() -> Result<i32, String> {
             Some(line) = requests.recv() => match Request::parse(&line) {
                 Some(Request::Up(slot)) => viewers.up(slot),
                 Some(Request::Down(slot)) => viewers.down(slot),
-                Some(Request::Start) => {
-                    if let (Some((token, host_token, password)), Some(stage)) =
-                        (secrets.take(), staging.as_ref())
-                    {
-                        let host_files = [
-                            ("BOX_TOKEN_FILE", stage.stage("host.token", &token)?),
-                            ("BOX_HOST_TOKEN_FILE", stage.stage("host.host_token", &host_token)?),
-                        ];
-                        let mut exec_files = vec![
-                            ("BOX_TOKEN_FILE", stage.stage("exec.token", &token)?),
-                            ("BOX_HOST_TOKEN_FILE", stage.stage("exec.host_token", &host_token)?),
-                        ];
-                        if let Some(password) = &password {
-                            exec_files.push((
-                                "BOX_VIEWER_PASSWORD_FILE",
-                                stage.stage("exec.viewer", password)?,
-                            ));
+                None => {}
+            },
+            _ = tokio::time::sleep(START_POLL), if waiting.is_some() => {
+                if desktop_is_up(features, &display_config, egress_file.as_deref()) {
+                    viewers.up(main_slot);
+                    if let Some(ready) = waiting.take() {
+                        match ready.start(&display).await {
+                            Ok(started) => daemons = started,
+                            Err(err) => {
+                                eprintln!("{err}");
+                                break 1;
+                            }
                         }
-                        let host_env: Vec<(&str, &Path)> =
-                            host_files.iter().map(|(k, v)| (*k, v.as_path())).collect();
-                        let exec_env: Vec<(&str, &Path)> =
-                            exec_files.iter().map(|(k, v)| (*k, v.as_path())).collect();
-                        daemons.push(("box-host", start_daemon("box-host", &display, &host_env).await?));
-                        daemons.push(("box-exec", start_daemon("box-exec", &display, &exec_env).await?));
-                        staging = None;
                     }
                 }
-                None => {}
             },
             _ = tick.tick() => {
                 viewers.tick();

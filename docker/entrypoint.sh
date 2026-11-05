@@ -3,7 +3,9 @@ set -euo pipefail
 
 # The desktop: X, xfce, Chromium and the egress tunnel. box-keeper starts this script and holds
 # every secret, and this script must never read one. A shell cannot be made undumpable, so a value
-# in a variable here would be open to any exec child through /proc/<pid>/mem.
+# in a variable here would be open to any exec child through /proc/<pid>/mem. box-keeper watches
+# for the display itself and starts voxl and the daemons, and it decides BOX_DESKTOP and
+# BOX_EGRESS_TUNNEL: it passes them here as 1 or 0.
 
 export WORKSPACE_ROOT="${WORKSPACE_ROOT:-/workspace}"
 export BOX_DESKTOP="${BOX_DESKTOP:-1}"
@@ -12,7 +14,6 @@ export BOX_DISPLAY="${BOX_DISPLAY:-:1}"
 # box-active-tab and box-host tell the shared screen's report from a Bot's by it.
 export BOX_SHARED_DISPLAY="${BOX_DISPLAY}"
 export BOX_DISPLAY_GEOM="${BOX_DISPLAY_GEOM:-1280x800x24}"
-export BOX_VIEWER_CTL="${BOX_VIEWER_CTL:-/tmp/box-viewer.ctl}"
 export BOX_CHROME="${BOX_CHROME:-1}"
 export BOX_CHROME_PROFILE="${BOX_CHROME_PROFILE:-${HOME:-/home/box}/chrome-profile}"
 export BOX_CDP_PORT="${BOX_CDP_PORT:-9222}"
@@ -114,13 +115,6 @@ start_desktop() {
   dbus-launch --exit-with-session xfce4-session >/tmp/xfce4-session.log 2>&1 &
   record $!
 
-  # box-keeper holds the password and starts voxl; this only says the display is up.
-  ask_keeper "up ${dnum}"
-}
-
-# box-keeper made this fifo before it started this script, and holds it open, so this never blocks.
-ask_keeper() {
-  printf '%s\n' "$1" >"${BOX_VIEWER_CTL}"
 }
 
 start_chrome() {
@@ -257,9 +251,6 @@ if flag_on "${BOX_DESKTOP}"; then
     start_chrome
   fi
 fi
-
-# The desktop is up: box-keeper starts box-host and box-exec.
-ask_keeper start
 
 while true; do
   for pid in "${PIDS[@]:-}"; do
