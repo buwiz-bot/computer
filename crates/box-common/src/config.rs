@@ -62,6 +62,9 @@ impl BoxConfig {
         if host_token != token {
             validate_token("BOX_HOST_TOKEN", &host_token, exec_bind, host_bind)?;
         }
+        if let Some(password) = &viewer_password {
+            validate_token("BOX_VIEWER_PASSWORD", password, exec_bind, host_bind)?;
+        }
 
         let workspace = PathBuf::from(env::var("WORKSPACE_ROOT").unwrap_or_else(|_| {
             if std::path::Path::new("/workspace").is_dir() {
@@ -295,6 +298,21 @@ mod tests {
     }
 
     #[test]
+    fn a_weak_viewer_password_is_refused() {
+        let (_lock, _guard) = isolate(&[
+            ("BOX_TOKEN", Some("long-enough-box-token")),
+            ("BOX_TOKEN_FILE", None),
+            ("BOX_HOST_TOKEN", None),
+            ("BOX_HOST_TOKEN_FILE", None),
+            ("BOX_VIEWER_PASSWORD", Some("short")),
+            ("BOX_VIEWER_PASSWORD_FILE", None),
+            ("BOX_ALLOW_INSECURE_DEV", None),
+        ]);
+        let err = BoxConfig::from_env().unwrap_err();
+        assert!(err.0.contains("BOX_VIEWER_PASSWORD"), "{err}");
+    }
+
+    #[test]
     fn default_box_id_never_empty() {
         assert!(!default_box_id().is_empty());
     }
@@ -326,7 +344,7 @@ mod tests {
         let (_lock, _guard) = isolate(&[
             ("BOX_TOKEN", Some(DEV_BOX_TOKEN)),
             ("BOX_HOST_TOKEN", None),
-            ("BOX_VIEWER_PASSWORD", Some("viewer-pass-1")),
+            ("BOX_VIEWER_PASSWORD", Some("viewer-password-one")),
             ("BOX_ALLOW_INSECURE_DEV", None),
             ("BOX_EXEC_BIND", Some("127.0.0.1:1337")),
             ("BOX_HOST_BIND", Some("127.0.0.1:1340")),
@@ -340,7 +358,7 @@ mod tests {
         let (_lock, _guard) = isolate(&[
             ("BOX_TOKEN", Some(DEV_BOX_TOKEN)),
             ("BOX_HOST_TOKEN", None),
-            ("BOX_VIEWER_PASSWORD", Some("viewer-pass-1")),
+            ("BOX_VIEWER_PASSWORD", Some("viewer-password-one")),
             ("BOX_ALLOW_INSECURE_DEV", Some("1")),
             ("BOX_EXEC_BIND", Some("0.0.0.0:1337")),
             ("BOX_HOST_BIND", Some("0.0.0.0:1340")),
@@ -354,7 +372,7 @@ mod tests {
         let (_lock, _guard) = isolate(&[
             ("BOX_TOKEN", Some(DEV_BOX_TOKEN)),
             ("BOX_HOST_TOKEN", None),
-            ("BOX_VIEWER_PASSWORD", Some("viewer-pass-1")),
+            ("BOX_VIEWER_PASSWORD", Some("viewer-password-one")),
             ("BOX_ALLOW_INSECURE_DEV", Some("1")),
             ("BOX_EXEC_BIND", Some("127.0.0.1:1337")),
             ("BOX_HOST_BIND", Some("127.0.0.1:1340")),
@@ -371,7 +389,7 @@ mod tests {
         let (_lock, _guard) = isolate(&[
             ("BOX_TOKEN", Some("local-smoke-box-token")),
             ("BOX_HOST_TOKEN", Some("local-smoke-host-token")),
-            ("BOX_VIEWER_PASSWORD", Some("viewer-pass-1")),
+            ("BOX_VIEWER_PASSWORD", Some("viewer-password-one")),
             ("BOX_ALLOW_INSECURE_DEV", None),
             ("BOX_EXEC_BIND", Some("0.0.0.0:1337")),
             ("BOX_HOST_BIND", Some("0.0.0.0:1340")),
