@@ -52,15 +52,15 @@ ffmpeg -nostdin -hide_banner -loglevel error -y \
   -an -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
   -b:v 700k -maxrate 900k -bufsize 1800k \
   -movflags +frag_keyframe+empty_moov+default_base_moof \
-  /workspace/.l1/cooks/<run>/cook.mp4
+  /workspace/<screen folder>/cooks/<run>/cook.mp4
 
 ffmpeg -nostdin -hide_banner -loglevel error -y \
-  -i /workspace/.l1/cooks/<run>/cook.mp4 \
+  -i /workspace/<screen folder>/cooks/<run>/cook.mp4 \
   -an -c:v copy -movflags +faststart \
-  /workspace/.l1/cooks/<run>/cook.faststart.mp4
+  /workspace/<screen folder>/cooks/<run>/cook.faststart.mp4
 ```
 
-The video is a guest file (`cook.mp4`), not a new VNC session. `reset_desktop` (alias `reset`) closes non-Chromium guest windows — **same box id**, no Docker restart. Chromium stays with the entrypoint (killing it would fight the respawn loop).
+The video is a guest file (`cook.mp4`), not a new viewer session. `reset_desktop` (alias `reset`) closes non-Chromium guest windows — **same box id**, no Docker restart. Chromium stays with the entrypoint (killing it would fight the respawn loop).
 
 Wait is capped at 10s per step. `stop_on_error` defaults true; earlier steps stay in the receipt (`ok: false`, `stopped_at`).
 
@@ -125,7 +125,7 @@ CLI:
 cargo run -p buwiz-computer -- cua recipe --file plan.json
 ```
 
-SDKs: `client.recipe({ steps: [...] })`. EnsureBox demo proxy: `POST /api/v1/boxes/:id/cua/recipe`.
+SDKs: `client.recipe({ steps: [...] })`. 
 
 ## Honest comparison
 
@@ -141,7 +141,7 @@ SDKs: `client.recipe({ steps: [...] })`. EnsureBox demo proxy: `POST /api/v1/box
 
 CUA cannot be a parallel DAG. Two clicks share one cursor. Recipes still win on **round trips** and **model turns** when the path does not need vision between steps.
 
-Optional `record: true` plus `artifact_dir` writes a cook video and PNG files so a UI can show them without stuffing megabytes of base64 through the receipt. L1’s **Record cook** switch (default on) uses that. `reset_desktop` is a real step for a clean empty desktop between runs.
+Optional `record: true` plus `artifact_dir` writes a cook video and PNG files so a UI can show them without stuffing megabytes of base64 through the receipt. `reset_desktop` is a real step for a clean empty desktop between runs.
 
 If the agent must look at the framebuffer after every click, keep single-op CUA (or `screenshot: "each"`, which is still one HTTP call but a large body).
 

@@ -19,7 +19,7 @@ On a **prod VM**, the Bot’s origin and the box’s egress IP are different, an
 traffic leaves from a cloud / China (or other) range. Sites force extra checks.
 
 Do **not** assume Docker `network_mode: host` in prod. Publish loopback and
-tunnel, same as 1337/1340/6080.
+tunnel, same as 1337/1340/6901-6905.
 
 ## What is and is not tunneled
 
@@ -109,7 +109,7 @@ The Bot:
    ssh -N \
      -L 1337:127.0.0.1:1337 \
      -L 1340:127.0.0.1:1340 \
-     -L 6080:127.0.0.1:6080 \
+     -L 6901:127.0.0.1:6901 \
      -L 8790:127.0.0.1:8790 \
      user@box-vm
    ```
@@ -125,7 +125,7 @@ The Bot:
      BOX_EGRESS_TUNNEL_BEARER_FILE: /run/secrets/box_egress_tunnel_bearer
    secrets:
      - box_token
-     - box_vnc_password
+     - box_viewer_password
      - box_egress_tunnel_bearer
    # top-level:
    # secrets:

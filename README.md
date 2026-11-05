@@ -10,14 +10,12 @@ License: **MIT**. MSRV: Rust **1.85**.
 
 | Piece | Role |
 | --- | --- |
-| Guest image `buwiz-computer` | Linux box: shell, files, 1280×800 X desktop, Chromium, Computer Use |
+| Guest image `buwiz-computer` | Linux box: shell, files, 1280×800 X desktop, Chromium, Computer Use, a live view of every screen |
+| [voxl](https://github.com/tembo/voxl) `:6901`+ | One per screen: the live view in a browser, and `/wait`, `/screenshot`, `/record` |
 | `box-exec` `:1337` | Exec, files (GET/PUT/DELETE/mkdir), CUA |
-| `box-host` `:1340` | Health, ready, identity, desktop/chrome/egress status |
-| CLI `buwiz-computer` | Same surface as the SDKs |
+| `box-host` `:1340` | Health, ready, identity, screens, desktop/chrome/egress status |
 | CLI `buwiz-computer` | Same surface as the SDKs |
 | SDKs | Connect with `(execUrl, hostUrl, token)` — no `docker run` helper |
-| [`ensurebox/`](ensurebox/) | **Frozen demo / non-product** — sample orchestrator / operator UI (not a supported control plane) |
-| [`l1/`](l1/) | **Frozen demo / non-product** — sample human workspace UI (talks only to EnsureBox) |
 
 Windows and macOS are clients or Docker hosts. The box OS is always this Linux image.
 
@@ -26,12 +24,12 @@ This tree implements **our own HTTP wire**. It is not Cursor’s `/exec-daemon` 
 ## Quick start (guest)
 
 ```bash
-cp .env.example .env            # set BOX_TOKEN and BOX_VNC_PASSWORD (required)
+cp .env.example .env            # set BOX_TOKEN and BOX_VIEWER_PASSWORD (required)
 bash scripts/write-secrets.sh   # turns them into ./secrets/* for Compose to mount
 docker compose up --build
 ```
 
-That builds the image and starts exec, host, Xvfb, Chromium, and CUA tools. Compose publishes **1337 / 1340 / 6080 on 127.0.0.1**. Reach them from another machine with an SSH tunnel, Tailscale, or similar — do not publish those ports on a public NIC.
+That builds the image and starts exec, host, Xvfb, Chromium, and CUA tools. Compose publishes **1337 / 1340 / 6901-6905 on 127.0.0.1**. Reach them from another machine with an SSH tunnel, Tailscale, or similar — do not publish those ports on a public NIC.
 
 Health (no token). Ready requires Bearer:
 
@@ -68,7 +66,7 @@ CUA coordinate space is **1280×800**, origin top-left. Known click/type/key seq
 
 A receipt's `ok` means **no step returned an error**, not that the recipe achieved anything: a taped plan whose fixed coordinates have drifted onto another window plays every step cleanly. Ask for `observe: "input"` (or `"page"`) and each step also reports the window it aimed at, where the keys were about to go, and the page URL either side of it, so a caller can tell a run that worked from a run that did not.
 
-Desktop viewer: [http://127.0.0.1:6080/vnc.html](http://127.0.0.1:6080/vnc.html) (loopback publish). Password is `BOX_VNC_PASSWORD` (x11vnc uses the first **8** characters). It is independent of `BOX_TOKEN`. 6080 is **not** Bearer-authenticated — firewall + loopback bind are the control. x11vnc listens on `127.0.0.1:5900` **inside** the container.
+Live view: `http://127.0.0.1:6901/` (loopback publish). voxl asks for `BOX_VIEWER_PASSWORD`, and `?token=<password>` signs a link in. It is independent of `BOX_TOKEN`. `/healthz` is the only thing voxl answers without it. Decoding uses WebCodecs, so open it on `localhost` or over HTTPS.
 
 ```bash
 ./scripts/smoke.sh
@@ -76,7 +74,7 @@ Desktop viewer: [http://127.0.0.1:6080/vnc.html](http://127.0.0.1:6080/vnc.html)
 
 ### CLI and SDKs
 
-After the guest is up, any orchestrator (yours, or the EnsureBox demo) already has an exec URL, host URL, and token. Point the client at those. The SDKs **do not** start Docker and **ignore** `/v1/info` advertised URLs (those are container-local listen addresses).
+After the guest is up, your orchestrator already has an exec URL, host URL, and token. Point the client at those. The SDKs **do not** start Docker and **ignore** `/v1/info` advertised URLs (those are container-local listen addresses).
 
 ```bash
 cargo run -p buwiz-computer -- \
@@ -105,21 +103,10 @@ Native mode sets `BOX_DESKTOP=0`. CUA screenshot needs the container (or a local
 
 ## How an orchestrator should plug in
 
-1. Start a container from this image. Inject `BOX_TOKEN`, `BOX_VNC_PASSWORD`, and `BOX_ID`. Publish **1337 / 1340 / 6080** on loopback (or behind a tunnel). Do **not** publish 5900 or 9222. Optional laptop egress: [EGRESS.md](docs/EGRESS.md) (`BOX_EGRESS_TUNNEL=1`, publish **8790** only, never 8791).
+1. Start a container from this image. Inject `BOX_TOKEN`, `BOX_VIEWER_PASSWORD`, and `BOX_ID`. Publish **1337 / 1340 / 6901-6905** on loopback (or behind a tunnel). Do **not** publish 9222. Optional laptop egress: [EGRESS.md](docs/EGRESS.md) (`BOX_EGRESS_TUNNEL=1`, publish **8790** only, never 8791).
 2. Wait until `GET <hostUrl>/v1/ready` returns 200 **with Bearer**.
 3. Call `connect(execUrl, hostUrl, token)` in the CLI or an SDK. Do not parse `/v1/info.endpoints` as the public URLs.
 4. Drive `POST /v1/exec`, files, `/v1/cua/*`, and `POST /v1/cua/recipe` yourself.
-
-[`ensurebox/`](ensurebox/) is a **demo** of that pattern. It is not a supported production control plane. [`l1/`](l1/) is a **demo** human UI that talks only to EnsureBox (`ENSUREBOX_TOKEN` server-side, `L1_TOKEN` for the browser session). L1 never sees `BOX_TOKEN`, never SSHes, and never calls `box-exec` / `box-host`.
-
-Demo UIs (optional; bind 127.0.0.1):
-
-```bash
-cd ensurebox && cp .env.example .env && npm install && npm run dev   # operator console, :43142
-cd l1 && cp .env.example .env && npm install && npm run dev          # human workspace, :43141
-```
-
-`.env.example` uses well-known demo tokens with `*_ALLOW_INSECURE_DEV=1` for loopback only. Replace them for anything else.
 
 ## Ports
 
@@ -127,11 +114,11 @@ cd l1 && cp .env.example .env && npm install && npm run dev          # human wor
 | --- | --- | --- | --- |
 | **1337** | host `127.0.0.1` | `box-exec` | exec, files, CUA. Process bind inside the image is `0.0.0.0`. |
 | **1340** | host `127.0.0.1` | `box-host` | health, ready, info, desktop, chrome, egress. |
-| **6080** | host `127.0.0.1` | websockify / noVNC | Viewer. **Not** Bearer-authenticated. |
+| **6901** | host `127.0.0.1` | `voxl` | The box's own screen. voxl's own password, not Bearer. |
+| **6902–6905** | host `127.0.0.1` | `voxl` | The Bots' own screens: `6900+N` for display `:N`. |
 | **8790** | host `127.0.0.1` | `box-egress-tunnel` WS | Laptop client. Off unless `BOX_EGRESS_TUNNEL=1`. See [EGRESS.md](docs/EGRESS.md). |
 | 8791 | **no** | CONNECT proxy | Chromium only, `127.0.0.1` inside the image. Never publish. |
 | 8792 | **no** | tunnel admin | Status for box-host. Loopback. Never publish. |
-| 5900 | **no** | x11vnc | `BOX_VNC_BIND=127.0.0.1:5900` inside the image |
 | 9222 | **no** | Chromium CDP | `127.0.0.1` only (`BOX_CDP_PORT`). Do not publish. |
 
 Compose also sets `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, `pids_limit: 1024`, and `mem_limit: 4g`. That is **not** a kernel sandbox. The guest is an unprivileged uid-1000 container; Chromium still uses `--no-sandbox`.
@@ -153,12 +140,10 @@ Compose also sets `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, `
 | `BOX_CORS_ORIGINS` | empty (no browser origins) | Comma-separated allowlist; `*` is ignored |
 | `BOX_DISPLAY` | `:1` | X display |
 | `BOX_DISPLAY_GEOM` | `1280x800x24` | Xvfb geometry; **CUA coordinate space is 1280×800** |
-| `BOX_DESKTOP` | `1` | Start Xvfb + openbox + x11vnc + noVNC |
+| `BOX_DESKTOP` | `1` | Start Xvfb + xfce + voxl |
 | `BOX_DESKTOP_REQUIRED` | `1` when desktop on | `/v1/ready` waits for the display |
-| `BOX_VNC_BIND` | `127.0.0.1:5900` | x11vnc (localhost only) |
-| `BOX_NOVNC_PORT` | `6080` | noVNC / websockify |
-| `BOX_VNC_PASSWORD` | **required when desktop on** | Viewer password; independent of `BOX_TOKEN`; x11vnc uses 8 chars |
-| `BOX_VNC_PASSWORD_FILE` | unset | Path to a file holding `BOX_VNC_PASSWORD`. Preferred, same reason. |
+| `BOX_VIEWER_PASSWORD` | **required when desktop on** | Viewer password, for every screen; independent of `BOX_TOKEN` |
+| `BOX_VIEWER_PASSWORD_FILE` | unset | Path to a file holding `BOX_VIEWER_PASSWORD`. Preferred, same reason. |
 | `BOX_CHROME` | `1` | Launch Chromium on `:1` |
 | `BOX_CHROME_PROFILE` | `/home/box/chrome-profile` | Persistent profile (compose volume) |
 | `BOX_CDP_PORT` | `9222` | CDP on `127.0.0.1` only |
@@ -181,7 +166,7 @@ Send `Authorization: Bearer <token>`. `GET /v1/health` is public and returns onl
 
 ### Delivering the secrets
 
-Pass each secret as a **file**, not as a value: `BOX_TOKEN_FILE`, `BOX_HOST_TOKEN_FILE`, `BOX_VNC_PASSWORD_FILE`, `BOX_EGRESS_TUNNEL_BEARER_FILE`. The file form wins when both are set. Compose does this for you — `scripts/write-secrets.sh` writes `./secrets/*` and Compose mounts them read-only at `/run/secrets/`.
+Pass each secret as a **file**, not as a value: `BOX_TOKEN_FILE`, `BOX_HOST_TOKEN_FILE`, `BOX_VIEWER_PASSWORD_FILE`, `BOX_EGRESS_TUNNEL_BEARER_FILE`. The file form wins when both are set. Compose does this for you — `scripts/write-secrets.sh` writes `./secrets/*` and Compose mounts them read-only at `/run/secrets/`.
 
 A secret handed to the container as an **environment value** is copied into pid 1's environment block at `execve`. `/proc/1/environ` serves that block to every process in the box, for the life of the box, and `docker inspect` shows it on the host. Nothing inside the box can undo that. In particular `wipe_secret_environ()` does **not**: `unsetenv` rewrites the `environ` pointer array but leaves the original block on the stack, and that block is what `/proc` reads. What it does do is keep the value out of `getenv` for the rest of the process, which is worth having but is not the same claim.
 
@@ -190,10 +175,11 @@ What the file form buys, precisely:
 - `grep -a BOX_TOKEN= /proc/*/environ` finds nothing — not in pid 1, not in either daemon, not in Chromium.
 - `docker inspect` does not show the token in `Config.Env`.
 - The daemons unlink the staged copies the entrypoint writes for them, so those exist for milliseconds.
+- voxl takes its password only from argv or its environment, so it gets it in its environment, and `/usr/local/bin/voxl` is execute-only (mode 0111): a process run from a file it cannot read is not dumpable, so nothing else running as uid 1000 can read `/proc/<voxl>/environ`. No file holds the password for a later screen: the entrypoint's viewer keeper keeps it in memory, and `box-screen` asks the keeper over a fifo that names a display and nothing else.
 
-What it does **not** buy: the file the operator mounts stays readable by uid 1000 (the Compose healthcheck needs it to authenticate). Code already executing as the box user — a compromised Chromium renderer, or any binary the agent downloaded and ran — can read `/run/secrets/box_token` and recover both secrets. Treat any code execution in the box as full compromise of `BOX_TOKEN` and `BOX_VNC_PASSWORD`. Rotate on suspicion; do not reuse a box token anywhere else.
+What it does **not** buy: the file the operator mounts stays readable by uid 1000 (the Compose healthcheck needs it to authenticate). Code already executing as the box user — a compromised Chromium renderer, or any binary the agent downloaded and ran — can read `/run/secrets/box_token` and recover both secrets. Treat any code execution in the box as full compromise of `BOX_TOKEN` and `BOX_VIEWER_PASSWORD`. Rotate on suspicion; do not reuse a box token anywhere else.
 
-Exec children never receive any of these variables, in either form. Do not put `BOX_TOKEN` in L1.
+Exec children never receive any of these variables, in either form.
 
 ## Layout
 
@@ -201,27 +187,42 @@ Exec children never receive any of these variables, in either form. Do not put `
 crates/box-common    path jail, bearer compare, error envelope, config, CORS
 crates/box-exec      exec + files + CUA HTTP daemon
 crates/box-host      identity / ready / capabilities / desktop + chrome status
-crates/box-desktop   Xvfb probe, 1280×800 geometry, viewer URL
+crates/box-desktop   Xvfb probe, 1280×800 geometry, viewer ports, screen list
 crates/box-chrome    Chromium profile + localhost CDP probe
-crates/box-cua       screenshot / click / type / key / scroll / double-click / drag / move / recipe
+crates/box-cua       screenshot / click / type / key / scroll / double-click / drag / move / recipe / voxl wait + record
 crates/box-egress-tunnel  guest WS mux + Chromium CONNECT proxy (laptop client is the same binary)
 crates/buwiz-computer      typed client + CLI (workspace only, not published)
 sdk/typescript       TypeScript client (workspace only)
 sdk/python           Python client (workspace only)
-ensurebox/           demo orchestrator (not production)
-l1/                  demo human UI (EnsureBox only)
 ```
+
+## Screens
+
+One computer serves one or more agents, and each agent gets a screen of its own: its own X display, input, viewer, browser profile and folder. The box's own screen is `:1`. `box-screen` adds and removes a Bot's while the computer runs, up to four (`BOX_MAX_OWN_SCREENS`), as `:2`–`:5`:
+
+```bash
+curl -fsS http://127.0.0.1:1337/v1/exec \
+  -H "Authorization: Bearer $BOX_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"command":["box-screen","up","amy"]}'
+```
+
+`GET /v1/screens` lists them, and `?display=:N` puts any `/v1/cua/*` call on that screen. Everything an agent makes on a screen lands in that screen's folder under `/workspace`: `agents/<bot>` for a Bot's, `shared` for the box's own. Recordings, recipe cooks and Chromium downloads go there, and a terminal from that screen's dock opens there. `box-screen down` stops the screen and keeps the folder and the profile.
+
+Measured on arm64 with a page holding about 200 MB of data open on each screen: about 510 MiB and 180 processes and threads per screen. Compose's 4 GB limit holds the box's own screen and seven Bots', so the default four leave room; at eight it runs out and the kernel starts killing browser processes. Anything that starts the image itself needs `--pids-limit 2048` too: at 1024 a fifth Bot's Chromium cannot start, and at the limit neither can an exec.
+
+Screens keep agents apart for input and viewing; they are not a security boundary. All of them run as the box user, and anything with exec on the box can reach every screen. See [API](docs/API.md#screens).
 
 ## Volumes
 
 | Mount | Role |
 | --- | --- |
-| `/workspace` | Jail root for cwd and file APIs. Persist across hibernate. |
+| `/workspace` | Jail root for cwd and file APIs, and each screen's folder. Persist across hibernate. |
 | `/home/box/chrome-profile` | Chromium `--user-data-dir`. Persist cookies/session. Must be writable by uid **1000**; otherwise the entrypoint falls back to `/tmp/box-chrome-profile`. |
 
 ## Docs
 
-- [Deploy](docs/DEPLOY.md) — test-deploy on **Akamai Cloud** (Linode; not Vultr), then the same pattern on AWS/GCP/Azure. First test is one VM, guest Compose only, private SSH tunnel or Tailscale; CLI/SDK from your laptop. Do not expose 1337/1340/6080 on the public internet.
+- [Deploy](docs/DEPLOY.md) — test-deploy on **Akamai Cloud** (Linode; not Vultr), then the same pattern on AWS/GCP/Azure. First test is one VM, guest Compose only, private SSH tunnel or Tailscale; CLI/SDK from your laptop. Do not expose 1337/1340/6901-6905 on the public internet.
 - [Egress](docs/EGRESS.md) — laptop CONNECT tunnel for Chromium in prod (no host-network)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Startup](docs/STARTUP.md)
@@ -232,7 +233,7 @@ l1/                  demo human UI (EnsureBox only)
 
 ## What this is not
 
-- Not a supported production control plane (EnsureBox is a demo)
+- Not a control plane: the [Bot](https://github.com/buwiz-bot/buwiz-bot) starts and stops computers
 - Not L4 / not an OpenAI-compatible inference gateway
 - Not a re-host of any proprietary exec/sand-host / sand-egress-tunnel binary
 - Not a native Windows or macOS box OS

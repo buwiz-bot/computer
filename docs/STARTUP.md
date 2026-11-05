@@ -1,13 +1,13 @@
 # Startup
 
-How to bring buwiz-computer up and talk to it. The product is the guest image plus HTTP, CLI, and SDKs. EnsureBox and L1 are optional demos.
+How to bring buwiz-computer up and talk to it. The product is the guest image plus HTTP, CLI, and SDKs.
 
 ## 1. Guest (required)
 
 From the repository root:
 
 ```bash
-cp .env.example .env          # set BOX_TOKEN and BOX_VNC_PASSWORD
+cp .env.example .env          # set BOX_TOKEN and BOX_VIEWER_PASSWORD
 docker compose up --build
 ```
 
@@ -25,9 +25,9 @@ You now have:
 | --- | --- |
 | `http://127.0.0.1:1337` | box-exec |
 | `http://127.0.0.1:1340` | box-host |
-| `http://127.0.0.1:6080/vnc.html` | noVNC (loopback publish; not Bearer) |
+| `http://127.0.0.1:6901/` | voxl, the live view (loopback publish; its own password, not Bearer) |
 
-Token: `BOX_TOKEN` from `.env` (required). VNC password: `BOX_VNC_PASSWORD` (required when desktop is on; x11vnc uses 8 chars).
+Token: `BOX_TOKEN` from `.env` (required). Viewer password: `BOX_VIEWER_PASSWORD` (required when desktop is on).
 
 ### Talk HTTP
 
@@ -109,37 +109,11 @@ There is no `Sandbox.create()`. Start the guest with Docker (or your own runtime
 
 Binds exec/host to **127.0.0.1**. Does not print `BOX_TOKEN`. CUA will not screenshot. Smoke: `./scripts/smoke-native.sh`.
 
-## 3. Demos (optional)
-
-Not part of the supported product. Ports are uncommon on purpose. Both apps bind **127.0.0.1**.
-
-**EnsureBox** (demo orchestrator) on **43142**:
-
-```bash
-cd ensurebox
-cp .env.example .env   # ENSUREBOX_TOKEN + ENSUREBOX_ALLOW_INSECURE_DEV=1 for local demo
-npm install
-npm run dev
-```
-
-Needs a built `buwiz-computer:local` image (`docker compose build` from the repo root). It `docker run`s guests, stores `BOX_TOKEN`, and proxies tools. The operator UI is login-gated and shows ports/volumes/lifecycle only — no Screenshot or Shell tab. Docker is invoked as the current user (no sudo fallback).
-
-**L1** (demo human workspace) on **43141**:
-
-```bash
-cd l1
-cp .env.example .env   # L1_TOKEN + ENSUREBOX_TOKEN (server-side) + insecure-dev flags for local demo
-npm install
-npm run dev
-```
-
-L1 uses `L1_TOKEN` for the human session and `ENSUREBOX_TOKEN` only on the server. It must not call guest binds or read `BOX_TOKEN`. Desktop is screenshots via EnsureBox CUA, not a raw 6080 link.
-
-## 4. Your own orchestrator
+## 3. Your own orchestrator
 
 1. `docker run` (or equivalent) from this image.
-2. Inject `BOX_TOKEN`, `BOX_VNC_PASSWORD`, `BOX_ID`, desktop/chrome/CUA env as needed.
-3. Publish 1337, 1340, 6080 on **127.0.0.1** (or a tunnel). Never 5900/9222/8791. Optional `8790` when `BOX_EGRESS_TUNNEL=1` ([EGRESS.md](EGRESS.md)).
+2. Inject `BOX_TOKEN`, `BOX_VIEWER_PASSWORD`, `BOX_ID`, desktop/chrome/CUA env as needed.
+3. Publish 1337, 1340, 6901-6905 on **127.0.0.1** (or a tunnel). Never 9222/8791. Optional `8790` when `BOX_EGRESS_TUNNEL=1` ([EGRESS.md](EGRESS.md)).
 4. Poll `GET {hostUrl}/v1/ready` with Bearer until 200.
 5. `BuwizComputer.connect(execUrl, hostUrl, token)` — the URLs **you** published, not `/v1/info`.
 
@@ -149,5 +123,3 @@ L1 uses `L1_TOKEN` for the human session and `ENSUREBOX_TOKEN` only on the serve
 | --- | --- |
 | `./scripts/smoke.sh` | Image build, ready (Bearer), exec, files, CUA, auth |
 | `./scripts/smoke-native.sh` | Host binaries without Docker (loopback binds) |
-| `ensurebox/scripts/smoke.sh` | Demo API + login-gated operator UI |
-| `l1/scripts/smoke.sh` | L1 has no guest bind / `BOX_TOKEN` / VNC password UI |

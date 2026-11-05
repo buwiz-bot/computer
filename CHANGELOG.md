@@ -1,5 +1,23 @@
 # Changelog
 
+## The Bot's computer
+
+Imported from `hexuria/box` at `64f2b13` with its history, as `buwiz-bot/computer`.
+
+| Item | Where |
+| --- | --- |
+| Named `buwiz-computer` throughout: crate, CLI, image, SDKs, `BUWIZ_COMPUTER_*`, native host `app.buwiz.active_tab` | everywhere |
+| voxl 0.3.3 replaces x11vnc, websockify and noVNC: one per screen on `6900+N`, `BOX_VIEWER_PASSWORD` with `_FILE` | `docker/Dockerfile`, `docker/entrypoint.sh`, `docker/box-screen` |
+| The viewer keeper holds the password and restarts a voxl that dies; voxl is execute-only, so its environ stays unreadable | `docker/entrypoint.sh`, `docker/Dockerfile` |
+| `/v1/info` `capabilities.viewer: {kind, port, enabled, ready}`; `/v1/desktop` `viewer.kind`, no more `vnc`; `/v1/ready` `viewer_ready` | `crates/box-host`, `crates/box-desktop` |
+| `GET /v1/screens`: every screen's display, viewer port, state and folder | `crates/box-desktop`, `crates/box-host` |
+| `POST /v1/cua/wait`, `/v1/cua/record/start`, `/v1/cua/record/stop` on voxl, password held by `box-exec` | `crates/box-cua/src/voxl.rs`, `crates/box-exec` |
+| A folder per screen under `/workspace` (`agents/<bot>`, `shared`) for recordings, cooks and downloads | `docker/box-screen`, `crates/box-desktop` |
+| Multi-arch publish to `ghcr.io/buwiz-bot/computer` on native runners, and an image smoke on PRs | `.github/workflows/` |
+| Removed: the frozen `ensurebox/` and `l1/` demos, `docker/Dockerfile.remasure`, `box-release-keys` (voxl lets go of held keys when a viewer leaves) | history keeps them |
+
+**Breaking:** `BOX_VNC_PASSWORD` is now `BOX_VIEWER_PASSWORD`, with no fallback; `BOX_VNC_BIND`, `BOX_NOVNC_PORT` and port 6080 are gone; `/v1/desktop` lost `vnc`; default cook folder moved from `.l1/cooks` to `<screen folder>/cooks`.
+
 Guest honesty and wire parity against BOX-REVIEW P0 → P1 (selective P2). Baseline `main` @ `3c67b576e2d4b67da5849b55bc2de6231d31ff47`.
 
 ## Egress tunnel (laptop CONNECT for prod Chromium)

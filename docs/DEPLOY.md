@@ -4,7 +4,7 @@ This is the plan for **actually running** a buwiz-computer guest and talking to 
 
 **Repo of record:** [https://github.com/buwiz-bot/computer](https://github.com/buwiz-bot/computer) (`main`).
 
-**First test (do this):** one **Akamai Cloud** VM (this is **Linode**, not Vultr), **guest Compose only**, **private access** (SSH tunnel or Tailscale). Drive it with the `buwiz-computer` CLI / SDKs from your laptop. Do **not** open ports **1337 / 1340 / 6080** on the public internet.
+**First test (do this):** one **Akamai Cloud** VM (this is **Linode**, not Vultr), **guest Compose only**, **private access** (SSH tunnel or Tailscale). Drive it with the `buwiz-computer` CLI / SDKs from your laptop. Do **not** open ports **1337 / 1340 / 6901-6905** on the public internet.
 
 Vultr is a different company and a different API. Tokens, Terraform providers, and regions do not transfer.
 
@@ -14,20 +14,18 @@ Vultr is a different company and a different API. Tokens, Terraform providers, a
 
 The **product** is:
 
-- the guest Docker image (`buwiz-computer:local` in Compose; tagged releases can push `ghcr.io/<owner>/box`)
+- the guest Docker image (`buwiz-computer:local` in Compose; tagged releases push `ghcr.io/buwiz-bot/computer`)
 - `box-exec` + `box-host` inside that image
 - the connect-only `buwiz-computer` CLI and TypeScript / Python / Rust SDKs
 
 You start the container. Then you call `connect(execUrl, hostUrl, token)`. There is **no** `Sandbox.create()` / docker-run helper in the SDKs.
 
-[`ensurebox/`](../ensurebox/) (port **43142**) and [`l1/`](../l1/) (port **43141**) are **demos**. They are not a production control plane. L1 never holds `BOX_TOKEN` and never talks to the guest; it talks only to EnsureBox.
 
 | Path | What runs on the VM | Who talks to the guest |
 | --- | --- | --- |
 | **1 — recommended** | Guest only (`docker compose up`) | Your laptop: CLI / SDK |
-| **2 — optional, later** | Guest **or** EnsureBox-spawned guests, plus demo UIs behind TLS | Browser → L1 → EnsureBox → guest. Still a demo. |
 
-Production consumers are CLI/SDK against the guest HTTP wire (`:1337` exec, `:1340` host), not L1/L2.
+Production consumers are CLI/SDK against the guest HTTP wire (`:1337` exec, `:1340` host).
 
 ### What the guest actually is
 
@@ -37,12 +35,12 @@ Inside (see [`docs/ARCHITECTURE.md`](ARCHITECTURE.md)):
 
 - `box-exec` on **1337** (exec, files, CUA)
 - `box-host` on **1340** (health, ready, info, desktop/chrome)
-- Xvfb **1280×800**, openbox, x11vnc (localhost **5900**), noVNC **6080**
-- Chromium; CDP on **127.0.0.1:9222** only — **never publish 9222 or 5900**
+- Xvfb **1280×800**, xfce, voxl **6901** (and **6902–6905** for the Bots' own screens)
+- Chromium; CDP on **127.0.0.1:9222** only — **never publish 9222**
 
-Compose publishes **1337, 1340, 6080** as `127.0.0.1:1337:1337` (loopback on the VM). Reach them with an SSH tunnel, Tailscale, or similar. Healthcheck: `curl -H "Authorization: Bearer $BOX_TOKEN" http://127.0.0.1:1340/v1/ready` (start period 25s, 5s interval, 12 retries). `shm_size` is **256mb**. Bind mounts: `./workspace-data:/workspace`, `./chrome-profile:/home/box/chrome-profile`.
+Compose publishes **1337, 1340, 6901–6905** as `127.0.0.1:1337:1337` (loopback on the VM). Reach them with an SSH tunnel, Tailscale, or similar. Healthcheck: `curl -H "Authorization: Bearer $BOX_TOKEN" http://127.0.0.1:1340/v1/ready` (start period 25s, 5s interval, 12 retries). `shm_size` is **256mb**. Bind mounts: `./workspace-data:/workspace`, `./chrome-profile:/home/box/chrome-profile`.
 
-`BOX_CORS_ORIGINS` is an explicit allowlist (`*` is ignored). Compose does **not** currently pass that env into the container; laptop CLI/SDK does not need CORS. Leave it unset unless a **browser** will call the guest directly (unusual — L1 talks to EnsureBox, not to 1337).
+`BOX_CORS_ORIGINS` is an explicit allowlist (`*` is ignored). Compose does **not** currently pass that env into the container; laptop CLI/SDK does not need CORS. Leave it unset unless a **browser** will call the guest directly (unusual).
 
 ---
 
@@ -83,7 +81,7 @@ Optional later: a domain + DNS at Akamai or elsewhere (only for public HTTPS). T
 
 ## C. Instance / machine sizing
 
-This guest is **RAM-heavy**: Debian + Xvfb + openbox + Chromium + two Rust daemons. The **first** deploy also **builds the image on the VM** (Rust `1.85` builder compiles `box-exec` / `box-host`, then a `debian:bookworm-slim` runtime with Chromium). `.github/workflows/publish-image.yml` can push GHCR on `v*` tags; until you pull that, build on the VM.
+This guest is **RAM-heavy**: Debian + Xvfb + xfce + voxl + Chromium + two Rust daemons. The **first** deploy also **builds the image on the VM** (Rust `1.85` builder compiles `box-exec` / `box-host`, then a `debian:bookworm-slim` runtime with Chromium). `.github/workflows/publish-image.yml` can push GHCR on `v*` tags; until you pull that, build on the VM.
 
 | Plan | Type slug | vCPU | RAM | Disk | ~price (core regions, 2026 list — confirm in Cloud Manager) | Verdict |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -113,25 +111,24 @@ This guest is **RAM-heavy**: Debian + Xvfb + openbox + Chromium + two Rust daemo
 | --- | --- | --- |
 | **1337** | Compose yes (`127.0.0.1`) | `box-exec` — Bearer `BOX_TOKEN` except `GET /v1/health` |
 | **1340** | Compose yes (`127.0.0.1`) | `box-host` — Bearer except `GET /v1/health`. **`GET /v1/ready` requires Bearer.** |
-| **6080** | Compose yes (`127.0.0.1`) | noVNC `/vnc.html` — **not** Bearer; VNC password is `BOX_VNC_PASSWORD` (x11vnc 8-char max) |
+| **6901–6905** | Compose yes (`127.0.0.1`) | voxl — **not** Bearer; its own password is `BOX_VIEWER_PASSWORD` |
 | **8790** | Compose yes (`127.0.0.1`) | `box-egress-tunnel` WS (off unless `BOX_EGRESS_TUNNEL=1`). See [EGRESS.md](EGRESS.md). |
 | 8791 | **no** | Chromium CONNECT proxy |
 | 8792 | **no** | tunnel admin (box-host probe) |
-| 5900 | **no** | x11vnc, `127.0.0.1` inside the container |
 | 9222 | **no** | Chromium CDP, `127.0.0.1` only |
 
-`BOX_TOKEN` is bearer auth. It is **not** a substitute for TLS. Do **not** expose exec/host as raw HTTP on a public IP. Compose reads the token and the VNC password from `./secrets/box_token` and `./secrets/box_vnc_password`; run `bash scripts/write-secrets.sh` (it reads `BOX_TOKEN` / `BOX_VNC_PASSWORD` from the environment or `.env`) before `docker compose up`, or Compose fails on the missing secret file.
+`BOX_TOKEN` is bearer auth. It is **not** a substitute for TLS. Do **not** expose exec/host as raw HTTP on a public IP. Compose reads the token and the viewer password from `./secrets/box_token` and `./secrets/box_viewer_password`; run `bash scripts/write-secrets.sh` (it reads `BOX_TOKEN` / `BOX_VIEWER_PASSWORD` from the environment or `.env`) before `docker compose up`, or Compose fails on the missing secret file.
 
 Health is **unauthenticated** and returns only `{"status":"ok"}`. Ready requires Bearer.
 
-noVNC is a **full desktop session** (keyboard/mouse on 1280×800). Treat **6080** like a KVM. The VNC password is truncated to **8 chars** (x11vnc) and is **independent of `BOX_TOKEN`**. Keep 6080 off the public internet; loopback publish is the default.
+voxl is a **full desktop session** (keyboard/mouse on 1280×800). Treat **6901–6905** like a KVM. The viewer password is **independent of `BOX_TOKEN`**. Keep these ports off the public internet; loopback publish is the default.
 
 ### Two network modes
 
 **1. Private (first test — do this)**
 
 - One VM. Cloud Firewall **default-deny** inbound. Allow **TCP 22** only (optionally from your home IP `/32`). IPv6: same policy (`DROP` unless you allow SSH on v6).
-- Do **not** allow 1337, 1340, 6080, 5900, 9222 on the public firewall.
+- Do **not** allow 1337, 1340, 6901–6905, 9222 on the public firewall.
 - Reach the guest from the laptop by **either**:
   - **SSH tunnel** (simplest, no extra accounts):
 
@@ -139,7 +136,7 @@ noVNC is a **full desktop session** (keyboard/mouse on 1280×800). Treat **6080*
     ssh -N \
       -L 1337:127.0.0.1:1337 \
       -L 1340:127.0.0.1:1340 \
-      -L 6080:127.0.0.1:6080 \
+      -L 6901:127.0.0.1:6901 \
       -L 8790:127.0.0.1:8790 \
       root@VM_IPV4
     ```
@@ -156,7 +153,7 @@ services:
     ports:
       - "127.0.0.1:1337:1337"
       - "127.0.0.1:1340:1340"
-      - "127.0.0.1:6080:6080"
+      - "127.0.0.1:6901-6905:6901-6905"
       - "127.0.0.1:8790:8790"
 ```
 
@@ -164,7 +161,7 @@ Loopback bind + SSH tunnel is the tightest combo. Loopback bind **breaks** “di
 
 **2. Public HTTPS (only after the private test works)**
 
-- Domain → **Caddy** or nginx on the VM → `127.0.0.1:1337` / `:1340` / (optional) `:6080`.
+- Domain → **Caddy** or nginx on the VM → `127.0.0.1:1337` / `:1340` / (optional) `:6901`.
 - Let’s Encrypt on **443**. Firewall: **22 + 443** only. Still send `Authorization: Bearer`.
 - Subdomains are simpler than path prefixes (the client appends `/v1/...` to the base URL):
 
@@ -177,7 +174,7 @@ host.example.com {
 }
 # optional; still sensitive
 desktop.example.com {
-  reverse_proxy 127.0.0.1:6080
+  reverse_proxy 127.0.0.1:6901
 }
 ```
 
@@ -228,10 +225,10 @@ Akamai Cloud Compute **is** Linode. The OpenTofu/Terraform provider for **VMs** 
    cd box
    umask 077
    openssl rand -base64 32 > /tmp/box-token
-   BOX_VNC_PASSWORD=$(openssl rand -base64 12 | tr -dc 'A-Za-z0-9' | head -c 8)
+   BOX_VIEWER_PASSWORD=$(openssl rand -base64 24)
    cat > .env <<EOF
    BOX_TOKEN=$(cat /tmp/box-token)
-   BOX_VNC_PASSWORD=${BOX_VNC_PASSWORD}
+   BOX_VIEWER_PASSWORD=${BOX_VIEWER_PASSWORD}
    BOX_ID=akamai-test
    BOX_DESKTOP=1
    BOX_DESKTOP_REQUIRED=1
@@ -253,7 +250,7 @@ Akamai Cloud Compute **is** Linode. The OpenTofu/Terraform provider for **VMs** 
 
 **Pros:** Obvious, debuggable, matches local README. **Cons:** Click-ops, easy to forget the firewall, first build is heavy.
 
-`image: buwiz-computer:local` is the Compose default. Tagged `v*` builds can push `ghcr.io/<owner>/box`. First test without a pull still **builds on the VM**.
+`image: buwiz-computer:local` is the Compose default. Tagged `v*` builds push `ghcr.io/buwiz-bot/computer` for arm64 and amd64. First test without a pull still **builds on the VM**.
 
 ### 2. Cloud-init / StackScript / user-data
 
@@ -345,7 +342,7 @@ resource "linode_firewall" "box" {
 output "ipv4" { value = linode_instance.box.ip_address }
 output "ssh" { value = "ssh root@${linode_instance.box.ip_address}" }
 output "tunnel" {
-  value = "ssh -N -L 1337:127.0.0.1:1337 -L 1340:127.0.0.1:1340 -L 6080:127.0.0.1:6080 -L 8790:127.0.0.1:8790 root@${linode_instance.box.ip_address}"
+  value = "ssh -N -L 1337:127.0.0.1:1337 -L 1340:127.0.0.1:1340 -L 6901:127.0.0.1:6901 -L 8790:127.0.0.1:8790 root@${linode_instance.box.ip_address}"
 }
 ```
 
@@ -353,7 +350,7 @@ output "tunnel" {
 
 | Cloud | VM | Firewall | Image / bootstrap |
 | --- | --- | --- | --- |
-| **AWS** | One **EC2** `t3.large` (2 vCPU / 8 GB) or `t3.xlarge` if the build is tight. No ALB for the first test. | **Security group**: 22 (your IP), later 443. Not 1337/1340/6080. | Ubuntu 24.04 AMI (Canonical). Same cloud-init as `user_data`. Provider `hashicorp/aws`. |
+| **AWS** | One **EC2** `t3.large` (2 vCPU / 8 GB) or `t3.xlarge` if the build is tight. No ALB for the first test. | **Security group**: 22 (your IP), later 443. Not 1337/1340/6901-6905. | Ubuntu 24.04 AMI (Canonical). Same cloud-init as `user_data`. Provider `hashicorp/aws`. |
 | **GCP** | One **Compute Engine** `e2-standard-2` (2 vCPU / 8 GB). | VPC firewall **tags**: `allow-ssh`, later `allow-https`. | `ubuntu-2404-lts`. `metadata.startup-script`. Provider `hashicorp/google`. |
 | **Azure** | One VM **Standard_D2s_v5** or **Standard_B2ms** (~8 GB). | **NSG**: 22, later 443. | Ubuntu 24.04 LTS. Custom data = cloud-init. Provider `hashicorp/azurerm`. |
 
@@ -363,17 +360,16 @@ Caddy on the VM beats an ALB/HTTPS load balancer for a single box. Shared philos
 
 ### 4. Container-as-a-service? Kubernetes?
 
-The guest is a **long-running** container with X11, VNC, and Chromium — not a 10ms serverless function.
+The guest is a **long-running** container with X11, voxl, and Chromium — not a 10ms serverless function.
 
 | Platform | Fit |
 | --- | --- |
 | Lambda / Cloud Functions | No. |
-| Cloud Run / App Service “scale to zero” | Poor. Need min instances, RAM, and **three** HTTP ports (or a sidecar proxy). WebSockets for noVNC are awkward. |
+| Cloud Run / App Service “scale to zero” | Poor. Need min instances, RAM, and **three** HTTP ports (or a sidecar proxy). WebSockets for voxl are awkward. |
 | ACI / ECS Fargate / Cloud Run **always-on** | Possible in theory: it is **one** container, not a Compose mesh. You still need ~8 GB, `shm`, persistent disks for `/workspace` + chrome profile, and TLS in front. More glue than a VM. |
 | **VM + Compose** | **Do this first.** |
 | Kubernetes | Later, if you already have a cluster: one Deployment, Service, two PVCs, `emptyDir` `medium: Memory` ~256Mi for `/dev/shm`, `runAsUser: 1000`, do not Service-expose 9222. Not the first test. |
 
-EnsureBox is a **host Docker** orchestrator (it `docker run`s guests). It does not belong on Cloud Run.
 
 ### 5. Prebuilt image to a registry (second iteration)
 
@@ -422,7 +418,7 @@ After the Akamai VM is up and Compose is healthy:
 
    TypeScript / Python: `BuwizComputer.connect(execUrl, hostUrl, token)` — same three values. No docker helper.
 
-4. **Optional noVNC:** [http://127.0.0.1:6080/vnc.html](http://127.0.0.1:6080/vnc.html) through the tunnel. Password = `BOX_VNC_PASSWORD` (first **8** characters). Not Bearer-authenticated.
+4. **Optional live view:** `http://localhost:6901/` through the tunnel (WebCodecs needs `localhost` or HTTPS). Password = `BOX_VIEWER_PASSWORD`. Not Bearer-authenticated.
 
 **It works when:** `echo ok` returns exit 0, file put/get round-trips, screenshot writes a PNG of the 1280×800 desktop.
 
@@ -430,16 +426,14 @@ After the Akamai VM is up and Compose is healthy:
 
 ## G. Security and ops
 
-- **Rotate `BOX_TOKEN`:** recreate the container with a new env value (`docker compose up -d --force-recreate`). Update the laptop env. Rotate `BOX_VNC_PASSWORD` the same way; it is independent of the bearer.
-- **Do not log tokens.** Do not put them in Compose `docker compose config` pastebins, CI logs, or L1. Compose mounts `./secrets/*` rather than putting values in the container environment, so the token is not in `docker inspect` or in any `/proc/<pid>/environ`. It **is** readable at `/run/secrets/box_token` by anything running as the box user, which the healthcheck needs; see README §Auth for what that does and does not protect. Exec children never get any of these variables.
-- Guest **must not** leak `BOX_TOKEN` to L1. L1 smoke asserts the L1 source never mentions it, `vncPassword`, or raw 6080 password UI.
+- **Rotate `BOX_TOKEN`:** recreate the container with a new env value (`docker compose up -d --force-recreate`). Update the laptop env. Rotate `BOX_VIEWER_PASSWORD` the same way; it is independent of the bearer.
+- **Do not log tokens.** Do not put them in Compose `docker compose config` pastebins, or CI logs. Compose mounts `./secrets/*` rather than putting values in the container environment, so the token is not in `docker inspect` or in any `/proc/<pid>/environ`. It **is** readable at `/run/secrets/box_token` by anything running as the box user, which the healthcheck needs; see README §Auth for what that does and does not protect. Exec children never get any of these variables.
 - SSH **keys**, not passwords. `PermitRootLogin prohibit-password`. `unattended-upgrades`.
 - **Disk:** `workspace-data` is **your** files. `chrome-profile` is cookies/session for uid **1000**. Bind mounts created as root are not writable by `box` until `chown 1000:1000`. Back up the workspace volume if you care; the image is rebuildable.
 - **Cost:** an idle VM still bills. Power off or `tofu destroy` / Cloud Manager delete when done. Hourly on 8 GB Shared is on the order of **seven cents**. A forgotten month is **~$48**.
 - **CORS:** default is no browser origins. Do not point a random website at 1337.
 - **CDP unpublished.** Do not add `9222:9222` to Compose.
 - **Egress CONNECT unpublished.** Do not add `8791:8791`. WS `8790` is loopback + SSH `-L` only. Prod must not rely on Docker host-network for Facebook/IP geo; see [EGRESS.md](EGRESS.md).
-- Path 2 demos: EnsureBox token (`ENSUREBOX_TOKEN`) is **not** `BOX_TOKEN`. npm scripts bind L1/EnsureBox to **127.0.0.1**. Both demos require login tokens (`ENSUREBOX_TOKEN` / `L1_TOKEN`). EnsureBox needs **host Docker** as the current user (no sudo fallback). Operator viewer URLs are loopback noVNC; L1 does not receive them.
 
 ---
 
@@ -448,7 +442,7 @@ After the Akamai VM is up and Compose is healthy:
 1. You send the [checklist](#b-what-we-need-from-you-checklist). API token stays on your machine (you run tofu later) or in a secret store — **not chat**.
 2. **First deploy:** one Akamai VM, Ubuntu 24.04, 8 GB Shared, Cloud Firewall 22 only, guest Compose only, private access (SSH tunnel).
 3. Prove CLI/SDK from the laptop (exec, files, screenshot PNG).
-4. Only then: public HTTPS (Caddy + domain) **or** demo UIs (EnsureBox/L1).
+4. Only then: public HTTPS (Caddy + domain).
 5. Only then: a small OpenTofu root so create/destroy is boring.
 6. Other clouds: same Compose + cloud-init, swap the instance/firewall resources.
 
@@ -456,15 +450,14 @@ After the Akamai VM is up and Compose is healthy:
 
 ## I. Open questions / risks
 
-- **Image build time on the VM.** First `docker compose up --build` compiles Rust in `rust:1.85-bookworm` and apt-installs Chromium. Expect a long first boot. A small VM makes this worse; 8 GB / 4 vCPU is the mitigation. Tagged releases can push `ghcr.io/hexuria/box` via `.github/workflows/publish-image.yml` (`GITHUB_TOKEN` + `packages: write`). Until you have pulled that image, `git clone && docker compose up --build` is the path.
+- **Image build time on the VM.** First `docker compose up --build` compiles Rust in `rust:1.85-bookworm` and `rust:1.93-bookworm` (voxl) and apt-installs Chromium. Expect a long first boot. A small VM makes this worse; 8 GB / 4 vCPU is the mitigation. Tagged releases can push `ghcr.io/hexuria/box` via `.github/workflows/publish-image.yml` (`GITHUB_TOKEN` + `packages: write`). Until you have pulled that image, `git clone && docker compose up --build` is the path.
 - **Rust / TS / Python clients speak HTTPS.** Guest daemons still bind HTTP. Put Caddy/nginx in front for TLS. The Rust crate uses hyper-rustls (webpki roots).
-- **Chromium RAM.** One desktop guest is the design point. Two guests on one 8 GB VM (EnsureBox spawning extras) will hurt.
+- **Chromium RAM.** One desktop guest is the design point. Two guests on one 8 GB VM will hurt.
 - **IPv6.** Akamai assigns it. Cloud Firewall must DROP v6 too, or you published the box on v6 while locking v4.
-- **Compose publishes loopback.** `127.0.0.1:1337:1337` (and 1340/6080). Tailscale-to-public-NIC still will not hit those ports; use an SSH tunnel (including over Tailscale SSH). Health is open but minimal; noVNC is a desktop on loopback.
-- **Desktop vs `BOX_DESKTOP=0`.** If you only need exec/files, turn desktop off (`BOX_DESKTOP=0`, `BOX_DESKTOP_REQUIRED=0`). Ready no longer waits on X. No screenshots, no noVNC. Less RAM. Compose still lists 6080 unless you override ports.
+- **Compose publishes loopback.** `127.0.0.1:1337:1337` (and 1340/6901-6905). Tailscale-to-public-NIC still will not hit those ports; use an SSH tunnel (including over Tailscale SSH). Health is open but minimal; voxl is a desktop on loopback.
+- **Desktop vs `BOX_DESKTOP=0`.** If you only need exec/files, turn desktop off (`BOX_DESKTOP=0`, `BOX_DESKTOP_REQUIRED=0`). Ready no longer waits on X. No screenshots, no voxl. Less RAM. Compose still lists 6901–6905 unless you override ports.
 - **Volume ownership.** uid **1000** must own bind mounts.
 - **No registry by default.** First test builds from git. Tag `v*` to run the GHCR workflow before you scale to many VMs.
-- **EnsureBox ≠ Compose guest.** Path 2’s demo orchestrator starts **its own** containers from `BUWIZ_COMPUTER_IMAGE=buwiz-computer:local`. You do not need both a long-lived root Compose stack **and** EnsureBox unless you are deliberately running two different guests.
 - **Provider confusion.** Compute = `linode/linode` + `LINODE_TOKEN`. Not Vultr. Not `akamai/akamai`.
 
 ---

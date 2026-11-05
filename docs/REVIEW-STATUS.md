@@ -40,7 +40,6 @@ Prior analysis-only review: conversation artifact `BOX-REVIEW.md` (keep/cut/add)
 | Item | Reason |
 | --- | --- |
 | Interactive **PTY** (`pty: true`) | Returns 400; use `/v1/exec/stream` |
-| Move `ensurebox/` + `l1/` to another repo | Frozen demos, still in-tree as non-product |
 | Vendor **trycua/cua** | Optional later backend; Linux X11 is default |
 | Full Docker image smoke on CI runner | May be environment-limited; use `scripts/smoke.sh` locally |
 
@@ -50,4 +49,3 @@ Prior analysis-only review: conversation artifact `BOX-REVIEW.md` (keep/cut/add)
 2. `cargo test --workspace` && clippy.
 3. `./scripts/smoke-native.sh`; optionally `./scripts/smoke.sh` with Docker.
 4. Compare OpenAPI to `crates/box-exec/src/routes.rs` + `box-host` routes.
-5. Treat `ensurebox/` and `l1/` as demos unless the task is about those UIs.
