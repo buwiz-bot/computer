@@ -43,6 +43,11 @@ fi
 
 mkdir -p workspace-data chrome-profile
 chmod u+rwx workspace-data chrome-profile 2>/dev/null || true
+# The box runs as uid 1000, and on a Linux host a bind mount keeps the host's owner. Docker Desktop
+# hides this on a Mac; a CI runner is uid 1001, so the box couldn't make /workspace/shared.
+if [[ "$(uname -s)" == "Linux" && "$(id -u)" != "1000" ]]; then
+  sudo -n chown 1000:1000 workspace-data chrome-profile || chmod 0777 workspace-data chrome-profile
+fi
 
 # Compose mounts ./secrets/* instead of putting the values in the container
 # environment, so they have to exist before anything is started.
