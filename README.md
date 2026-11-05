@@ -207,7 +207,7 @@ curl -fsS http://127.0.0.1:1337/v1/exec \
   -d '{"command":["box-screen","up","amy"]}'
 ```
 
-`GET /v1/screens` lists them, and `?display=:N` puts any `/v1/cua/*` call on that screen. Everything an agent makes on a screen lands in that screen's folder under `/workspace`: `agents/<bot>` for a Bot's, `shared` for the box's own. Recordings, recipe cooks and Chromium downloads go there, and a terminal from that screen's dock opens there. `box-screen down` stops the screen and keeps the folder and the profile.
+`GET /v1/screens` lists them, and `?display=:N` puts any `/v1/cua/*` call on that screen. Everything an agent makes on a screen lands in that screen's folder under `/workspace`: `agents/<bot>` for a Bot's, `shared` for the box's own. Recordings, recipe cooks and Chromium downloads go there, and a terminal from a Bot's dock opens in its folder. `box-screen down` stops the screen and keeps the folder and the profile.
 
 Measured on arm64 with a page holding about 200 MB of data open on each screen: about 510 MiB and 180 processes and threads per screen. Compose's 4 GB limit holds the box's own screen and seven Bots', so the default four leave room; at eight it runs out and the kernel starts killing browser processes. Anything that starts the image itself needs `--pids-limit 2048` too: at 1024 a fifth Bot's Chromium cannot start, and at the limit neither can an exec.
 

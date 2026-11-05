@@ -32,7 +32,8 @@ pub struct ChromeConfig {
 
 impl ChromeConfig {
     pub fn from_env() -> Self {
-        let enabled = env_bool("BOX_CHROME", true);
+        // Chromium needs a screen: with the desktop off the entrypoint never starts it.
+        let enabled = env_bool("BOX_CHROME", true) && env_bool("BOX_DESKTOP", true);
         let profile = std::env::var("BOX_CHROME_PROFILE")
             .ok()
             .filter(|s| !s.is_empty())

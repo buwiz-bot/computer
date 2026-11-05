@@ -13,8 +13,11 @@ Imported from `hexuria/box` at `64f2b13` with its history, as `buwiz-bot/compute
 | `GET /v1/screens`: every screen's display, viewer port, state and folder | `crates/box-desktop`, `crates/box-host` |
 | `POST /v1/cua/wait`, `/v1/cua/record/start`, `/v1/cua/record/stop` on voxl, password held by `box-exec` | `crates/box-cua/src/voxl.rs`, `crates/box-exec` |
 | A folder per screen under `/workspace` (`agents/<bot>`, `shared`) for recordings, cooks and downloads | `docker/box-screen`, `crates/box-desktop` |
+| `/v1/chrome` reports ready again: Chromium 156 refuses HTTP/1.0 on CDP. With `BOX_DESKTOP=0`, `capabilities.chrome.enabled` is false, as nothing starts it | `crates/box-chrome`, `crates/box-cua/src/settle.rs` |
 | Multi-arch publish to `ghcr.io/buwiz-bot/computer` on native runners, and an image smoke on PRs | `.github/workflows/` |
 | Removed: the frozen `ensurebox/` and `l1/` demos, `docker/Dockerfile.remasure`, `box-release-keys` (voxl lets go of held keys when a viewer leaves) | history keeps them |
+
+Compose's `pids_limit` is 2048. Measured per screen with Chromium: about 510 MiB and 180 processes and threads.
 
 **Breaking:** `BOX_VNC_PASSWORD` is now `BOX_VIEWER_PASSWORD`, with no fallback; `BOX_VNC_BIND`, `BOX_NOVNC_PORT` and port 6080 are gone; `/v1/desktop` lost `vnc`; default cook folder moved from `.l1/cooks` to `<screen folder>/cooks`.
 

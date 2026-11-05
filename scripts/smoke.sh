@@ -287,7 +287,7 @@ else
     echo "empty png_base64" >&2
     exit 1
   fi
-  printf '%s' "${b64}" | base64 -d | head -c 8 | grep -q $'\x89PNG' || {
+  printf '%s' "${b64}" | base64 -d | head -c 8 | LC_ALL=C grep -aq $'\x89PNG' || {
     echo "decoded screenshot was not a PNG" >&2
     exit 1
   }
@@ -312,7 +312,7 @@ if [[ "${png_code}" != "200" ]]; then
   echo "raw PNG screenshot expected 200, got ${png_code}" >&2
   exit 1
 fi
-head -c 8 /tmp/buwiz-computer-smoke.png | grep -q $'\x89PNG' || {
+head -c 8 /tmp/buwiz-computer-smoke.png | LC_ALL=C grep -aq $'\x89PNG' || {
   echo "raw screenshot was not a PNG" >&2
   exit 1
 }
