@@ -1,10 +1,10 @@
-# Deploy grok-box (use the box)
+# Deploy buwiz-computer (use the box)
 
-This is the plan for **actually running** a grok-box guest and talking to it from a laptop. It matches this repo as of the `docker-compose.yml` / `docker/Dockerfile` in tree. It does **not** provision anything for you.
+This is the plan for **actually running** a buwiz-computer guest and talking to it from a laptop. It matches this repo as of the `docker-compose.yml` / `docker/Dockerfile` in tree. It does **not** provision anything for you.
 
-**Repo of record:** [https://github.com/hexuria/box](https://github.com/hexuria/box) (`main`).
+**Repo of record:** [https://github.com/buwiz-bot/computer](https://github.com/buwiz-bot/computer) (`main`).
 
-**First test (do this):** one **Akamai Cloud** VM (this is **Linode**, not Vultr), **guest Compose only**, **private access** (SSH tunnel or Tailscale). Drive it with the `grok-box` CLI / SDKs from your laptop. Do **not** open ports **1337 / 1340 / 6080** on the public internet.
+**First test (do this):** one **Akamai Cloud** VM (this is **Linode**, not Vultr), **guest Compose only**, **private access** (SSH tunnel or Tailscale). Drive it with the `buwiz-computer` CLI / SDKs from your laptop. Do **not** open ports **1337 / 1340 / 6080** on the public internet.
 
 Vultr is a different company and a different API. Tokens, Terraform providers, and regions do not transfer.
 
@@ -14,9 +14,9 @@ Vultr is a different company and a different API. Tokens, Terraform providers, a
 
 The **product** is:
 
-- the guest Docker image (`grok-box:local` in Compose; tagged releases can push `ghcr.io/<owner>/box`)
+- the guest Docker image (`buwiz-computer:local` in Compose; tagged releases can push `ghcr.io/<owner>/box`)
 - `box-exec` + `box-host` inside that image
-- the connect-only `grok-box` CLI and TypeScript / Python / Rust SDKs
+- the connect-only `buwiz-computer` CLI and TypeScript / Python / Rust SDKs
 
 You start the container. Then you call `connect(execUrl, hostUrl, token)`. There is **no** `Sandbox.create()` / docker-run helper in the SDKs.
 
@@ -56,7 +56,7 @@ Create the token yourself:
 
 1. Log in to [Cloud Manager](https://cloud.linode.com/).
 2. Username (top right) → **API Tokens** ([direct](https://cloud.linode.com/profile/tokens)).
-3. **Create a Personal Access Token**. Label it e.g. `grok-box-test`. Expiry: short (a week) is enough for a test.
+3. **Create a Personal Access Token**. Label it e.g. `buwiz-computer-test`. Expiry: short (a week) is enough for a test.
 4. Scopes: Read/Write on **Linodes**, **Firewalls** (Cloud Firewalls often need `firewall:read_write` plus account access — if the UI is unclear, “Select All Read/Write” for a short-lived test token is acceptable). You do **not** need Object Storage / LKE for path 1.
 5. Copy it once; Cloud Manager will not show it again. Never commit it.
 
@@ -184,9 +184,9 @@ desktop.example.com {
 Then:
 
 ```bash
-export GROK_BOX_EXEC_URL=https://exec.example.com
-export GROK_BOX_HOST_URL=https://host.example.com
-export GROK_BOX_TOKEN='…'
+export BUWIZ_COMPUTER_EXEC_URL=https://exec.example.com
+export BUWIZ_COMPUTER_HOST_URL=https://host.example.com
+export BUWIZ_COMPUTER_TOKEN='…'
 ```
 
 IP-only HTTP on `:1337` is not an acceptable “public” mode.
@@ -224,7 +224,7 @@ Akamai Cloud Compute **is** Linode. The OpenTofu/Terraform provider for **VMs** 
 4. Clone and run (**builds on the VM** — first time is slow, 10–30+ minutes):
 
    ```bash
-   git clone https://github.com/hexuria/box.git
+   git clone https://github.com/buwiz-bot/computer.git
    cd box
    umask 077
    openssl rand -base64 32 > /tmp/box-token
@@ -253,7 +253,7 @@ Akamai Cloud Compute **is** Linode. The OpenTofu/Terraform provider for **VMs** 
 
 **Pros:** Obvious, debuggable, matches local README. **Cons:** Click-ops, easy to forget the firewall, first build is heavy.
 
-`image: grok-box:local` is the Compose default. Tagged `v*` builds can push `ghcr.io/<owner>/box`. First test without a pull still **builds on the VM**.
+`image: buwiz-computer:local` is the Compose default. Tagged `v*` builds can push `ghcr.io/<owner>/box`. First test without a pull still **builds on the VM**.
 
 ### 2. Cloud-init / StackScript / user-data
 
@@ -273,12 +273,12 @@ packages:
 ssh_pwauth: false
 runcmd:
   - curl -fsSL https://get.docker.com | sh
-  - git clone https://github.com/hexuria/box.git /opt/grok-box
-  - mkdir -p /opt/grok-box/workspace-data /opt/grok-box/chrome-profile
-  - chown -R 1000:1000 /opt/grok-box/workspace-data /opt/grok-box/chrome-profile
+  - git clone https://github.com/buwiz-bot/computer.git /opt/buwiz-computer
+  - mkdir -p /opt/buwiz-computer/workspace-data /opt/buwiz-computer/chrome-profile
+  - chown -R 1000:1000 /opt/buwiz-computer/workspace-data /opt/buwiz-computer/chrome-profile
   - |
-      echo "Clone done. SSH in, write /opt/grok-box/.env with BOX_TOKEN, then:"
-      echo "  cd /opt/grok-box && docker compose up --build -d"
+      echo "Clone done. SSH in, write /opt/buwiz-computer/.env with BOX_TOKEN, then:"
+      echo "  cd /opt/buwiz-computer && docker compose up --build -d"
 ```
 
 Pass this as Metadata `user_data` (API wants **base64**). Then SSH, write `.env`, compose up. Unattended “clone + compose up” is possible if you inject the token via a secret mount later; do not bake it into the StackScript body (visible via API).
@@ -315,7 +315,7 @@ terraform {
 provider "linode" {} # LINODE_TOKEN
 
 resource "linode_instance" "box" {
-  label           = "grok-box-test"
+  label           = "buwiz-computer-test"
   region          = var.region
   type            = "g6-standard-4"
   image           = "linode/ubuntu24.04"
@@ -326,7 +326,7 @@ resource "linode_instance" "box" {
 }
 
 resource "linode_firewall" "box" {
-  label           = "grok-box-test"
+  label           = "buwiz-computer-test"
   inbound_policy  = "DROP"
   outbound_policy = "ACCEPT"
 
@@ -392,7 +392,7 @@ After the Akamai VM is up and Compose is healthy:
    ```bash
    curl -fsS http://127.0.0.1:1337/v1/health
    curl -fsS http://127.0.0.1:1340/v1/health
-   curl -fsS -H "Authorization: Bearer $GROK_BOX_TOKEN" http://127.0.0.1:1340/v1/ready
+   curl -fsS -H "Authorization: Bearer $BUWIZ_COMPUTER_TOKEN" http://127.0.0.1:1340/v1/ready
    ```
 
    Ready is **200** when exec is up and (with `BOX_DESKTOP_REQUIRED=1`) Xvfb is up. Chrome is **not** on the ready path — give Chromium a few more seconds before screenshots look interesting.
@@ -408,19 +408,19 @@ After the Akamai VM is up and Compose is healthy:
 3. **CLI from the laptop** (workspace crate; not published to crates.io):
 
    ```bash
-   export GROK_BOX_EXEC_URL=http://127.0.0.1:1337
-   export GROK_BOX_HOST_URL=http://127.0.0.1:1340
-   export GROK_BOX_TOKEN='…'   # same as BOX_TOKEN
+   export BUWIZ_COMPUTER_EXEC_URL=http://127.0.0.1:1337
+   export BUWIZ_COMPUTER_HOST_URL=http://127.0.0.1:1340
+   export BUWIZ_COMPUTER_TOKEN='…'   # same as BOX_TOKEN
 
-   cargo run -p grok-box -- health
-   cargo run -p grok-box -- ready
-   cargo run -p grok-box -- exec -- echo ok
-   cargo run -p grok-box -- files put hello.txt --content 'hi'
-   cargo run -p grok-box -- files get hello.txt
-   cargo run -p grok-box -- cua screenshot --png -o /tmp/box.png
+   cargo run -p buwiz-computer -- health
+   cargo run -p buwiz-computer -- ready
+   cargo run -p buwiz-computer -- exec -- echo ok
+   cargo run -p buwiz-computer -- files put hello.txt --content 'hi'
+   cargo run -p buwiz-computer -- files get hello.txt
+   cargo run -p buwiz-computer -- cua screenshot --png -o /tmp/box.png
    ```
 
-   TypeScript / Python: `GrokBox.connect(execUrl, hostUrl, token)` — same three values. No docker helper.
+   TypeScript / Python: `BuwizComputer.connect(execUrl, hostUrl, token)` — same three values. No docker helper.
 
 4. **Optional noVNC:** [http://127.0.0.1:6080/vnc.html](http://127.0.0.1:6080/vnc.html) through the tunnel. Password = `BOX_VNC_PASSWORD` (first **8** characters). Not Bearer-authenticated.
 
@@ -464,7 +464,7 @@ After the Akamai VM is up and Compose is healthy:
 - **Desktop vs `BOX_DESKTOP=0`.** If you only need exec/files, turn desktop off (`BOX_DESKTOP=0`, `BOX_DESKTOP_REQUIRED=0`). Ready no longer waits on X. No screenshots, no noVNC. Less RAM. Compose still lists 6080 unless you override ports.
 - **Volume ownership.** uid **1000** must own bind mounts.
 - **No registry by default.** First test builds from git. Tag `v*` to run the GHCR workflow before you scale to many VMs.
-- **EnsureBox ≠ Compose guest.** Path 2’s demo orchestrator starts **its own** containers from `GROK_BOX_IMAGE=grok-box:local`. You do not need both a long-lived root Compose stack **and** EnsureBox unless you are deliberately running two different guests.
+- **EnsureBox ≠ Compose guest.** Path 2’s demo orchestrator starts **its own** containers from `BUWIZ_COMPUTER_IMAGE=buwiz-computer:local`. You do not need both a long-lived root Compose stack **and** EnsureBox unless you are deliberately running two different guests.
 - **Provider confusion.** Compute = `linode/linode` + `LINODE_TOKEN`. Not Vultr. Not `akamai/akamai`.
 
 ---

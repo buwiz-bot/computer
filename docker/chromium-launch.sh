@@ -46,11 +46,11 @@ mkdir -p "${profile}/policies/managed" \
   "${profile}/Default" \
   "${HOME:-/home/box}/.config/chromium/policies/managed" \
   2>/dev/null || echo "warning: could not mkdir chrome profile paths" >&2
-if [[ -f /etc/chromium/policies/managed/grok-box.json ]]; then
-  cp -f /etc/chromium/policies/managed/grok-box.json \
-    "${profile}/policies/managed/grok-box.json" 2>/dev/null || true
-  cp -f /etc/chromium/policies/managed/grok-box.json \
-    "${HOME:-/home/box}/.config/chromium/policies/managed/grok-box.json" 2>/dev/null || true
+if [[ -f /etc/chromium/policies/managed/buwiz-computer.json ]]; then
+  cp -f /etc/chromium/policies/managed/buwiz-computer.json \
+    "${profile}/policies/managed/buwiz-computer.json" 2>/dev/null || true
+  cp -f /etc/chromium/policies/managed/buwiz-computer.json \
+    "${HOME:-/home/box}/.config/chromium/policies/managed/buwiz-computer.json" 2>/dev/null || true
 fi
 
 seed_chromium_profile() {
@@ -224,8 +224,8 @@ for arg in "$@"; do
 done
 
 # Never about:blank. --test-type cannot load chrome://newtab/.
-if [[ "${has_url}" -eq 0 && -f /usr/share/grok-box/newtab.html ]]; then
-  filtered+=("file:///usr/share/grok-box/newtab.html")
+if [[ "${has_url}" -eq 0 && -f /usr/share/buwiz-computer/newtab.html ]]; then
+  filtered+=("file:///usr/share/buwiz-computer/newtab.html")
 fi
 
 exec "${bin}" \

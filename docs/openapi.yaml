@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
-  title: grok-box
+  title: buwiz-computer
   description: |
-    Guest HTTP wire for grok-box. Two processes share this document:
+    Guest HTTP wire for buwiz-computer. Two processes share this document:
     box-exec (port 1337: exec, files, CUA) and box-host (port 1340: identity,
     readiness, desktop/chrome/egress status). Neither service performs model inference.
     CUA coordinate space is the X framebuffer 1280x800, origin top-left.
@@ -1112,7 +1112,7 @@ paths:
       summary: Run many CUA steps in one request
       description: |
         Lint the whole plan, then actuate sequentially against DISPLAY=:1.
-        This is grok-box's recipe layer (one tool call, many pointer ops).
+        This is buwiz-computer's recipe layer (one tool call, many pointer ops).
         It is not a reverse-web-mcp compiler: the caller already wrote the steps.
       security: [{ bearer: [] }]
       requestBody:

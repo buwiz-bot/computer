@@ -1,4 +1,4 @@
-# grok-box API contract
+# buwiz-computer API contract
 
 Base URLs (Compose defaults — **your** published URLs, not `/v1/info`):
 

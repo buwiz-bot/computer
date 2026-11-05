@@ -1,7 +1,7 @@
 # Review status (for follow-up agents)
 
 **Branch:** `main`  
-**Baseline merge:** [PR #7](https://github.com/hexuria/box/pull/7) — BOX-REVIEW P0 → P1 (selective P2)  
+**Baseline merge:** [PR #7](https://github.com/buwiz-bot/computer/pull/7) — BOX-REVIEW P0 → P1 (selective P2)  
 **Merged:** 2026-09-14 (commit includes merge of `gol/box-review-p0-p1-cff5`)
 
 Prior analysis-only review: conversation artifact `BOX-REVIEW.md` (keep/cut/add). Implementation tracked in PR #7 body + `docs/CHANGELOG.md` if present.

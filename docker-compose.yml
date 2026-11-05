@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    image: grok-box:local
+    image: buwiz-computer:local
     # Hardening is not a kernel sandbox. Unprivileged uid 1000 + Chromium
     # --no-sandbox. These limits reduce blast radius; they do not isolate the
     # guest from the host kernel.

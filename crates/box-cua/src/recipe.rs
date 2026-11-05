@@ -1,7 +1,7 @@
 //! One-call CUA recipes.
 //!
 //! reverse-web-mcp compiles an app's wants into a DAG and runs it without
-//! another model turn. grok-box is the *screen*, not that compiler: the caller
+//! another model turn. buwiz-computer is the *screen*, not that compiler: the caller
 //! already planned the clicks. This module runs that plan in **one** HTTP
 //! request so the agent does not pay a round trip per `click` / `scroll`.
 //!
@@ -393,7 +393,7 @@ async fn reset_desktop(config: &CuaConfig) -> Result<(), CuaError> {
         .spawn()
         .map_err(|err| {
             CuaError::Tool(format!(
-                "reset_desktop: box-reset-desktop is missing ({err}). Rebuild grok-box:local."
+                "reset_desktop: box-reset-desktop is missing ({err}). Rebuild buwiz-computer:local."
             ))
         })?;
     match tokio::time::timeout(RESET_DESKTOP_TIMEOUT, child.wait_with_output()).await {

@@ -1,10 +1,10 @@
 # Terminology
 
-Names used in this repository. The public product name, the workspace crate, and the CLI binary are all **grok-box**.
+Names used in this repository. The public product name, the workspace crate, and the CLI binary are all **buwiz-computer**.
 
 | Term | Meaning |
 | --- | --- |
-| **grok-box** | Guest image + `box-exec` / `box-host` + CLI + SDKs. Not published to crates.io / npm / PyPI. |
+| **buwiz-computer** | Guest image + `box-exec` / `box-host` + CLI + SDKs. Not published to crates.io / npm / PyPI. |
 | **guest** | The Linux container running this image. Always Linux; Windows/macOS are clients or Docker hosts. |
 | **box-exec** | HTTP daemon on 1337: exec, files, CUA. Our wire — not Cursor `/exec-daemon`. |
 | **box-host** | HTTP daemon on 1340: health, ready, info, desktop, chrome. Our wire — not `sand-host`. |
@@ -21,7 +21,7 @@ Names used in this repository. The public product name, the workspace crate, and
 | **screenshot PNG** | Raw `image/png` body when `Accept: image/png` or `?format=png` |
 | **EnsureBox (L2)** | **Demo** orchestrator: Docker lifecycle + HTTP proxy. Not a supported production control plane. |
 | **L1** | **Demo** human workspace UI. Talks only to EnsureBox `/api/v1`. |
-| **L3** | Informal name for the guest (this image). Prefer “grok-box guest”. |
+| **L3** | Informal name for the guest (this image). Prefer “buwiz-computer guest”. |
 | **L4** | Inference gateway. Not this repository. Do not implement it here. |
 | **noVNC** | Browser viewer on 6080. Password = `BOX_VNC_PASSWORD` (8 chars). Not Bearer-authenticated. Host publish is loopback. |
 | **CDP** | Chromium DevTools on `127.0.0.1:9222` inside the guest. Never publish. |

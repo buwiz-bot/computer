@@ -1,6 +1,6 @@
-//! Process-wide allocator for grok-box guest daemons.
+//! Process-wide allocator for buwiz-computer guest daemons.
 //!
-//! grok-box does **not** pick one allocator for every lifetime:
+//! buwiz-computer does **not** pick one allocator for every lifetime:
 //!
 //! - **Global / multi-thread / mixed size** (`box-exec`, `box-host`):
 //!   [mimalloc](https://github.com/microsoft/mimalloc) via `#[global_allocator]`.

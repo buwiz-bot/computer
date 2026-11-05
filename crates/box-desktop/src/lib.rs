@@ -1,4 +1,4 @@
-//! Virtual desktop — config and display probe for grok-box.
+//! Virtual desktop — config and display probe for buwiz-computer.
 //!
 //! The X stack (Xvfb, openbox, x11vnc, noVNC) is started by the container
 //! entrypoint. This crate is a library used by `box-host` to advertise

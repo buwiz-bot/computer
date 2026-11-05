@@ -1,5 +1,5 @@
 {
-  "name": "dev.opengrok.active_tab",
+  "name": "app.buwiz.active_tab",
   "description": "Records the page in front for box-host",
   "path": "/usr/local/bin/box-active-tab",
   "type": "stdio",

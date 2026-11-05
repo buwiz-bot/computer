@@ -1,15 +1,15 @@
-# grok-box Python SDK (workspace only)
+# buwiz-computer Python SDK (workspace only)
 
 Connect-only client. Not published to PyPI.
 
 ```python
 import os
-from grok_box import GrokBox
+from buwiz_computer import BuwizComputer
 
-box = GrokBox.connect(
+box = BuwizComputer.connect(
     "http://127.0.0.1:1337",
     "http://127.0.0.1:1340",
-    os.environ["GROK_BOX_TOKEN"],
+    os.environ["BUWIZ_COMPUTER_TOKEN"],
 )
 box.exec(command=["echo", "ok"])
 png = box.screenshot_png()

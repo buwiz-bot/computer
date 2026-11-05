@@ -105,7 +105,7 @@ DISPLAY=:99 cargo bench -p box-cua --features mimalloc --bench hotpath -- --meas
 
 No mimalloc first-class heap in product code: the `mimalloc` crate is `GlobalAlloc` only; screenshot RGB reuse is the arena-like layer. bumpalo still does not land in the guest.
 
-## In-guest HTTP (grok-box:local)
+## In-guest HTTP (buwiz-computer:local)
 
 Same host, 40 samples after 8 warmups. Old guest `BOX_ID=cua-xtest-perf` (glibc, 31337) vs rebuilt image `BOX_ID=cua-mimalloc-perf` (mimalloc, 32337). Logs on the new box: `allocator="mimalloc"`, `cua xtest connected display=":1"`, pointer warmup **5 ms**. Chromium not auto-started.
 
@@ -117,4 +117,4 @@ Same host, 40 samples after 8 warmups. Old guest `BOX_ID=cua-xtest-perf` (glibc,
 | `POST /v1/cua/click` | **14.09 ms** | **14.01 ms** | 12 ms `CLICK_GAP` |
 | `POST /v1/exec` `echo ok` | **0.90 ms** | **0.84 ms** | |
 
-Product HTTP is a wash (reuse + XTEST already dominate). Mimalloc still stays default-on for fragmentation, threads, and the churn/GetImage criterion wins. Existing containers keep the previous image until recreated from `grok-box:local`.
+Product HTTP is a wash (reuse + XTEST already dominate). Mimalloc still stays default-on for fragmentation, threads, and the churn/GetImage criterion wins. Existing containers keep the previous image until recreated from `buwiz-computer:local`.

@@ -7,7 +7,7 @@
 // so a password is typed only into a password box. Only the `tabs` permission and that kind:
 // nothing of the page, its cookies or its storage. An open native port also keeps this service
 // worker alive.
-const HOST = "dev.opengrok.active_tab";
+const HOST = "app.buwiz.active_tab";
 let port = null;
 // Each tab's focused box, as its page last said; a tab that has not said is unknown.
 const focusByTab = new Map();

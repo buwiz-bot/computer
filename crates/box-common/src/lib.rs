@@ -1,4 +1,4 @@
-//! Shared primitives for grok-box daemons.
+//! Shared primitives for buwiz-computer daemons.
 //!
 //! This crate is the only place path jail and bearer-token comparison live so
 //! `box-exec` and `box-host` cannot drift.

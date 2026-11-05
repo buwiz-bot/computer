@@ -213,7 +213,7 @@ pub async fn start_cook_recorder(
         .spawn()
         .map_err(|err| {
             CuaError::Tool(format!(
-                "ffmpeg could not start cook recording ({err}). Rebuild grok-box:local with ffmpeg."
+                "ffmpeg could not start cook recording ({err}). Rebuild buwiz-computer:local with ffmpeg."
             ))
         })?;
 

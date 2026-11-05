@@ -8,7 +8,7 @@ members = [
     "crates/box-chrome",
     "crates/box-cua",
     "crates/box-egress-tunnel",
-    "crates/grok-box",
+    "crates/buwiz-computer",
 ]
 
 [workspace.package]
@@ -16,8 +16,8 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 authors = ["Uriah"]
-description = "Sandboxed Linux computer for agents (grok-box guest image, CLI, and SDKs)"
-repository = "https://github.com/hexuria/box"
+description = "Sandboxed Linux computer for agents (buwiz-computer guest image, CLI, and SDKs)"
+repository = "https://github.com/buwiz-bot/computer"
 rust-version = "1.85"
 
 [workspace.dependencies]

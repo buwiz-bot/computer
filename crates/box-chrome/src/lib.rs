@@ -1,4 +1,4 @@
-//! Chromium launch metadata for the Linux Grok Box image.
+//! Chromium launch metadata for the Linux Buwiz computer image.
 //!
 //! Chrome (or Chromium) is started by `docker/entrypoint.sh` on `DISPLAY=:1`.
 //! The profile lives at `/home/box/chrome-profile` (compose volume). Optional

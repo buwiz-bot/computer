@@ -1,6 +1,6 @@
 # Architecture
 
-**grok-box** is the guest: a Linux image, two HTTP daemons, a CLI, and connect-only SDKs. Callers start the container themselves, then pass **exec URL + host URL + token** into the client.
+**buwiz-computer** is the guest: a Linux image, two HTTP daemons, a CLI, and connect-only SDKs. Callers start the container themselves, then pass **exec URL + host URL + token** into the client.
 
 [`ensurebox/`](../ensurebox/) and [`l1/`](../l1/) are **demos**. EnsureBox is not a supported production control plane.
 
@@ -9,9 +9,9 @@
 ```
 Your orchestrator (or the EnsureBox demo)
     │  starts guest, remembers published URLs + BOX_TOKEN
-    │  grok-box.connect(execUrl, hostUrl, token)
+    │  buwiz-computer.connect(execUrl, hostUrl, token)
     ▼
-grok-box guest (this image)
+buwiz-computer guest (this image)
     ├── box-host :1340   identity, capabilities, ready, desktop/chrome/egress
     ├── box-exec :1337   exec + files + /v1/cua/*
     ├── box-egress-tunnel :8790  optional laptop CONNECT mux (proxy 127.0.0.1:8791)
@@ -30,7 +30,7 @@ Demo-only path (not required to use the product):
  EnsureBox demo  (./ensurebox)  — sample lifecycle + HTTP proxy
     │  Bearer BOX_TOKEN (never sent to L1)
     ▼
- grok-box guest
+ buwiz-computer guest
 ```
 
 L1 never SSHes, never holds `BOX_TOKEN`, and never talks to `box-exec` / `box-host`.
@@ -41,7 +41,7 @@ Full list: [TERMINOLOGY.md](TERMINOLOGY.md).
 
 | Term | Meaning |
 | --- | --- |
-| **grok-box** | Public product name, workspace crate, and CLI binary |
+| **buwiz-computer** | Public product name, workspace crate, and CLI binary |
 | **box-exec** | In-box HTTP daemon: commands, files, CUA |
 | **box-host** | In-box identity / readiness / desktop+chrome status. Does **not** run models |
 | **CUA** | Computer Use against the X framebuffer **1280×800**, origin top-left |
@@ -153,13 +153,13 @@ CUA is first-party in this image:
 - Verbs: screenshot, click, double-click, move (hover), drag, type, key, scroll, **recipe** (many of those in one HTTP call — [RECIPES.md](RECIPES.md))
 - Endpoints live on `box-exec` and share `BOX_TOKEN`
 
-**trycua** is not vendored and is not on the guest path. Windows/macOS remain clients or Docker hosts, not a native grok-box OS.
+**trycua** is not vendored and is not on the guest path. Windows/macOS remain clients or Docker hosts, not a native buwiz-computer OS.
 
 ## Clients
 
 Workspace-only (do not publish):
 
-1. **Rust** `grok-box` — `GrokBox::connect(exec_url, host_url, token)` plus CLI
+1. **Rust** `buwiz-computer` — `BuwizComputer::connect(exec_url, host_url, token)` plus CLI
 2. **TypeScript** `sdk/typescript` — same connect
 3. **Python** `sdk/python` — same connect
 

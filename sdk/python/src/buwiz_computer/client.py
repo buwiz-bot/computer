@@ -1,4 +1,4 @@
-"""Connect-only HTTP client for a running grok-box guest."""
+"""Connect-only HTTP client for a running buwiz-computer guest."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from urllib.parse import urlencode
 import httpx
 
 
-class GrokBoxError(Exception):
+class BuwizComputerError(Exception):
     def __init__(self, message: str, status: int, body: Any) -> None:
         super().__init__(message)
         self.status = status
@@ -19,7 +19,7 @@ def _trim_slash(url: str) -> str:
     return url.strip().rstrip("/")
 
 
-class GrokBox:
+class BuwizComputer:
     def __init__(self, exec_url: str, host_url: str, token: str) -> None:
         self.exec_url = _trim_slash(exec_url)
         self.host_url = _trim_slash(host_url)
@@ -27,7 +27,7 @@ class GrokBox:
         self._http = httpx.Client(timeout=120.0)
 
     @classmethod
-    def connect(cls, exec_url: str, host_url: str, token: str) -> GrokBox:
+    def connect(cls, exec_url: str, host_url: str, token: str) -> BuwizComputer:
         if not exec_url or not host_url or not token:
             raise ValueError("exec_url, host_url, and token are required")
         return cls(exec_url, host_url, token)
@@ -35,7 +35,7 @@ class GrokBox:
     def close(self) -> None:
         self._http.close()
 
-    def __enter__(self) -> GrokBox:
+    def __enter__(self) -> BuwizComputer:
         return self
 
     def __exit__(self, *args: object) -> None:
@@ -132,7 +132,7 @@ class GrokBox:
             },
         )
         if response.status_code >= 400:
-            raise GrokBoxError(
+            raise BuwizComputerError(
                 f"raw GET returned {response.status_code}",
                 response.status_code,
                 self._body(response),
@@ -186,7 +186,7 @@ class GrokBox:
             json=body,
         )
         if response.status_code >= 400:
-            raise GrokBoxError(
+            raise BuwizComputerError(
                 f"exec stream returned {response.status_code}",
                 response.status_code,
                 self._body(response),
@@ -211,7 +211,7 @@ class GrokBox:
                 body = response.json()
             except Exception:
                 body = {"raw": response.text}
-            raise GrokBoxError(
+            raise BuwizComputerError(
                 f"screenshot PNG returned {response.status_code}",
                 response.status_code,
                 body,
@@ -308,5 +308,5 @@ class GrokBox:
         except Exception:
             body = {"raw": response.text}
         if response.status_code >= 400:
-            raise GrokBoxError(f"{url} returned {response.status_code}", response.status_code, body)
+            raise BuwizComputerError(f"{url} returned {response.status_code}", response.status_code, body)
         return body

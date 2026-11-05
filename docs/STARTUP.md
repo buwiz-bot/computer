@@ -1,6 +1,6 @@
 # Startup
 
-How to bring grok-box up and talk to it. The product is the guest image plus HTTP, CLI, and SDKs. EnsureBox and L1 are optional demos.
+How to bring buwiz-computer up and talk to it. The product is the guest image plus HTTP, CLI, and SDKs. EnsureBox and L1 are optional demos.
 
 ## 1. Guest (required)
 
@@ -43,20 +43,20 @@ See [API.md](API.md) for files and CUA.
 ### CLI
 
 ```bash
-cargo run -p grok-box -- \
+cargo run -p buwiz-computer -- \
   --exec-url http://127.0.0.1:1337 \
   --host-url http://127.0.0.1:1340 \
   --token "$BOX_TOKEN" \
   ready
 
-cargo run -p grok-box -- \
+cargo run -p buwiz-computer -- \
   --exec-url http://127.0.0.1:1337 \
   --host-url http://127.0.0.1:1340 \
   --token "$BOX_TOKEN" \
   exec -- echo ok
 ```
 
-Environment aliases: `GROK_BOX_EXEC_URL`, `GROK_BOX_HOST_URL`, `GROK_BOX_TOKEN`.
+Environment aliases: `BUWIZ_COMPUTER_EXEC_URL`, `BUWIZ_COMPUTER_HOST_URL`, `BUWIZ_COMPUTER_TOKEN`.
 
 ### SDKs
 
@@ -65,12 +65,12 @@ Connect-only. Your process already knows the URLs (Compose published ports, or w
 TypeScript (workspace package `sdk/typescript`):
 
 ```ts
-import { GrokBox } from "grok-box";
+import { BuwizComputer } from "buwiz-computer";
 
-const box = GrokBox.connect(
+const box = BuwizComputer.connect(
   "http://127.0.0.1:1337",
   "http://127.0.0.1:1340",
-  process.env.GROK_BOX_TOKEN!,
+  process.env.BUWIZ_COMPUTER_TOKEN!,
 );
 await box.exec({ command: ["echo", "ok"] });
 ```
@@ -79,23 +79,23 @@ Python (`sdk/python`):
 
 ```python
 import os
-from grok_box import GrokBox
+from buwiz_computer import BuwizComputer
 
-box = GrokBox.connect(
+box = BuwizComputer.connect(
     "http://127.0.0.1:1337",
     "http://127.0.0.1:1340",
-    os.environ["GROK_BOX_TOKEN"],
+    os.environ["BUWIZ_COMPUTER_TOKEN"],
 )
 box.exec(command=["echo", "ok"])
 ```
 
-Rust (`crates/grok-box`):
+Rust (`crates/buwiz-computer`):
 
 ```rust
-let box_client = grok_box::GrokBox::connect(
+let box_client = buwiz_computer::BuwizComputer::connect(
     "http://127.0.0.1:1337",
     "http://127.0.0.1:1340",
-    std::env::var("GROK_BOX_TOKEN").unwrap(),
+    std::env::var("BUWIZ_COMPUTER_TOKEN").unwrap(),
 );
 ```
 
@@ -122,7 +122,7 @@ npm install
 npm run dev
 ```
 
-Needs a built `grok-box:local` image (`docker compose build` from the repo root). It `docker run`s guests, stores `BOX_TOKEN`, and proxies tools. The operator UI is login-gated and shows ports/volumes/lifecycle only — no Screenshot or Shell tab. Docker is invoked as the current user (no sudo fallback).
+Needs a built `buwiz-computer:local` image (`docker compose build` from the repo root). It `docker run`s guests, stores `BOX_TOKEN`, and proxies tools. The operator UI is login-gated and shows ports/volumes/lifecycle only — no Screenshot or Shell tab. Docker is invoked as the current user (no sudo fallback).
 
 **L1** (demo human workspace) on **43141**:
 
@@ -141,7 +141,7 @@ L1 uses `L1_TOKEN` for the human session and `ENSUREBOX_TOKEN` only on the serve
 2. Inject `BOX_TOKEN`, `BOX_VNC_PASSWORD`, `BOX_ID`, desktop/chrome/CUA env as needed.
 3. Publish 1337, 1340, 6080 on **127.0.0.1** (or a tunnel). Never 5900/9222/8791. Optional `8790` when `BOX_EGRESS_TUNNEL=1` ([EGRESS.md](EGRESS.md)).
 4. Poll `GET {hostUrl}/v1/ready` with Bearer until 200.
-5. `GrokBox.connect(execUrl, hostUrl, token)` — the URLs **you** published, not `/v1/info`.
+5. `BuwizComputer.connect(execUrl, hostUrl, token)` — the URLs **you** published, not `/v1/info`.
 
 ## Smoke
 

@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn prefers_https_cdp_url() {
-        let body = r#"[{"url":"file:///usr/share/grok-box/newtab.html","title":"New Tab"},{"url":"https://www.facebook.com/login/","title":"Facebook"}]"#;
+        let body = r#"[{"url":"file:///usr/share/buwiz-computer/newtab.html","title":"New Tab"},{"url":"https://www.facebook.com/login/","title":"Facebook"}]"#;
         assert_eq!(
             parse_cdp_page_url(body).as_deref(),
             Some("https://www.facebook.com/login/")

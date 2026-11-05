@@ -1,10 +1,10 @@
 [package]
-name = "grok-box"
+name = "buwiz-computer"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Connect-only HTTP client and CLI for a grok-box guest"
+description = "Connect-only HTTP client and CLI for a buwiz-computer guest"
 repository.workspace = true
 rust-version.workspace = true
 publish = false
@@ -24,5 +24,5 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [[bin]]
-name = "grok-box"
+name = "buwiz-computer"
 path = "src/main.rs"

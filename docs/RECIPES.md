@@ -1,8 +1,8 @@
 # Recipes (one call, many CUA steps)
 
-This is grok-box’s custom take on [reverse-web-mcp](https://github.com/hexuria/reverse-web-mcp): **pay the model once to write a plan, then execute that plan as one guest request.**
+This is buwiz-computer’s custom take on [reverse-web-mcp](https://github.com/hexuria/reverse-web-mcp): **pay the model once to write a plan, then execute that plan as one guest request.**
 
-It is **not** a fork of `rwmcp`. grok-box is the Linux **screen** (Xvfb + XTEST). reverse-web-mcp is a **compiler** for apps that publish a world model (`x-reverse-webmcp` on OpenAPI). Different layer, same idea: stop doing click → screenshot → click as N tool calls.
+It is **not** a fork of `rwmcp`. buwiz-computer is the Linux **screen** (Xvfb + XTEST). reverse-web-mcp is a **compiler** for apps that publish a world model (`x-reverse-webmcp` on OpenAPI). Different layer, same idea: stop doing click → screenshot → click as N tool calls.
 
 ## What reverse-web-mcp does
 
@@ -14,7 +14,7 @@ It is **not** a fork of `rwmcp`. grok-box is the Linux **screen** (Xvfb + XTEST)
 
 The measured win vs a WebMCP/MCP loop is model calls and tokens, not pixels.
 
-## What grok-box CUA already was
+## What buwiz-computer CUA already was
 
 Each verb is its own HTTP round trip:
 
@@ -24,7 +24,7 @@ That is the “agent does click/scroll on multiple requests” path. Fine when t
 
 There was **no** preceding batch/recipe endpoint on this guest. Single-op CUA (including press / release / double-click / drag / move) is still there.
 
-## What grok-box recipes are
+## What buwiz-computer recipes are
 
 `POST /v1/cua/recipe` — one Bearer call, many sequential pointer steps, one **receipt**.
 
@@ -122,14 +122,14 @@ No process is forked for either mode. This deliberately does not go through `wmc
 CLI:
 
 ```bash
-cargo run -p grok-box -- cua recipe --file plan.json
+cargo run -p buwiz-computer -- cua recipe --file plan.json
 ```
 
 SDKs: `client.recipe({ steps: [...] })`. EnsureBox demo proxy: `POST /api/v1/boxes/:id/cua/recipe`.
 
 ## Honest comparison
 
-| | reverse-web-mcp | grok-box single CUA | grok-box recipe |
+| | reverse-web-mcp | buwiz-computer single CUA | buwiz-computer recipe |
 | --- | --- | --- | --- |
 | Who writes the plan | Compiler from wants + world model | The model, every turn | The caller (usually the model, once) |
 | Model in the loop | Median 1, then 0 on `--recipe` | Every click | Not during this HTTP call |
@@ -148,7 +148,7 @@ If the agent must look at the framebuffer after every click, keep single-op CUA 
 ## What this is not (yet)
 
 - Not a world-model compiler. The guest does not parse wants like `invoice(customer=…).status='sent'`.
-- Not WebMCP. Chromium in the guest may load a site that speaks WebMCP; grok-box does not broker those tools yet.
+- Not WebMCP. Chromium in the guest may load a site that speaks WebMCP; buwiz-computer does not broker those tools yet.
 - Not mixed exec/files + CUA in one document. Exec and files stay their own routes. A later `/v1/recipe` could mix them; CUA stays sequential even then.
 
 The product stay: you start the guest, `connect(execUrl, hostUrl, token)`, send a recipe.

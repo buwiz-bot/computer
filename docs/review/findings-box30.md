@@ -213,7 +213,7 @@ An `io::Error` here returns from `handle_proxy` without ever calling `drop_strea
 
 **What's wrong:** Both subcommands accept the secret as `--bearer <VALUE>` and via `env = "BOX_EGRESS_TUNNEL_BEARER"`. Clap's `hide_env_values` defaults to false, so `--help` renders `[env: BOX_EGRESS_TUNNEL_BEARER=<the actual value>]` when the variable is set.
 
-**Why it matters / how it fails:** `box-egress-tunnel client --bearer s3cr3t...` puts the token in `/proc/<pid>/cmdline`, readable by every process of that uid — on the *operator's laptop*, where other user processes are far less constrained than in the box. And on the guest side, `BOX_EGRESS_TUNNEL_BEARER=... box-egress-tunnel server --help` prints the secret to stdout/logs. The entrypoint avoids both (it uses `--bearer-file` with a staged copy), so this is about the documented manual/OpenGrok-spawn path.
+**Why it matters / how it fails:** `box-egress-tunnel client --bearer s3cr3t...` puts the token in `/proc/<pid>/cmdline`, readable by every process of that uid — on the *operator's laptop*, where other user processes are far less constrained than in the box. And on the guest side, `BOX_EGRESS_TUNNEL_BEARER=... box-egress-tunnel server --help` prints the secret to stdout/logs. The entrypoint avoids both (it uses `--bearer-file` with a staged copy), so this is about the documented manual/Bot-spawn path.
 
 **Suggested fix:** `.hide_env_values(true)` on both bearer args; consider removing the `--bearer` value flag entirely (file or env only) and noting the `ps` exposure in `docs/EGRESS.md`'s flag table, which currently only says "Avoid; prefer file".
 
@@ -363,7 +363,7 @@ An `io::Error` here returns from `handle_proxy` without ever calling `drop_strea
 
 ## [SEVERITY: low] [CONFIDENCE: high] README diff introduces two duplicated table rows
 
-**Where:** `README.md:16-17` (`CLI grok-box` row duplicated) and `README.md:173-174` (`BOX_MAX_CONCURRENT_EXECS` row duplicated)
+**Where:** `README.md:16-17` (`CLI buwiz-computer` row duplicated) and `README.md:173-174` (`BOX_MAX_CONCURRENT_EXECS` row duplicated)
 
 **What's wrong:** Both rows now appear twice verbatim in the rendered tables.
 

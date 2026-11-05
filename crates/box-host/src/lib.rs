@@ -1,4 +1,4 @@
-//! Thin host gateway for grok-box (`box-host`).
+//! Thin host gateway for buwiz-computer (`box-host`).
 //!
 //! This process does **not** run inference. It advertises box identity,
 //! capabilities (exec, files, desktop, chrome, cua, egress_tunnel), and readiness of

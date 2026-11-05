@@ -227,7 +227,7 @@ fn default_box_id() -> String {
         .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
         .ok()
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "grok-box".to_string())
+        .unwrap_or_else(|| "buwiz-computer".to_string())
 }
 
 fn parse_addr(var: &str, default: &str) -> SocketAddr {

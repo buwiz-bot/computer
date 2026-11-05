@@ -48,7 +48,7 @@ chmod u+rwx workspace-data chrome-profile 2>/dev/null || true
 # environment, so they have to exist before anything is started.
 bash "${ROOT}/scripts/write-secrets.sh"
 
-echo "==> building and starting grok-box"
+echo "==> building and starting buwiz-computer"
 "${COMPOSE[@]}" up --build -d
 
 cleanup() {
@@ -250,7 +250,7 @@ echo "${click}"
 echo "${click}" | grep -q '"ok":true'
 
 echo "==> POST /v1/cua/screenshot?format=png"
-png_code="$(curl -sS -o /tmp/grok-box-smoke.png -w '%{http_code}' \
+png_code="$(curl -sS -o /tmp/buwiz-computer-smoke.png -w '%{http_code}' \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Accept: image/png" \
   -X POST \
@@ -259,7 +259,7 @@ if [[ "${png_code}" != "200" ]]; then
   echo "raw PNG screenshot expected 200, got ${png_code}" >&2
   exit 1
 fi
-head -c 8 /tmp/grok-box-smoke.png | grep -q $'\x89PNG' || {
+head -c 8 /tmp/buwiz-computer-smoke.png | grep -q $'\x89PNG' || {
   echo "raw screenshot was not a PNG" >&2
   exit 1
 }

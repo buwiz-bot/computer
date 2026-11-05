@@ -1,6 +1,6 @@
-# grok-box
+# buwiz-computer
 
-A sandboxed Linux computer for agents: a guest Docker image, two HTTP daemons (`box-exec` and `box-host`), a `grok-box` CLI, and connect-only SDKs (Rust, TypeScript, Python).
+A sandboxed Linux computer for agents: a guest Docker image, two HTTP daemons (`box-exec` and `box-host`), a `buwiz-computer` CLI, and connect-only SDKs (Rust, TypeScript, Python).
 
 You start the guest. Then you talk to it over HTTP with a URL pair and a bearer token. This repo does **not** publish packages to crates.io, npm, or PyPI.
 
@@ -10,11 +10,11 @@ License: **MIT**. MSRV: Rust **1.85**.
 
 | Piece | Role |
 | --- | --- |
-| Guest image `grok-box` | Linux box: shell, files, 1280×800 X desktop, Chromium, Computer Use |
+| Guest image `buwiz-computer` | Linux box: shell, files, 1280×800 X desktop, Chromium, Computer Use |
 | `box-exec` `:1337` | Exec, files (GET/PUT/DELETE/mkdir), CUA |
 | `box-host` `:1340` | Health, ready, identity, desktop/chrome/egress status |
-| CLI `grok-box` | Same surface as the SDKs |
-| CLI `grok-box` | Same surface as the SDKs |
+| CLI `buwiz-computer` | Same surface as the SDKs |
+| CLI `buwiz-computer` | Same surface as the SDKs |
 | SDKs | Connect with `(execUrl, hostUrl, token)` — no `docker run` helper |
 | [`ensurebox/`](ensurebox/) | **Frozen demo / non-product** — sample orchestrator / operator UI (not a supported control plane) |
 | [`l1/`](l1/) | **Frozen demo / non-product** — sample human workspace UI (talks only to EnsureBox) |
@@ -79,7 +79,7 @@ Desktop viewer: [http://127.0.0.1:6080/vnc.html](http://127.0.0.1:6080/vnc.html)
 After the guest is up, any orchestrator (yours, or the EnsureBox demo) already has an exec URL, host URL, and token. Point the client at those. The SDKs **do not** start Docker and **ignore** `/v1/info` advertised URLs (those are container-local listen addresses).
 
 ```bash
-cargo run -p grok-box -- \
+cargo run -p buwiz-computer -- \
   --exec-url http://127.0.0.1:1337 \
   --host-url http://127.0.0.1:1340 \
   --token "$BOX_TOKEN" \
@@ -88,7 +88,7 @@ cargo run -p grok-box -- \
 
 Workspace packages (not published):
 
-- Rust: `crates/grok-box` (library + `grok-box` binary)
+- Rust: `crates/buwiz-computer` (library + `buwiz-computer` binary)
 - TypeScript: `sdk/typescript`
 - Python: `sdk/python`
 
@@ -145,7 +145,7 @@ Compose also sets `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, `
 | `BOX_HOST_TOKEN` | same as `BOX_TOKEN` | Optional split token for host info/desktop/chrome |
 | `BOX_HOST_TOKEN_FILE` | unset | Path to a file holding `BOX_HOST_TOKEN` |
 | `BOX_ALLOW_INSECURE_DEV` | unset | `1` allows short/well-known tokens **only** when both daemon binds are loopback |
-| `BOX_ID` | hostname / `grok-box` | Reported by `/v1/info` |
+| `BOX_ID` | hostname / `buwiz-computer` | Reported by `/v1/info` |
 | `WORKSPACE_ROOT` | `/workspace` | Jail root for cwd and file APIs |
 | `BOX_EXEC_BIND` | `0.0.0.0:1337` in image; `127.0.0.1:1337` native | Exec listen address |
 | `BOX_HOST_BIND` | `0.0.0.0:1340` in image; `127.0.0.1:1340` native | Host listen address |
@@ -205,7 +205,7 @@ crates/box-desktop   Xvfb probe, 1280×800 geometry, viewer URL
 crates/box-chrome    Chromium profile + localhost CDP probe
 crates/box-cua       screenshot / click / type / key / scroll / double-click / drag / move / recipe
 crates/box-egress-tunnel  guest WS mux + Chromium CONNECT proxy (laptop client is the same binary)
-crates/grok-box      typed client + CLI (workspace only, not published)
+crates/buwiz-computer      typed client + CLI (workspace only, not published)
 sdk/typescript       TypeScript client (workspace only)
 sdk/python           Python client (workspace only)
 ensurebox/           demo orchestrator (not production)

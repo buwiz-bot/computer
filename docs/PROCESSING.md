@@ -1,6 +1,6 @@
 # Request processing
 
-How a call moves through grok-box. Inference is out of scope (not this repo).
+How a call moves through buwiz-computer. Inference is out of scope (not this repo).
 
 ## Connect
 
@@ -10,7 +10,7 @@ The caller already has three values from **their** orchestrator:
 2. `hostUrl` — published `box-host` base
 3. `token` — the `BOX_TOKEN` they injected at container start
 
-`GrokBox.connect(execUrl, hostUrl, token)` stores those. It does not start Docker. It does not replace them with `/v1/info.endpoints`.
+`BuwizComputer.connect(execUrl, hostUrl, token)` stores those. It does not start Docker. It does not replace them with `/v1/info.endpoints`.
 
 ## Unauthenticated probes
 
@@ -110,4 +110,4 @@ Default `screenshot` is `end` (one PNG on the receipt, and a file when `artifact
 
 ## Demo proxy (EnsureBox)
 
-When the EnsureBox demo is running, a signed-in L1 user sends requests to `http://127.0.0.1:43142/api/v1/boxes/:id/...`. The L1 **server** attaches `ENSUREBOX_TOKEN`. The browser never receives that token or `BOX_TOKEN`. EnsureBox looks up the guest token and calls the TypeScript `grok-box` SDK with the **published** host ports. Public box JSON omits VNC passwords and guest bind URLs.
+When the EnsureBox demo is running, a signed-in L1 user sends requests to `http://127.0.0.1:43142/api/v1/boxes/:id/...`. The L1 **server** attaches `ENSUREBOX_TOKEN`. The browser never receives that token or `BOX_TOKEN`. EnsureBox looks up the guest token and calls the TypeScript `buwiz-computer` SDK with the **published** host ports. Public box JSON omits VNC passwords and guest bind URLs.

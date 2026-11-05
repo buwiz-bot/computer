@@ -106,8 +106,8 @@ kill_gui
 # Dock launchers refuse a second spawn while a lock dir exists.
 rm -rf /tmp/box-toggle-*.lock >/dev/null 2>&1 || true
 
-if [[ -f /usr/share/pixmaps/grok-box-wallpaper.png ]] && command -v feh >/dev/null 2>&1; then
-  feh --no-fehbg --bg-fill /usr/share/pixmaps/grok-box-wallpaper.png >/tmp/wallpaper.log 2>&1 || true
+if [[ -f /usr/share/pixmaps/buwiz-computer-wallpaper.png ]] && command -v feh >/dev/null 2>&1; then
+  feh --no-fehbg --bg-fill /usr/share/pixmaps/buwiz-computer-wallpaper.png >/tmp/wallpaper.log 2>&1 || true
 elif command -v xsetroot >/dev/null 2>&1; then
   xsetroot -solid "#3d6d99" >/dev/null 2>&1 || true
 fi

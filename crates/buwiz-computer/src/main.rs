@@ -3,24 +3,24 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use grok_box::{ExecRequest, FilePutRequest, GrokBox, MkdirRequest};
+use buwiz_computer::{ExecRequest, FilePutRequest, BuwizComputer, MkdirRequest};
 use serde_json::json;
 
 #[derive(Parser)]
 #[command(
-    name = "grok-box",
+    name = "buwiz-computer",
     version,
-    about = "Connect-only CLI for a running grok-box guest"
+    about = "Connect-only CLI for a running buwiz-computer guest"
 )]
 struct Cli {
     /// Published box-exec base URL (not /v1/info).
-    #[arg(long, env = "GROK_BOX_EXEC_URL")]
+    #[arg(long, env = "BUWIZ_COMPUTER_EXEC_URL")]
     exec_url: String,
     /// Published box-host base URL (not /v1/info).
-    #[arg(long, env = "GROK_BOX_HOST_URL")]
+    #[arg(long, env = "BUWIZ_COMPUTER_HOST_URL")]
     host_url: String,
     /// Guest bearer token (BOX_TOKEN).
-    #[arg(long, env = "GROK_BOX_TOKEN")]
+    #[arg(long, env = "BUWIZ_COMPUTER_TOKEN")]
     token: String,
     #[command(subcommand)]
     command: Commands,
@@ -206,7 +206,7 @@ enum CuaCmd {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let box_client = GrokBox::connect(cli.exec_url, cli.host_url, cli.token)?;
+    let box_client = BuwizComputer::connect(cli.exec_url, cli.host_url, cli.token)?;
     match cli.command {
         Commands::Health => {
             print_json(&json!({

@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "grok-box"
+name = "buwiz-computer"
 version = "0.1.0"
-description = "Connect-only Python client for a grok-box guest. Not published to PyPI."
+description = "Connect-only Python client for a buwiz-computer guest. Not published to PyPI."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"

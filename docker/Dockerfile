@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# grok-box: box-exec + box-host + Xvfb desktop + Chromium + CUA tools.
+# buwiz-computer: box-exec + box-host + Xvfb desktop + Chromium + CUA tools.
 #
 # box-exec / box-host default features compile in mimalloc (needs gcc, already
 # in rust:bookworm). Opt out with cargo --no-default-features.
@@ -60,14 +60,14 @@ COPY --from=builder /src/target/release/box-egress-tunnel /usr/local/bin/box-egr
 # only the `tabs` permission reports it to box-active-tab over native messaging, and
 # box-host serves it at GET /v1/chrome/active-tab. Every Chromium launch loads the extension.
 COPY --from=builder /src/target/release/box-active-tab /usr/local/bin/box-active-tab
-COPY docker/dev.opengrok.active_tab.json /etc/chromium/native-messaging-hosts/dev.opengrok.active_tab.json
+COPY docker/app.buwiz.active_tab.json /etc/chromium/native-messaging-hosts/app.buwiz.active_tab.json
 COPY docker/active-tab /opt/box/active-tab
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY docker/websockify-nodelay.py /usr/local/bin/websockify-nodelay
 COPY docker/box-reset-desktop.sh /usr/local/bin/box-reset-desktop
 COPY docker/box-release-keys /usr/local/bin/box-release-keys
-COPY docker/chromium-policies.json /etc/chromium/policies/managed/grok-box.json
-COPY docker/chromium-policies.json /etc/opt/chrome/policies/managed/grok-box.json
+COPY docker/chromium-policies.json /etc/chromium/policies/managed/buwiz-computer.json
+COPY docker/chromium-policies.json /etc/opt/chrome/policies/managed/buwiz-computer.json
 # The dock's Chromium launcher: same profile as the entrypoint's Chromium, so a
 # click opens a window in the running instance instead of a second browser.
 COPY docker/box-chromium /usr/local/bin/box-chromium
@@ -85,7 +85,7 @@ COPY --chown=box:box docker/xfce/launchers/chromium.desktop /home/box/.config/xf
 COPY --chown=box:box docker/xfce/launchers/files.desktop /home/box/.config/xfce4/panel/launcher-2/files.desktop
 COPY --chown=box:box docker/xfce/launchers/terminal.desktop /home/box/.config/xfce4/panel/launcher-3/terminal.desktop
 # The desktop's wallpaper, named by xfce4-desktop.xml above.
-COPY docker/xfce/wallpaper.png /usr/share/backgrounds/grok-box.png
+COPY docker/xfce/wallpaper.png /usr/share/backgrounds/buwiz-computer.png
 # chromium-launch.sh is intentionally not installed. Entrypoint owns Chromium.
 RUN chmod 755 /usr/local/bin/entrypoint.sh /usr/local/bin/websockify-nodelay /usr/local/bin/box-exec /usr/local/bin/box-host \
         /usr/local/bin/box-egress-tunnel \

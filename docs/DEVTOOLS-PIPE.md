@@ -1,6 +1,6 @@
 # Chromium on a DevTools pipe
 
-`box-chromium-pipe` starts Chromium with `--remote-debugging-pipe`: the browser reads protocol messages from its fd 3 and writes them to fd 4, and the script wires fd 3 to the exec's stdin and fd 4 to its stdout. The server runs it through `docker exec -i` (`opengrok_box::devtools::DevTools::spawn`) and keeps both ends.
+`box-chromium-pipe` starts Chromium with `--remote-debugging-pipe`: the browser reads protocol messages from its fd 3 and writes them to fd 4, and the script wires fd 3 to the exec's stdin and fd 4 to its stdout. The server runs it through `docker exec -i` (`openbuwiz_computer::devtools::DevTools::spawn`) and keeps both ends.
 
 Why a pipe and not the port: the box is one user (`box`, uid 1000), so anything listening on 127.0.0.1 inside it — the entrypoint's `--remote-debugging-port` included — is reachable by the bot's `shell` tool, and the DevTools protocol can read cookies, drive tabs and, while a passkey is loaded, hand out its private key. With the pipe nothing listens and nothing is on disk; when the exec's stdin closes, Chromium exits.
 

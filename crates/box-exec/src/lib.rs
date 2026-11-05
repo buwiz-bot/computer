@@ -1,4 +1,4 @@
-//! HTTP exec daemon for grok-box (`box-exec`).
+//! HTTP exec daemon for buwiz-computer (`box-exec`).
 //!
 //! Shell, workspace files, and Computer Use (CUA) actuators against the
 //! box X display. Inference stays in L4. The process-wide heap is mimalloc

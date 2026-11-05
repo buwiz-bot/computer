@@ -1,4 +1,4 @@
-//! Connect-only HTTP client for a running grok-box guest.
+//! Connect-only HTTP client for a running buwiz-computer guest.
 //!
 //! The caller starts the container and passes the **published** exec URL, host
 //! URL, and bearer token. This crate never runs Docker and never replaces those
@@ -35,19 +35,19 @@ fn trim_slash(url: impl Into<String>) -> String {
     url.trim().trim_end_matches('/').to_string()
 }
 
-/// Typed client. Construct with [`GrokBox::connect`].
+/// Typed client. Construct with [`BuwizComputer::connect`].
 #[derive(Clone, Debug)]
-pub struct GrokBox {
+pub struct BuwizComputer {
     exec_url: String,
     host_url: String,
     token: String,
     http: HttpClient,
     /// The screen the computer-use and page-in-front calls go to: `None` is the box's own;
-    /// `:N` is a Bot's own screen (`box-screen`). See [`GrokBox::on`].
+    /// `:N` is a Bot's own screen (`box-screen`). See [`BuwizComputer::on`].
     display: Option<String>,
 }
 
-impl GrokBox {
+impl BuwizComputer {
     /// Connect to an already-running guest. URLs are used as given.
     pub fn connect(
         exec_url: impl Into<String>,
@@ -568,7 +568,7 @@ impl GrokBox {
 fn next_request_id() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(1);
-    format!("grok-box-{}", SEQ.fetch_add(1, Ordering::Relaxed))
+    format!("buwiz-computer-{}", SEQ.fetch_add(1, Ordering::Relaxed))
 }
 
 fn urlencoding(value: &str) -> String {
@@ -692,11 +692,11 @@ mod tests {
 
     #[test]
     fn connect_requires_all_three() {
-        assert!(GrokBox::connect("", "http://127.0.0.1:1340", "t").is_err());
-        assert!(GrokBox::connect("http://127.0.0.1:1337", "", "t").is_err());
-        assert!(GrokBox::connect("http://127.0.0.1:1337", "http://127.0.0.1:1340", "").is_err());
+        assert!(BuwizComputer::connect("", "http://127.0.0.1:1340", "t").is_err());
+        assert!(BuwizComputer::connect("http://127.0.0.1:1337", "", "t").is_err());
+        assert!(BuwizComputer::connect("http://127.0.0.1:1337", "http://127.0.0.1:1340", "").is_err());
         let box_client =
-            GrokBox::connect("http://127.0.0.1:1337/", "http://127.0.0.1:1340/", "tok").unwrap();
+            BuwizComputer::connect("http://127.0.0.1:1337/", "http://127.0.0.1:1340/", "tok").unwrap();
         assert_eq!(box_client.exec_url(), "http://127.0.0.1:1337");
         assert_eq!(box_client.host_url(), "http://127.0.0.1:1340");
     }
@@ -705,7 +705,7 @@ mod tests {
     #[test]
     fn a_client_on_another_screen_names_it_on_every_screen_call() {
         let shared =
-            GrokBox::connect("http://127.0.0.1:1337", "http://127.0.0.1:1340", "tok").unwrap();
+            BuwizComputer::connect("http://127.0.0.1:1337", "http://127.0.0.1:1340", "tok").unwrap();
         assert_eq!(shared.cua("click"), "http://127.0.0.1:1337/v1/cua/click");
         let own = shared.on(":3");
         assert_eq!(

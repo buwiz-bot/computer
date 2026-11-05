@@ -102,7 +102,7 @@ record() {
 }
 
 shutdown() {
-  echo "grok-box shutting down"
+  echo "buwiz-computer shutting down"
   local pid
   rm -rf "${SECRET_DIR:-}" "${EGRESS_SECRET_DIR:-}" 2>/dev/null || true
   if [[ -f /tmp/box-chrome.pid ]]; then
@@ -353,7 +353,7 @@ start_egress() {
   printf '%s\n' "${BOX_EGRESS_PROXY_PORT}" > /tmp/box-egress-proxy.port
 }
 
-echo "grok-box starting box_id=${BOX_ID:-grok-box} workspace=${WORKSPACE_ROOT} desktop=${BOX_DESKTOP} chrome=${BOX_CHROME} cua=${BOX_CUA} egress=${BOX_EGRESS_TUNNEL}"
+echo "buwiz-computer starting box_id=${BOX_ID:-buwiz-computer} workspace=${WORKSPACE_ROOT} desktop=${BOX_DESKTOP} chrome=${BOX_CHROME} cua=${BOX_CUA} egress=${BOX_EGRESS_TUNNEL}"
 
 if flag_on "${BOX_DESKTOP}"; then
   start_desktop
