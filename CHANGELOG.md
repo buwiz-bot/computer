@@ -10,7 +10,7 @@ Imported from `hexuria/box` at `64f2b13` with its history, as `buwiz-bot/compute
 | voxl 0.3.3 replaces x11vnc, websockify and noVNC: one per screen on `6900+N`, `BOX_VIEWER_PASSWORD` with `_FILE` | `docker/Dockerfile`, `docker/entrypoint.sh`, `docker/box-screen` |
 | `box-keeper` is the one process that reads the secrets, and runs the rest. It, `box-exec`, `box-host`, `box-egress-tunnel` and voxl are undumpable, so an exec child cannot read their memory; `entrypoint.sh` holds no secret. Proved on every smoke by `scripts/memory-probe.py` | `crates/box-host/src/bin/box-keeper.rs`, `docker/` |
 | A voxl that dies restarts after 1 s, doubling to 30 s; the fifo takes only allocated slots | `crates/box-host/src/keeper.rs` |
-| `BOX_VIEWER_PASSWORD` gets the token strength check | `crates/box-common/src/config.rs` |
+| `BOX_VIEWER_PASSWORD` gets the token strength check, with no insecure-dev exemption, before anything starts | `crates/box-common/src/config.rs` |
 | `reset_desktop` on one screen leaves the others alone | `docker/box-reset-desktop.sh` |
 | `/v1/info` `capabilities.viewer: {kind, port, enabled, ready}`; `/v1/desktop` `viewer.kind`, no more `vnc`; `/v1/ready` `viewer_ready` | `crates/box-host`, `crates/box-desktop` |
 | `GET /v1/screens`: every screen's display, viewer port, state and folder | `crates/box-desktop`, `crates/box-host` |

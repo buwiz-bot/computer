@@ -63,7 +63,7 @@ impl BoxConfig {
             validate_token("BOX_HOST_TOKEN", &host_token, exec_bind, host_bind)?;
         }
         if let Some(password) = &viewer_password {
-            validate_token("BOX_VIEWER_PASSWORD", password, exec_bind, host_bind)?;
+            ensure_viewer_password_strength(password)?;
         }
 
         let workspace = PathBuf::from(env::var("WORKSPACE_ROOT").unwrap_or_else(|_| {
@@ -214,6 +214,18 @@ pub fn ensure_token_strength(
     )))
 }
 
+/// The viewer password has no insecure-dev exemption. That exemption rests on the daemons binding
+/// loopback, and voxl always listens on every interface inside the box, so the port map, not the
+/// bind, is all that keeps it off the network.
+pub fn ensure_viewer_password_strength(password: &str) -> Result<(), ConfigError> {
+    if token_is_insecure(password) {
+        return Err(ConfigError(format!(
+            "BOX_VIEWER_PASSWORD is shorter than {MIN_TOKEN_LEN} characters or a well-known value. Set a long random one; BOX_ALLOW_INSECURE_DEV does not cover it."
+        )));
+    }
+    Ok(())
+}
+
 pub fn token_is_insecure(token: &str) -> bool {
     token.is_empty() || token.len() < MIN_TOKEN_LEN || token == DEV_BOX_TOKEN
 }
@@ -307,6 +319,23 @@ mod tests {
             ("BOX_VIEWER_PASSWORD", Some("short")),
             ("BOX_VIEWER_PASSWORD_FILE", None),
             ("BOX_ALLOW_INSECURE_DEV", None),
+        ]);
+        let err = BoxConfig::from_env().unwrap_err();
+        assert!(err.0.contains("BOX_VIEWER_PASSWORD"), "{err}");
+    }
+
+    #[test]
+    fn insecure_dev_does_not_excuse_a_weak_viewer_password() {
+        let (_lock, _guard) = isolate(&[
+            ("BOX_TOKEN", Some("short")),
+            ("BOX_TOKEN_FILE", None),
+            ("BOX_HOST_TOKEN", None),
+            ("BOX_HOST_TOKEN_FILE", None),
+            ("BOX_VIEWER_PASSWORD", Some("short")),
+            ("BOX_VIEWER_PASSWORD_FILE", None),
+            ("BOX_EXEC_BIND", Some("127.0.0.1:1337")),
+            ("BOX_HOST_BIND", Some("127.0.0.1:1340")),
+            ("BOX_ALLOW_INSECURE_DEV", Some("1")),
         ]);
         let err = BoxConfig::from_env().unwrap_err();
         assert!(err.0.contains("BOX_VIEWER_PASSWORD"), "{err}");

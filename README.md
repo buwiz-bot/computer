@@ -142,7 +142,7 @@ Compose also sets `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, `
 | `BOX_DISPLAY_GEOM` | `1280x800x24` | Xvfb geometry; **CUA coordinate space is 1280×800** |
 | `BOX_DESKTOP` | `1` | Start Xvfb + xfce + voxl |
 | `BOX_DESKTOP_REQUIRED` | `1` when desktop on | `/v1/ready` waits for the display |
-| `BOX_VIEWER_PASSWORD` | **required when desktop on** | Viewer password, for every screen; independent of `BOX_TOKEN` |
+| `BOX_VIEWER_PASSWORD` | **required when desktop on** | Viewer password, for every screen; independent of `BOX_TOKEN`. At least 16 characters, with no `BOX_ALLOW_INSECURE_DEV` exemption: voxl listens on every interface inside the box |
 | `BOX_VIEWER_PASSWORD_FILE` | unset | Path to a file holding `BOX_VIEWER_PASSWORD`. Preferred, same reason. |
 | `BOX_CHROME` | `1` | Launch Chromium on `:1` |
 | `BOX_CHROME_PROFILE` | `/home/box/chrome-profile` | Persistent profile (compose volume) |
