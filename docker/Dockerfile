@@ -12,7 +12,8 @@ COPY crates ./crates
 COPY Cargo.lock* ./
 
 RUN cargo build --release -p box-exec -p box-host -p box-egress-tunnel \
-    && strip target/release/box-exec target/release/box-host target/release/box-egress-tunnel target/release/box-active-tab
+    && strip target/release/box-exec target/release/box-host target/release/box-egress-tunnel \
+        target/release/box-keeper target/release/box-active-tab
 
 # voxl serves each screen to a browser: H.264 over a WebSocket, and /wait, /screenshot and
 # /record for the agent. Pinned, because it moves fast: bump it on purpose. It stays a separate
@@ -72,12 +73,15 @@ RUN apt-get update \
     && chmod 1777 /tmp/.X11-unix \
     && chown -R box:box /workspace /home/box
 
-# Execute-only: a process run from a file it cannot read is not dumpable, so nothing else running
-# as this uid can read /proc/<voxl>/environ, which is where voxl's password has to be.
+# Everything that holds a secret is execute-only. A process run from a file it cannot read is not
+# dumpable, so nothing else running as the box user can open its /proc/<pid>/mem or environ, or
+# ptrace it, from its first instruction. voxl has to hold its password in its environment and
+# cannot set this itself; the others also call PR_SET_DUMPABLE.
 COPY --from=voxl-builder --chmod=0111 /opt/voxl/bin/voxl /usr/local/bin/voxl
-COPY --from=builder /src/target/release/box-exec /usr/local/bin/box-exec
-COPY --from=builder /src/target/release/box-host /usr/local/bin/box-host
-COPY --from=builder /src/target/release/box-egress-tunnel /usr/local/bin/box-egress-tunnel
+COPY --from=builder --chmod=0111 /src/target/release/box-keeper /usr/local/bin/box-keeper
+COPY --from=builder --chmod=0111 /src/target/release/box-exec /usr/local/bin/box-exec
+COPY --from=builder --chmod=0111 /src/target/release/box-host /usr/local/bin/box-host
+COPY --from=builder --chmod=0111 /src/target/release/box-egress-tunnel /usr/local/bin/box-egress-tunnel
 # The page in front, for the server's check before it types a saved login: an extension with
 # only the `tabs` permission reports it to box-active-tab over native messaging, and
 # box-host serves it at GET /v1/chrome/active-tab. Every Chromium launch loads the extension.
@@ -107,8 +111,7 @@ COPY --chown=box:box docker/xfce/launchers/terminal.desktop /home/box/.config/xf
 # The desktop's wallpaper, named by xfce4-desktop.xml above.
 COPY docker/xfce/wallpaper.png /usr/share/backgrounds/buwiz-computer.png
 # chromium-launch.sh is intentionally not installed. Entrypoint owns Chromium.
-RUN chmod 755 /usr/local/bin/entrypoint.sh /usr/local/bin/box-exec /usr/local/bin/box-host \
-        /usr/local/bin/box-egress-tunnel \
+RUN chmod 755 /usr/local/bin/entrypoint.sh \
         /usr/local/bin/box-reset-desktop /usr/local/bin/box-chromium \
         /usr/local/bin/box-chromium-pipe /usr/local/bin/box-active-tab \
         /usr/local/bin/box-screen /usr/local/bin/box-refresh-extension \
@@ -141,4 +144,4 @@ USER box
 WORKDIR /workspace
 EXPOSE 1337 1340 6901 6902 6903 6904 6905 8790
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/box-keeper"]

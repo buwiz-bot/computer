@@ -6,6 +6,7 @@
 //! mimalloc feature as `box-exec`.
 
 pub mod active_tab;
+pub mod keeper;
 
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicBool;

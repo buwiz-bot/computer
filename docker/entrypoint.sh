@@ -1,40 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-# Every secret can arrive two ways: as a value (BOX_TOKEN) or as a path to a
-# file holding it (BOX_TOKEN_FILE). The file form is the one to use. A value
-# handed to the container through the environment is copied into the
-# environment block of pid 1 at execve and stays readable there —
-# /proc/1/environ — for every process in the box, for the life of the box.
-# `unset` below does not undo that; it only changes what getenv sees.
-read_secret() {
-  local name="$1"
-  local file_var="${name}_FILE"
-  local path="${!file_var:-}"
-  if [[ -n "${path}" ]]; then
-    if [[ ! -r "${path}" ]]; then
-      echo "${file_var} is set to ${path} but that file is not readable" >&2
-      exit 1
-    fi
-    tr -d '\r\n' < "${path}"
-    return 0
-  fi
-  printf '%s' "${!name:-}"
-}
-
-BOX_TOKEN_VALUE="$(read_secret BOX_TOKEN)"
-if [[ -z "${BOX_TOKEN_VALUE}" ]]; then
-  echo "BOX_TOKEN or BOX_TOKEN_FILE must be set" >&2
-  exit 1
-fi
-BOX_HOST_TOKEN_VALUE="$(read_secret BOX_HOST_TOKEN)"
-if [[ -z "${BOX_HOST_TOKEN_VALUE}" ]]; then
-  BOX_HOST_TOKEN_VALUE="${BOX_TOKEN_VALUE}"
-fi
-BOX_VIEWER_PASSWORD_VALUE="$(read_secret BOX_VIEWER_PASSWORD)"
-# Shell variables are not in the environ block, so these copies are not served
-# by /proc/<pid>/environ the way the exported forms are.
-unset BOX_TOKEN BOX_HOST_TOKEN BOX_VIEWER_PASSWORD || true
+# The desktop: X, xfce, Chromium and the egress tunnel. box-keeper starts this script and holds
+# every secret, and this script must never read one. A shell cannot be made undumpable, so a value
+# in a variable here would be open to any exec child through /proc/<pid>/mem.
 
 export WORKSPACE_ROOT="${WORKSPACE_ROOT:-/workspace}"
 export BOX_DESKTOP="${BOX_DESKTOP:-1}"
@@ -66,15 +35,6 @@ flag_on() {
   [[ "${v}" != "0" && "${v}" != "false" && "${v}" != "off" && "${v}" != "no" ]]
 }
 
-stage_secret() {
-  local path="$1" value="$2"
-  (
-    umask 077
-    printf '%s' "${value}" >"${path}"
-  )
-  chmod 400 "${path}"
-}
-
 display_num() {
   echo "${BOX_DISPLAY}" | tr -d ':' | cut -d. -f1
 }
@@ -98,7 +58,6 @@ record() {
 shutdown() {
   echo "buwiz-computer shutting down"
   local pid
-  rm -rf "${SECRET_DIR:-}" "${EGRESS_SECRET_DIR:-}" 2>/dev/null || true
   if [[ -f /tmp/box-chrome.pid ]]; then
     kill -TERM "$(cat /tmp/box-chrome.pid)" 2>/dev/null || true
   fi
@@ -110,17 +69,12 @@ shutdown() {
   done
 }
 
-trap shutdown SIGINT SIGTERM
+trap 'shutdown; exit 0' SIGINT SIGTERM
 
 start_desktop() {
   local dnum xvfb_screen
   dnum="$(display_num)"
   xvfb_screen="${BOX_DISPLAY_GEOM}"
-
-  if [[ -z "${BOX_VIEWER_PASSWORD_VALUE}" ]]; then
-    echo "BOX_VIEWER_PASSWORD or BOX_VIEWER_PASSWORD_FILE must be set when BOX_DESKTOP=1 (independent of BOX_TOKEN)" >&2
-    exit 1
-  fi
 
   # A container that was killed keeps the previous Xvfb's lock and socket in its layer, and
   # the next start reuses the same pid, so Xvfb reads its own stale lock as a live server and
@@ -160,64 +114,13 @@ start_desktop() {
   dbus-launch --exit-with-session xfce4-session >/tmp/xfce4-session.log 2>&1 &
   record $!
 
-  start_viewer_keeper "${dnum}"
+  # box-keeper holds the password and starts voxl; this only says the display is up.
+  ask_keeper "up ${dnum}"
 }
 
-# One voxl per screen, on 6900+N inside the container (the host publishes loopback only). This
-# subshell is the one thing in the box that keeps the password after startup: voxl takes it only
-# from its argv, which every process can read, or its environment, so each voxl gets it there and
-# the box's other processes do not. box-screen asks for a Bot's screen over the fifo, which names
-# a display and nothing else. A voxl that dies is started again: the box's work does not depend on
-# anyone watching it, so a viewer crash is not a reason to take the box down.
-start_viewer_keeper() {
-  local main="$1"
-  rm -f "${BOX_VIEWER_CTL}"
-  mkfifo -m 600 "${BOX_VIEWER_CTL}"
-  (
-    declare -A viewers=()
-    # shellcheck disable=SC2329
-    stop_viewers() {
-      kill -TERM "${viewers[@]}" 2>/dev/null || true
-      exit 0
-    }
-    trap stop_viewers TERM INT
-    exec 8<>"${BOX_VIEWER_CTL}"
-    start_viewer() {
-      DISPLAY=":$1" VOXL_PASSWORD="${BOX_VIEWER_PASSWORD_VALUE}" voxl \
-        --addr=0.0.0.0 \
-        --port="$((6900 + $1))" \
-        --title="Buwiz computer" \
-        --audio-enabled=false \
-        --microphone-enabled=false \
-        --enable-resize=false \
-        --file-transfers=none \
-        >>"/tmp/voxl-$1.log" 2>&1 8>&- &
-      viewers[$1]=$!
-    }
-    echo "starting voxl on 0.0.0.0:$((6900 + main)) (host publish should be loopback)"
-    start_viewer "${main}"
-    local verb n
-    while true; do
-      if read -r -t 0.5 verb n <&8 && [[ "${n}" =~ ^[0-9]{1,2}$ ]]; then
-        case "${verb}" in
-          up) [[ -n "${viewers[${n}]:-}" ]] || start_viewer "${n}" ;;
-          down)
-            if [[ -n "${viewers[${n}]:-}" ]]; then
-              kill -TERM "${viewers[${n}]}" 2>/dev/null || true
-              unset "viewers[${n}]"
-            fi
-            ;;
-        esac
-      fi
-      for n in "${!viewers[@]}"; do
-        if ! kill -0 "${viewers[${n}]}" 2>/dev/null; then
-          echo "voxl on :${n} exited; starting it again" >&2
-          start_viewer "${n}"
-        fi
-      done
-    done
-  ) &
-  record $!
+# box-keeper made this fifo before it started this script, and holds it open, so this never blocks.
+ask_keeper() {
+  printf '%s\n' "$1" >"${BOX_VIEWER_CTL}"
 }
 
 start_chrome() {
@@ -308,21 +211,7 @@ start_chrome() {
 }
 
 start_egress() {
-  local bearer path n admin_port
-  bearer="$(read_secret BOX_EGRESS_TUNNEL_BEARER)"
-  if [[ -z "${bearer}" ]]; then
-    echo "BOX_EGRESS_TUNNEL=1 requires BOX_EGRESS_TUNNEL_BEARER or BOX_EGRESS_TUNNEL_BEARER_FILE" >&2
-    exit 1
-  fi
-  # Same story as BOX_TOKEN: a value in pid 1's environ is /proc-visible for
-  # life. Unset after the copy; hand the daemon a staged file, never a value.
-  unset BOX_EGRESS_TUNNEL_BEARER || true
-
-  EGRESS_SECRET_DIR="$(mktemp -d /tmp/box-egress-secrets.XXXXXX)"
-  chmod 700 "${EGRESS_SECRET_DIR}"
-  path="${EGRESS_SECRET_DIR}/bearer"
-  stage_secret "${path}" "${bearer}"
-  bearer=""
+  local n admin_port
 
   admin_port="${BOX_EGRESS_ADMIN_BIND##*:}"
   echo "starting box-egress-tunnel server ws=${BOX_EGRESS_WS_BIND} proxy=${BOX_EGRESS_PROXY_BIND} admin=127.0.0.1:${admin_port}"
@@ -333,7 +222,7 @@ start_egress() {
       --ws-bind "${BOX_EGRESS_WS_BIND}" \
       --proxy-bind "${BOX_EGRESS_PROXY_BIND}" \
       --admin-bind "${BOX_EGRESS_ADMIN_BIND}" \
-      --bearer-file "${path}" \
+      --bearer-file "${BOX_EGRESS_BEARER_STAGED}" \
       >/tmp/box-egress-tunnel.log 2>&1 &
   record $!
 
@@ -369,48 +258,12 @@ if flag_on "${BOX_DESKTOP}"; then
   fi
 fi
 
-# Hand the daemons a path, never a value. `env BOX_TOKEN=... box-exec` puts the
-# token in that daemon's /proc/<pid>/environ at execve, where it stays for the
-# life of the process and where the daemon cannot remove it. Each daemon reads
-# its own copy and unlinks it, so the file exists for the few milliseconds
-# between this write and daemon startup.
-SECRET_DIR="$(mktemp -d /tmp/box-secrets.XXXXXX)"
-chmod 700 "${SECRET_DIR}"
-
-stage_secret "${SECRET_DIR}/exec.box_token" "${BOX_TOKEN_VALUE}"
-stage_secret "${SECRET_DIR}/exec.host_token" "${BOX_HOST_TOKEN_VALUE}"
-# box-exec reaches voxl for /wait and /record. box-host never needs the password, so it must not
-# inherit a path to it; nor may box-exec be pointed at a file that was not staged.
-exec_viewer=(-u BOX_VIEWER_PASSWORD_FILE)
-if [[ -n "${BOX_VIEWER_PASSWORD_VALUE}" ]]; then
-  stage_secret "${SECRET_DIR}/exec.viewer_password" "${BOX_VIEWER_PASSWORD_VALUE}"
-  exec_viewer=("BOX_VIEWER_PASSWORD_FILE=${SECRET_DIR}/exec.viewer_password")
-fi
-stage_secret "${SECRET_DIR}/host.box_token" "${BOX_TOKEN_VALUE}"
-stage_secret "${SECRET_DIR}/host.host_token" "${BOX_HOST_TOKEN_VALUE}"
-
-env "${exec_viewer[@]}" BOX_TOKEN_FILE="${SECRET_DIR}/exec.box_token" \
-  BOX_HOST_TOKEN_FILE="${SECRET_DIR}/exec.host_token" \
-  box-exec &
-record $!
-env -u BOX_VIEWER_PASSWORD_FILE BOX_TOKEN_FILE="${SECRET_DIR}/host.box_token" \
-  BOX_HOST_TOKEN_FILE="${SECRET_DIR}/host.host_token" \
-  box-host &
-record $!
-
-# Net for the case where a daemon dies before it unlinks its own copy.
-(
-  sleep 30
-  rm -rf "${SECRET_DIR}"
-) >/dev/null 2>&1 &
-
-BOX_TOKEN_VALUE=""
-BOX_HOST_TOKEN_VALUE=""
-BOX_VIEWER_PASSWORD_VALUE=""
-unset BOX_TOKEN_VALUE BOX_HOST_TOKEN_VALUE BOX_VIEWER_PASSWORD_VALUE || true
+# The desktop is up: box-keeper starts box-host and box-exec.
+ask_keeper start
 
 while true; do
-  for pid in "${PIDS[@]}"; do
+  for pid in "${PIDS[@]:-}"; do
+    [[ -n "${pid}" ]] || continue
     if ! kill -0 "${pid}" 2>/dev/null; then
       echo "a process exited (pid ${pid}); shutting down" >&2
       shutdown

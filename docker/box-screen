@@ -6,8 +6,8 @@
 # session: wallpaper, and the dock whose Chromium is this Bot's), a voxl on port 6900+N, and a
 # Chromium of its own, with its own profile (so what it signs in to stays its own) that the
 # server starts on that display when the Bot opens a page (`box-chromium` with this screen's
-# BOX_DISPLAY and BOX_CHROME_PROFILE). The entrypoint's viewer keeper holds the password and
-# starts the voxl; this script only names the display.
+# BOX_DISPLAY and BOX_CHROME_PROFILE). box-keeper holds the password and starts the voxl; this
+# script only names the display.
 #
 #   box-screen up <bot>     start the Bot's screen (or find it running); prints its slot as JSON
 #   box-screen down <bot>   stop it; its slot and its profile are kept for the next `up`
@@ -64,8 +64,8 @@ sessions_on() {
   return 0
 }
 
-# Ask the viewer keeper to start or stop the voxl of display $2. The keeper holds the fifo open,
-# so this write never blocks.
+# Ask box-keeper to start or stop the voxl of display $2. It holds the fifo open, so this write
+# never blocks, and it only takes a display that has a slot here.
 viewer() {
   [[ -p "${VIEWER_CTL}" ]] || die "this computer has no viewer"
   printf '%s %s\n' "$1" "$2" >"${VIEWER_CTL}"
@@ -154,10 +154,15 @@ fi
 
 viewer up "${n}"
 # A caller opens the screen as soon as this prints, so it waits for voxl to take connections.
+viewer_up=false
 for _ in $(seq 50); do
-  curl -fsS -o /dev/null "http://127.0.0.1:$((VIEWER_PORT_BASE + n))/healthz" 2>/dev/null && break
+  if curl -fsS -o /dev/null "http://127.0.0.1:$((VIEWER_PORT_BASE + n))/healthz" 2>/dev/null; then
+    viewer_up=true
+    break
+  fi
   sleep 0.1
 done
+[[ "${viewer_up}" == true ]] || die "the screen is up but its viewer did not answer; box-screen up again to check"
 
 # A profile kept from an older extension runs its old background script (see
 # box-refresh-extension); this Bot's Chromium is not running yet when the screen first comes up.

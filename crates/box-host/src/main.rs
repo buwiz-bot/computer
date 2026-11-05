@@ -14,6 +14,7 @@ fn init_tracing() {
 
 #[tokio::main]
 async fn main() {
+    box_common::make_undumpable();
     init_tracing();
     let config = match BoxConfig::from_env() {
         Ok(config) => config,

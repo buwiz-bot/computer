@@ -107,7 +107,7 @@ impl DesktopConfig {
 }
 
 /// The display's number: `:1` and `:1.0` are 1.
-fn display_number(display: &str) -> Option<u16> {
+pub fn display_number(display: &str) -> Option<u16> {
     let number = display.trim().strip_prefix(':')?.split('.').next()?;
     number.parse().ok()
 }
@@ -240,6 +240,11 @@ pub fn screen_workspace(display: &str, slots_dir: &Path) -> String {
             .map(|(bot, _)| bot)
     });
     workspace_of(bot.as_deref())
+}
+
+/// True when `box-screen` gave this slot to a Bot.
+pub fn slot_is_allocated(slots_dir: &Path, slot: u16) -> bool {
+    read_slots(slots_dir).iter().any(|(_, held)| *held == slot)
 }
 
 fn workspace_of(bot: Option<&str>) -> String {

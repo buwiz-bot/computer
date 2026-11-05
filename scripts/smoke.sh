@@ -156,6 +156,17 @@ if echo "${proc_environ}" | grep -q PROC_LEAKED; then
 fi
 echo "${proc_environ}" | grep -q PROC_CLEAN
 
+echo "==> an exec child cannot read a secret from any process's memory"
+# The probe gets the secrets on stdin, so only it holds them, and it skips itself. It first finds
+# a secret in a child of its own, so a clean result means the scan works, not that it saw nothing.
+memory_out="$(python3 "${ROOT}/scripts/run-memory-probe.py" "${EXEC_URL}" "${TOKEN}" "${BOX_VIEWER_PASSWORD}")"
+echo "${memory_out}"
+for held in "keeper denied" "exec denied" "host denied" "voxl denied"; do
+  echo "${memory_out}" | grep -q "${held}"
+done
+echo "${memory_out}" | grep -q "control found"
+echo "${memory_out}" | grep -q "leaks none"
+
 echo "==> auth reject"
 code="$(curl -s -o /dev/null -w '%{http_code}' \
   -H "Content-Type: application/json" \

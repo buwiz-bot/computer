@@ -56,21 +56,24 @@ services:
     volumes:
       - ./workspace-data:/workspace
       - ./chrome-profile:/home/box/chrome-profile
+    # The public health routes, on purpose: a check that sent the token would put it in curl's
+    # argv, and in a dumpable process's memory, every few seconds. /v1/ready is for callers.
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "curl -fsS -H \"Authorization: Bearer $$(cat /run/secrets/box_token)\" http://127.0.0.1:1340/v1/ready",
+          "curl -fsS http://127.0.0.1:1340/v1/health && curl -fsS http://127.0.0.1:1337/v1/health",
         ]
       interval: 5s
       timeout: 3s
       retries: 12
       start_period: 25s
 
-# Compose mounts these read-only at /run/secrets/<name>. The mount stays
-# readable by uid 1000 inside the container — that is what lets the healthcheck
-# authenticate — so this hides the token from /proc and from `docker inspect`,
-# not from code already running as the box user. See README §Auth.
+# Compose mounts these read-only at /run/secrets/<name>, and box-keeper, which runs
+# as uid 1000, has to read them. So they stay readable to anything running as the
+# box user for the life of the box: this hides them from `docker inspect`, not from
+# an exec child. For that, stage them on a writable mount, as the Bot does: box-keeper
+# unlinks what it reads. See README §Auth.
 secrets:
   box_token:
     file: ./secrets/box_token

@@ -33,6 +33,20 @@ pub const PROTOCOL_VERSION: &str = "v1";
 /// and both daemon binds are loopback.
 pub const DEV_BOX_TOKEN: &str = "dev-box-token";
 
+/// Take this process out of reach of the others running as its user.
+///
+/// A dumpable process's memory is open to any process of the same uid, through
+/// `/proc/<pid>/mem` or ptrace, and everything in the box runs as one uid, exec children included.
+/// With this off, the kernel refuses them both. Call it first thing in any process that will hold
+/// a secret. It does not survive `execve`, so a child starts dumpable as usual.
+pub fn make_undumpable() {
+    #[cfg(target_os = "linux")]
+    // SAFETY: PR_SET_DUMPABLE takes an integer and touches no memory of ours.
+    unsafe {
+        libc::prctl(libc::PR_SET_DUMPABLE, 0);
+    }
+}
+
 /// True when `buf` holds a whole HTTP response: its headers and `Content-Length` bytes of body.
 /// Chromium's DevTools server speaks only HTTP/1.1 and leaves the socket open even after
 /// `Connection: close`, so reading to the end of the stream would only ever time out.
