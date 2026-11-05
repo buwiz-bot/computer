@@ -223,11 +223,15 @@ dependencies = [
  "box-desktop",
  "bumpalo",
  "criterion",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "mimalloc",
  "png",
  "serde",
  "serde_json",
  "smallvec",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",
@@ -240,6 +244,8 @@ version = "0.1.0"
 dependencies = [
  "box-common",
  "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -267,6 +273,7 @@ dependencies = [
  "base64",
  "box-common",
  "box-cua",
+ "box-desktop",
  "bytes",
  "futures-util",
  "http",

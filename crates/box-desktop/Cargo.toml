@@ -4,10 +4,14 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Virtual desktop: Xvfb display probe and noVNC viewer config"
+description = "Virtual desktop: Xvfb display probe and voxl viewer config"
 rust-version.workspace = true
 publish = false
 
 [dependencies]
 box-common = { workspace = true }
 serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tempfile = { workspace = true }

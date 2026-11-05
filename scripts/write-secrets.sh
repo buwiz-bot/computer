@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Materialise ./secrets/* from BOX_TOKEN / BOX_VNC_PASSWORD (or .env) so Compose
+# Materialise ./secrets/* from BOX_TOKEN / BOX_VIEWER_PASSWORD (or .env) so Compose
 # can mount them instead of putting the values in the container environment.
 #
 # Files are 0644 inside a 0700 directory on purpose: the directory is what keeps
@@ -21,8 +21,8 @@ if [[ -z "${BOX_TOKEN:-}" ]]; then
   echo "BOX_TOKEN is not set. Export it or add it to .env (the value is not printed)." >&2
   exit 1
 fi
-if [[ -z "${BOX_VNC_PASSWORD:-}" ]]; then
-  echo "BOX_VNC_PASSWORD is not set (x11vnc uses the first 8 characters)." >&2
+if [[ -z "${BOX_VIEWER_PASSWORD:-}" ]]; then
+  echo "BOX_VIEWER_PASSWORD is not set. Export it or add it to .env (the value is not printed)." >&2
   exit 1
 fi
 
@@ -39,11 +39,11 @@ write_secret() {
 }
 
 write_secret "${ROOT}/secrets/box_token" "${BOX_TOKEN}"
-write_secret "${ROOT}/secrets/box_vnc_password" "${BOX_VNC_PASSWORD}"
+write_secret "${ROOT}/secrets/box_viewer_password" "${BOX_VIEWER_PASSWORD}"
 
 if [[ -n "${BOX_EGRESS_TUNNEL_BEARER:-}" ]]; then
   write_secret "${ROOT}/secrets/box_egress_tunnel_bearer" "${BOX_EGRESS_TUNNEL_BEARER}"
-  echo "wrote secrets/box_token, secrets/box_vnc_password, secrets/box_egress_tunnel_bearer (values not printed)"
+  echo "wrote secrets/box_token, secrets/box_viewer_password, secrets/box_egress_tunnel_bearer (values not printed)"
 else
-  echo "wrote secrets/box_token and secrets/box_vnc_password (values not printed)"
+  echo "wrote secrets/box_token and secrets/box_viewer_password (values not printed)"
 fi

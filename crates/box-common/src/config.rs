@@ -15,6 +15,9 @@ pub struct BoxConfig {
     pub box_id: String,
     pub token: String,
     pub host_token: String,
+    /// voxl's password, for `box-exec` to reach `/wait` and `/record` on the box's loopback.
+    /// `None` on a box without a viewer, and in `box-host`, which never needs it.
+    pub viewer_password: Option<String>,
     pub workspace: PathBuf,
     pub exec_bind: SocketAddr,
     pub host_bind: SocketAddr,
@@ -51,6 +54,7 @@ impl BoxConfig {
             )
         })?;
         let host_token = secret_from_env("BOX_HOST_TOKEN")?.unwrap_or_else(|| token.clone());
+        let viewer_password = secret_from_env("BOX_VIEWER_PASSWORD")?;
         let exec_bind = parse_addr("BOX_EXEC_BIND", "127.0.0.1:1337");
         let host_bind = parse_addr("BOX_HOST_BIND", "127.0.0.1:1340");
 
@@ -71,6 +75,7 @@ impl BoxConfig {
             box_id: default_box_id(),
             token,
             host_token,
+            viewer_password,
             workspace,
             exec_bind,
             host_bind,
@@ -96,7 +101,8 @@ impl BoxConfig {
 pub const SECRET_ENV_KEYS: &[&str] = &[
     "BOX_TOKEN",
     "BOX_HOST_TOKEN",
-    "BOX_VNC_PASSWORD",
+    "BOX_VIEWER_PASSWORD",
+    "VOXL_PASSWORD",
     "BOX_EGRESS_TUNNEL_BEARER",
 ];
 
@@ -105,7 +111,7 @@ pub const SECRET_ENV_KEYS: &[&str] = &[
 pub const SECRET_FILE_ENV_KEYS: &[&str] = &[
     "BOX_TOKEN_FILE",
     "BOX_HOST_TOKEN_FILE",
-    "BOX_VNC_PASSWORD_FILE",
+    "BOX_VIEWER_PASSWORD_FILE",
     "BOX_EGRESS_TUNNEL_BEARER_FILE",
 ];
 
@@ -126,7 +132,7 @@ pub const SECRET_FILE_ENV_KEYS: &[&str] = &[
 ///
 /// To keep a secret out of `/proc/<pid>/environ` it has to never enter the
 /// environment in the first place. Deliver it as `BOX_TOKEN_FILE` /
-/// `BOX_HOST_TOKEN_FILE` / `BOX_VNC_PASSWORD_FILE` /
+/// `BOX_HOST_TOKEN_FILE` / `BOX_VIEWER_PASSWORD_FILE` /
 /// `BOX_EGRESS_TUNNEL_BEARER_FILE`; the daemon reads the file and unlinks it.
 /// See README §Auth for the residual exposure.
 pub fn wipe_secret_environ() {
@@ -306,7 +312,7 @@ mod tests {
         let (_lock, _guard) = isolate(&[
             ("BOX_TOKEN", None),
             ("BOX_HOST_TOKEN", None),
-            ("BOX_VNC_PASSWORD", None),
+            ("BOX_VIEWER_PASSWORD", None),
             ("BOX_ALLOW_INSECURE_DEV", None),
             ("BOX_EXEC_BIND", Some("127.0.0.1:1337")),
             ("BOX_HOST_BIND", Some("127.0.0.1:1340")),
@@ -320,7 +326,7 @@ mod tests {
         let (_lock, _guard) = isolate(&[
             ("BOX_TOKEN", Some(DEV_BOX_TOKEN)),
             ("BOX_HOST_TOKEN", None),
-            ("BOX_VNC_PASSWORD", Some("vncpass1")),
+            ("BOX_VIEWER_PASSWORD", Some("viewer-pass-1")),
             ("BOX_ALLOW_INSECURE_DEV", None),
             ("BOX_EXEC_BIND", Some("127.0.0.1:1337")),
             ("BOX_HOST_BIND", Some("127.0.0.1:1340")),
@@ -334,7 +340,7 @@ mod tests {
         let (_lock, _guard) = isolate(&[
             ("BOX_TOKEN", Some(DEV_BOX_TOKEN)),
             ("BOX_HOST_TOKEN", None),
-            ("BOX_VNC_PASSWORD", Some("vncpass1")),
+            ("BOX_VIEWER_PASSWORD", Some("viewer-pass-1")),
             ("BOX_ALLOW_INSECURE_DEV", Some("1")),
             ("BOX_EXEC_BIND", Some("0.0.0.0:1337")),
             ("BOX_HOST_BIND", Some("0.0.0.0:1340")),
@@ -348,7 +354,7 @@ mod tests {
         let (_lock, _guard) = isolate(&[
             ("BOX_TOKEN", Some(DEV_BOX_TOKEN)),
             ("BOX_HOST_TOKEN", None),
-            ("BOX_VNC_PASSWORD", Some("vncpass1")),
+            ("BOX_VIEWER_PASSWORD", Some("viewer-pass-1")),
             ("BOX_ALLOW_INSECURE_DEV", Some("1")),
             ("BOX_EXEC_BIND", Some("127.0.0.1:1337")),
             ("BOX_HOST_BIND", Some("127.0.0.1:1340")),
@@ -357,7 +363,7 @@ mod tests {
         let config = BoxConfig::from_env().unwrap();
         assert_eq!(config.token, DEV_BOX_TOKEN);
         assert!(env::var("BOX_TOKEN").is_err());
-        assert!(env::var("BOX_VNC_PASSWORD").is_err());
+        assert!(env::var("BOX_VIEWER_PASSWORD").is_err());
     }
 
     #[test]
@@ -365,7 +371,7 @@ mod tests {
         let (_lock, _guard) = isolate(&[
             ("BOX_TOKEN", Some("local-smoke-box-token")),
             ("BOX_HOST_TOKEN", Some("local-smoke-host-token")),
-            ("BOX_VNC_PASSWORD", Some("vncpass1")),
+            ("BOX_VIEWER_PASSWORD", Some("viewer-pass-1")),
             ("BOX_ALLOW_INSECURE_DEV", None),
             ("BOX_EXEC_BIND", Some("0.0.0.0:1337")),
             ("BOX_HOST_BIND", Some("0.0.0.0:1340")),
@@ -377,7 +383,7 @@ mod tests {
         assert_eq!(config.exec_bind, "0.0.0.0:1337".parse().unwrap());
         assert!(env::var("BOX_TOKEN").is_err());
         assert!(env::var("BOX_HOST_TOKEN").is_err());
-        assert!(env::var("BOX_VNC_PASSWORD").is_err());
+        assert!(env::var("BOX_VIEWER_PASSWORD").is_err());
     }
 
     #[test]
@@ -390,7 +396,7 @@ mod tests {
             ("BOX_TOKEN_FILE", Some(token_path.to_str().unwrap())),
             ("BOX_HOST_TOKEN", None),
             ("BOX_HOST_TOKEN_FILE", None),
-            ("BOX_VNC_PASSWORD", None),
+            ("BOX_VIEWER_PASSWORD", None),
             ("BOX_ALLOW_INSECURE_DEV", None),
             ("BOX_EXEC_BIND", Some("0.0.0.0:1337")),
             ("BOX_HOST_BIND", Some("0.0.0.0:1340")),
@@ -418,7 +424,7 @@ mod tests {
             ("BOX_TOKEN_FILE", Some(token_path.to_str().unwrap())),
             ("BOX_HOST_TOKEN", None),
             ("BOX_HOST_TOKEN_FILE", Some(host_path.to_str().unwrap())),
-            ("BOX_VNC_PASSWORD", None),
+            ("BOX_VIEWER_PASSWORD", None),
             ("BOX_ALLOW_INSECURE_DEV", None),
             ("BOX_EXEC_BIND", Some("0.0.0.0:1337")),
             ("BOX_HOST_BIND", Some("0.0.0.0:1340")),
@@ -436,7 +442,7 @@ mod tests {
             ("BOX_TOKEN_FILE", Some("/nonexistent/box_token")),
             ("BOX_HOST_TOKEN", None),
             ("BOX_HOST_TOKEN_FILE", None),
-            ("BOX_VNC_PASSWORD", None),
+            ("BOX_VIEWER_PASSWORD", None),
             ("BOX_ALLOW_INSECURE_DEV", None),
             ("BOX_EXEC_BIND", Some("127.0.0.1:1337")),
             ("BOX_HOST_BIND", Some("127.0.0.1:1340")),

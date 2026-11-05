@@ -247,6 +247,9 @@ async fn cua_type_key_scroll_disabled() {
             "/v1/cua/recipe",
             json!({"steps":[{"op":"move","x":10,"y":10}]}),
         ),
+        ("/v1/cua/wait", json!({"change": true})),
+        ("/v1/cua/record/start", json!({})),
+        ("/v1/cua/record/stop", json!({"id": 1})),
     ] {
         let (status, body) = send(s.clone(), auth_json("POST", uri, "secret-token", payload)).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{uri}");

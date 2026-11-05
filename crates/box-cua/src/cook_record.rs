@@ -18,16 +18,16 @@
 //!   -an -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
 //!   -b:v 700k -maxrate 900k -bufsize 1800k \
 //!   -movflags +frag_keyframe+empty_moov+default_base_moof \
-//!   /workspace/.l1/cooks/<run>/cook.mp4
+//!   /workspace/.box/cooks/<run>/cook.mp4
 //! ```
 //!
 //! Then remux (stream copy, no re-encode):
 //!
 //! ```text
 //! ffmpeg -nostdin -hide_banner -loglevel error -y \
-//!   -i /workspace/.l1/cooks/<run>/cook.mp4 \
+//!   -i /workspace/.box/cooks/<run>/cook.mp4 \
 //!   -an -c:v copy -movflags +faststart \
-//!   /workspace/.l1/cooks/<run>/cook.faststart.mp4
+//!   /workspace/.box/cooks/<run>/cook.faststart.mp4
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn ffmpeg_command_has_no_duration_cap() {
-        let args = cook_ffmpeg_args("1280x800", ":1.0", "/workspace/.l1/cooks/demo/cook.mp4");
+        let args = cook_ffmpeg_args("1280x800", ":1.0", "/workspace/.box/cooks/demo/cook.mp4");
         assert_eq!(
             args,
             [
@@ -337,7 +337,7 @@ mod tests {
                 "1800k",
                 "-movflags",
                 "+frag_keyframe+empty_moov+default_base_moof",
-                "/workspace/.l1/cooks/demo/cook.mp4",
+                "/workspace/.box/cooks/demo/cook.mp4",
             ]
         );
         assert!(!args
@@ -346,7 +346,7 @@ mod tests {
     }
 
     #[test]
-    fn x11grab_target_matches_vnc_display_screen0() {
+    fn x11grab_target_matches_display_screen0() {
         assert_eq!(display_target(":1"), ":1.0");
         assert_eq!(display_target(":1.0"), ":1.0");
     }
@@ -354,8 +354,8 @@ mod tests {
     #[test]
     fn remux_is_stream_copy_faststart() {
         let args = cook_remux_args(
-            "/workspace/.l1/cooks/demo/cook.mp4",
-            "/workspace/.l1/cooks/demo/cook.faststart.mp4",
+            "/workspace/.box/cooks/demo/cook.mp4",
+            "/workspace/.box/cooks/demo/cook.faststart.mp4",
         );
         assert_eq!(
             args,
@@ -366,13 +366,13 @@ mod tests {
                 "error",
                 "-y",
                 "-i",
-                "/workspace/.l1/cooks/demo/cook.mp4",
+                "/workspace/.box/cooks/demo/cook.mp4",
                 "-an",
                 "-c:v",
                 "copy",
                 "-movflags",
                 "+faststart",
-                "/workspace/.l1/cooks/demo/cook.faststart.mp4",
+                "/workspace/.box/cooks/demo/cook.faststart.mp4",
             ]
         );
         assert!(!args

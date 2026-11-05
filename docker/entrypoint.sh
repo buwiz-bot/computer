@@ -31,10 +31,10 @@ BOX_HOST_TOKEN_VALUE="$(read_secret BOX_HOST_TOKEN)"
 if [[ -z "${BOX_HOST_TOKEN_VALUE}" ]]; then
   BOX_HOST_TOKEN_VALUE="${BOX_TOKEN_VALUE}"
 fi
-BOX_VNC_PASSWORD_VALUE="$(read_secret BOX_VNC_PASSWORD)"
+BOX_VIEWER_PASSWORD_VALUE="$(read_secret BOX_VIEWER_PASSWORD)"
 # Shell variables are not in the environ block, so these copies are not served
 # by /proc/<pid>/environ the way the exported forms are.
-unset BOX_TOKEN BOX_HOST_TOKEN BOX_VNC_PASSWORD || true
+unset BOX_TOKEN BOX_HOST_TOKEN BOX_VIEWER_PASSWORD || true
 
 export WORKSPACE_ROOT="${WORKSPACE_ROOT:-/workspace}"
 export BOX_DESKTOP="${BOX_DESKTOP:-1}"
@@ -43,9 +43,7 @@ export BOX_DISPLAY="${BOX_DISPLAY:-:1}"
 # box-active-tab and box-host tell the shared screen's report from a Bot's by it.
 export BOX_SHARED_DISPLAY="${BOX_DISPLAY}"
 export BOX_DISPLAY_GEOM="${BOX_DISPLAY_GEOM:-1280x800x24}"
-export BOX_VNC_BIND="${BOX_VNC_BIND:-127.0.0.1:5900}"
-export BOX_NOVNC_PORT="${BOX_NOVNC_PORT:-6080}"
-export BOX_NOVNC_WEB="${BOX_NOVNC_WEB:-/usr/share/novnc}"
+export BOX_VIEWER_CTL="${BOX_VIEWER_CTL:-/tmp/box-viewer.ctl}"
 export BOX_CHROME="${BOX_CHROME:-1}"
 export BOX_CHROME_PROFILE="${BOX_CHROME_PROFILE:-${HOME:-/home/box}/chrome-profile}"
 export BOX_CDP_PORT="${BOX_CDP_PORT:-9222}"
@@ -60,7 +58,7 @@ export BOX_EGRESS_PROXY_BIND="${BOX_EGRESS_PROXY_BIND:-127.0.0.1:8791}"
 export BOX_EGRESS_ADMIN_BIND="${BOX_EGRESS_ADMIN_BIND:-127.0.0.1:8792}"
 export BOX_EGRESS_PROXY_PORT="${BOX_EGRESS_PROXY_PORT:-${BOX_EGRESS_PROXY_BIND##*:}}"
 
-mkdir -p "${WORKSPACE_ROOT}" "${BOX_CHROME_PROFILE}"
+mkdir -p "${WORKSPACE_ROOT}/shared" "${BOX_CHROME_PROFILE}"
 
 flag_on() {
   local v
@@ -79,10 +77,6 @@ stage_secret() {
 
 display_num() {
   echo "${BOX_DISPLAY}" | tr -d ':' | cut -d. -f1
-}
-
-vnc_port() {
-  echo "${BOX_VNC_BIND##*:}"
 }
 
 geom_wh() {
@@ -119,12 +113,12 @@ shutdown() {
 trap shutdown SIGINT SIGTERM
 
 start_desktop() {
-  local dnum xvfb_screen vnc_pass passfile
+  local dnum xvfb_screen
   dnum="$(display_num)"
   xvfb_screen="${BOX_DISPLAY_GEOM}"
 
-  if [[ -z "${BOX_VNC_PASSWORD_VALUE}" ]]; then
-    echo "BOX_VNC_PASSWORD must be set when BOX_DESKTOP=1 (independent of BOX_TOKEN; x11vnc uses the first 8 characters)" >&2
+  if [[ -z "${BOX_VIEWER_PASSWORD_VALUE}" ]]; then
+    echo "BOX_VIEWER_PASSWORD or BOX_VIEWER_PASSWORD_FILE must be set when BOX_DESKTOP=1 (independent of BOX_TOKEN)" >&2
     exit 1
   fi
 
@@ -135,8 +129,9 @@ start_desktop() {
   rm -f "/tmp/.X${dnum}-lock" "/tmp/.X11-unix/X${dnum}"
 
   echo "starting Xvfb ${BOX_DISPLAY} ${xvfb_screen}"
-  # XTEST is required for in-process CUA. DAMAGE lets x11vnc push dirty rects.
-  Xvfb "${BOX_DISPLAY}" -screen 0 "${xvfb_screen}" -ac +extension GLX +extension XTEST +extension DAMAGE +render -noreset &
+  # XTEST is required for in-process CUA. DAMAGE tells voxl what changed, and -shmem lets it read
+  # the framebuffer without a copy.
+  Xvfb "${BOX_DISPLAY}" -screen 0 "${xvfb_screen}" -ac -shmem +extension GLX +extension XTEST +extension DAMAGE +render -noreset &
   record $!
 
   local n=0
@@ -165,56 +160,63 @@ start_desktop() {
   dbus-launch --exit-with-session xfce4-session >/tmp/xfce4-session.log 2>&1 &
   record $!
 
-  mkdir -p "${HOME:-/home/box}/.vnc"
-  passfile="${HOME:-/home/box}/.vnc/passwd"
-  vnc_pass="${BOX_VNC_PASSWORD_VALUE:0:8}"
-  x11vnc -storepasswd "${vnc_pass}" "${passfile}" >/dev/null
-  chmod 600 "${passfile}"
-  vnc_pass=""
+  start_viewer_keeper "${dnum}"
+}
 
-  echo "starting x11vnc on ${BOX_VNC_BIND} (localhost only)"
-  # LAN flags: XDAMAGE (not polling the whole 1280×800), short wait/defer.
-  # Keys: -xkb maps the viewer's keysyms through XKEYBOARD (Mac and non-US
-  # layouts otherwise lose keys); -clear_mods/-clear_keys start clean; and
-  # every client that arrives or leaves runs box-release-keys, so a ⌘ held
-  # when a window closed cannot stay held in this X server.
-  x11vnc \
-    -display "${BOX_DISPLAY}" \
-    -rfbport "$(vnc_port)" \
-    -localhost \
-    -rfbauth "${passfile}" \
-    -forever \
-    -shared \
-    -xdamage \
-    -nowireframe \
-    -speeds lan \
-    -wait 10 \
-    -defer 5 \
-    -xkb \
-    -clear_mods \
-    -clear_keys \
-    -afteraccept /usr/local/bin/box-release-keys \
-    -gone /usr/local/bin/box-release-keys \
-    >/tmp/x11vnc.log 2>&1 &
-  record $!
-
-  if [[ ! -d "${BOX_NOVNC_WEB}" ]]; then
-    echo "noVNC web root missing: ${BOX_NOVNC_WEB}" >&2
-    exit 1
-  fi
-
-  # 0.0.0.0 *inside* the container so Docker port-map to the veth IP works.
-  # Host publish is 127.0.0.1:6080. 6080 is not Bearer-authenticated.
-  echo "starting noVNC/websockify on 0.0.0.0:${BOX_NOVNC_PORT} (host publish should be loopback)"
-  # One viewer port for every screen of the box: a Bot's own screen (box-screen) is reached by
-  # the token s<N> in the websocket's query, and a connection with no token is the shared screen,
-  # as it always was.
-  export BOX_VNC_TOKENS="${BOX_VNC_TOKENS:-/tmp/box-vnc-tokens}"
-  mkdir -p "${BOX_VNC_TOKENS}"
-  printf 's%s: %s\n' "${dnum}" "${BOX_VNC_BIND}" >"${BOX_VNC_TOKENS}/s${dnum}"
-  BOX_VNC_SHARED="${BOX_VNC_BIND}" websockify-nodelay --web="${BOX_NOVNC_WEB}" \
-    --token-plugin TokenFile --token-source "${BOX_VNC_TOKENS}" "0.0.0.0:${BOX_NOVNC_PORT}" \
-    >/tmp/websockify.log 2>&1 &
+# One voxl per screen, on 6900+N inside the container (the host publishes loopback only). This
+# subshell is the one thing in the box that keeps the password after startup: voxl takes it only
+# from its argv, which every process can read, or its environment, so each voxl gets it there and
+# the box's other processes do not. box-screen asks for a Bot's screen over the fifo, which names
+# a display and nothing else. A voxl that dies is started again: the box's work does not depend on
+# anyone watching it, so a viewer crash is not a reason to take the box down.
+start_viewer_keeper() {
+  local main="$1"
+  rm -f "${BOX_VIEWER_CTL}"
+  mkfifo -m 600 "${BOX_VIEWER_CTL}"
+  (
+    declare -A viewers=()
+    # shellcheck disable=SC2329
+    stop_viewers() {
+      kill -TERM "${viewers[@]}" 2>/dev/null || true
+      exit 0
+    }
+    trap stop_viewers TERM INT
+    exec 8<>"${BOX_VIEWER_CTL}"
+    start_viewer() {
+      DISPLAY=":$1" VOXL_PASSWORD="${BOX_VIEWER_PASSWORD_VALUE}" voxl \
+        --addr=0.0.0.0 \
+        --port="$((6900 + $1))" \
+        --title="Buwiz computer" \
+        --audio-enabled=false \
+        --microphone-enabled=false \
+        --enable-resize=false \
+        --file-transfers=none \
+        >>"/tmp/voxl-$1.log" 2>&1 8>&- &
+      viewers[$1]=$!
+    }
+    echo "starting voxl on 0.0.0.0:$((6900 + main)) (host publish should be loopback)"
+    start_viewer "${main}"
+    local verb n
+    while true; do
+      if read -r -t 0.5 verb n <&8 && [[ "${n}" =~ ^[0-9]{1,2}$ ]]; then
+        case "${verb}" in
+          up) [[ -n "${viewers[${n}]:-}" ]] || start_viewer "${n}" ;;
+          down)
+            if [[ -n "${viewers[${n}]:-}" ]]; then
+              kill -TERM "${viewers[${n}]}" 2>/dev/null || true
+              unset "viewers[${n}]"
+            fi
+            ;;
+        esac
+      fi
+      for n in "${!viewers[@]}"; do
+        if ! kill -0 "${viewers[${n}]}" 2>/dev/null; then
+          echo "voxl on :${n} exited; starting it again" >&2
+          start_viewer "${n}"
+        fi
+      done
+    done
+  ) &
   record $!
 }
 
@@ -238,7 +240,7 @@ start_chrome() {
     mkdir -p "${BOX_CHROME_PROFILE}"
   fi
   # See box-refresh-extension: a profile kept from an older extension runs its old worker.
-  /usr/local/bin/box-refresh-extension
+  BOX_SCREEN_WORKSPACE="${WORKSPACE_ROOT}/shared" /usr/local/bin/box-refresh-extension
   read -r w h < <(geom_wh)
   export DISPLAY="${BOX_DISPLAY}"
 
@@ -291,7 +293,7 @@ start_chrome() {
       echo $! > /tmp/box-chrome.pid
       code=0
       wait $! || code=$?
-      # A browser the person closed stays closed: exit 0 is a deliberate close from the VNC
+      # A browser the person closed stays closed: exit 0 is a deliberate close from the live
       # screen, and a window that reappears two seconds later is not a box anyone can use. The
       # dock's launcher and `open_url` start it again when it is wanted. Anything else is a
       # crash, and a crash must not take the box down — restart it.
@@ -377,14 +379,21 @@ chmod 700 "${SECRET_DIR}"
 
 stage_secret "${SECRET_DIR}/exec.box_token" "${BOX_TOKEN_VALUE}"
 stage_secret "${SECRET_DIR}/exec.host_token" "${BOX_HOST_TOKEN_VALUE}"
+# box-exec reaches voxl for /wait and /record. box-host never needs the password, so it must not
+# inherit a path to it; nor may box-exec be pointed at a file that was not staged.
+exec_viewer=(-u BOX_VIEWER_PASSWORD_FILE)
+if [[ -n "${BOX_VIEWER_PASSWORD_VALUE}" ]]; then
+  stage_secret "${SECRET_DIR}/exec.viewer_password" "${BOX_VIEWER_PASSWORD_VALUE}"
+  exec_viewer=("BOX_VIEWER_PASSWORD_FILE=${SECRET_DIR}/exec.viewer_password")
+fi
 stage_secret "${SECRET_DIR}/host.box_token" "${BOX_TOKEN_VALUE}"
 stage_secret "${SECRET_DIR}/host.host_token" "${BOX_HOST_TOKEN_VALUE}"
 
-env BOX_TOKEN_FILE="${SECRET_DIR}/exec.box_token" \
+env "${exec_viewer[@]}" BOX_TOKEN_FILE="${SECRET_DIR}/exec.box_token" \
   BOX_HOST_TOKEN_FILE="${SECRET_DIR}/exec.host_token" \
   box-exec &
 record $!
-env BOX_TOKEN_FILE="${SECRET_DIR}/host.box_token" \
+env -u BOX_VIEWER_PASSWORD_FILE BOX_TOKEN_FILE="${SECRET_DIR}/host.box_token" \
   BOX_HOST_TOKEN_FILE="${SECRET_DIR}/host.host_token" \
   box-host &
 record $!
@@ -397,8 +406,8 @@ record $!
 
 BOX_TOKEN_VALUE=""
 BOX_HOST_TOKEN_VALUE=""
-BOX_VNC_PASSWORD_VALUE=""
-unset BOX_TOKEN_VALUE BOX_HOST_TOKEN_VALUE BOX_VNC_PASSWORD_VALUE || true
+BOX_VIEWER_PASSWORD_VALUE=""
+unset BOX_TOKEN_VALUE BOX_HOST_TOKEN_VALUE BOX_VIEWER_PASSWORD_VALUE || true
 
 while true; do
   for pid in "${PIDS[@]}"; do

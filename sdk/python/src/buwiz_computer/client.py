@@ -155,6 +155,21 @@ class BuwizComputer:
     def desktop(self) -> Any:
         return self._auth("GET", f"{self.host_url}/v1/desktop")
 
+    def screens(self) -> Any:
+        """Every screen of the box with its display, viewer port and state."""
+        return self._auth("GET", f"{self.host_url}/v1/screens")
+
+    def cua_wait(self, **fields: Any) -> Any:
+        """When the screen settles or changes: idle, change, since, region, timeout."""
+        return self._auth("POST", f"{self.exec_url}/v1/cua/wait", fields)
+
+    def record_start(self) -> Any:
+        return self._auth("POST", f"{self.exec_url}/v1/cua/record/start")
+
+    def record_stop(self, recording_id: int) -> Any:
+        """Saves the MP4 under the workspace; `path` works with the file calls."""
+        return self._auth("POST", f"{self.exec_url}/v1/cua/record/stop", {"id": recording_id})
+
     def chrome(self) -> Any:
         return self._auth("GET", f"{self.host_url}/v1/chrome")
 

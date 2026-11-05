@@ -26,6 +26,7 @@ need=(
   "/v1/metrics:"
   "/v1/desktop:"
   "/v1/desktop/windows:"
+  "/v1/screens:"
   "/v1/chrome:"
   "/v1/egress:"
   "/v1/cua/screenshot:"
@@ -35,6 +36,9 @@ need=(
   "/v1/cua/mousedown:"
   "/v1/cua/mouseup:"
   "/v1/cua/recipe:"
+  "/v1/cua/wait:"
+  "/v1/cua/record/start:"
+  "/v1/cua/record/stop:"
 )
 
 missing=0
@@ -67,6 +71,19 @@ if ! grep -q "output_complete" "${SPEC}"; then
 fi
 if ! grep -q "ExecCancelResponse" "${SPEC}"; then
   echo "openapi missing DELETE /v1/exec/{id} response" >&2
+  missing=1
+fi
+
+if ! grep -q "viewer_port" "${SPEC}"; then
+  echo "openapi missing screen viewer_port" >&2
+  missing=1
+fi
+if ! grep -q "voxl" "${SPEC}"; then
+  echo "openapi missing the voxl viewer" >&2
+  missing=1
+fi
+if grep -qiE "novnc|x11vnc|websockify" "${SPEC}"; then
+  echo "openapi still names the old viewer" >&2
   missing=1
 fi
 

@@ -11,6 +11,13 @@
 set -euo pipefail
 profile="${BOX_CHROME_PROFILE:-${HOME:-/home/box}/chrome-profile}"
 [[ -n "${profile}" && -d "${profile}" ]] || exit 0
+# A new profile downloads into its screen's folder, without asking. Set once: a person who picks
+# another folder in the browser keeps it.
+if [[ -n "${BOX_SCREEN_WORKSPACE:-}" && ! -f "${profile}/Default/Preferences" ]]; then
+  mkdir -p "${profile}/Default"
+  printf '{"download":{"default_directory":"%s","prompt_for_download":false}}\n' \
+    "${BOX_SCREEN_WORKSPACE}" >"${profile}/Default/Preferences"
+fi
 stamp="${profile}/.box-active-tab.sha256"
 now="$(cat /opt/box/active-tab/* | sha256sum | cut -d' ' -f1)"
 if [[ -f "${stamp}" && "$(cat "${stamp}")" == "${now}" ]]; then

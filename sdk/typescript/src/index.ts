@@ -332,6 +332,36 @@ export class BuwizComputer {
     return this.authJson("GET", `${this.hostUrl}/v1/desktop`);
   }
 
+  /** Every screen of the box with its display, viewer port and state. */
+  async screens(): Promise<unknown> {
+    return this.authJson("GET", `${this.hostUrl}/v1/screens`);
+  }
+
+  /** When the screen settles or changes: voxl's `/wait` fields, times in ms. */
+  async cuaWait(request: {
+    idle?: number;
+    change?: boolean;
+    since?: number;
+    region?: string;
+    timeout?: number;
+  } = {}): Promise<{ changed: boolean; timed_out: boolean; seq: number; waited_ms: number }> {
+    return this.authJson(
+      "POST",
+      `${this.execUrl}/v1/cua/wait`,
+      request,
+      (request.timeout ?? 10_000) + 5_000,
+    );
+  }
+
+  async recordStart(): Promise<{ id: number }> {
+    return this.authJson("POST", `${this.execUrl}/v1/cua/record/start`);
+  }
+
+  /** Saves the MP4 under the workspace; `path` works with the file calls. */
+  async recordStop(id: number): Promise<{ path: string; bytes: number }> {
+    return this.authJson("POST", `${this.execUrl}/v1/cua/record/stop`, { id }, 60_000);
+  }
+
   async chrome(): Promise<unknown> {
     return this.authJson("GET", `${this.hostUrl}/v1/chrome`);
   }

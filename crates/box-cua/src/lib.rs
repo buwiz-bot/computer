@@ -10,6 +10,7 @@ mod keys;
 mod observe;
 mod recipe;
 mod settle;
+mod voxl;
 pub(crate) mod x11;
 mod xdotool;
 
@@ -33,6 +34,7 @@ pub use recipe::{
     run_recipe, validate_recipe, RecipeArtifact, RecipeRequest, RecipeResponse, RecipeScreenshot,
     RecipeSettle, RecipeStep, RecipeStepResult, MAX_RECIPE_STEPS, MAX_WAIT_MS,
 };
+pub use voxl::{RecordStarted, RecordStopRequest, ViewerClient, WaitRequest, WaitResponse};
 
 static POINTER_WARMED: AtomicBool = AtomicBool::new(false);
 static ACTUATOR: Mutex<()> = Mutex::const_new(());
@@ -206,6 +208,8 @@ pub enum CuaError {
     Invalid(String),
     #[error("tool failed: {0}")]
     Tool(String),
+    #[error("viewer unavailable: {0}")]
+    Viewer(String),
 }
 
 #[derive(Debug, Deserialize)]

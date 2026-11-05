@@ -2,8 +2,8 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use buwiz_computer::{BuwizComputer, ExecRequest, FilePutRequest, MkdirRequest};
 use clap::{Parser, Subcommand};
-use buwiz_computer::{ExecRequest, FilePutRequest, BuwizComputer, MkdirRequest};
 use serde_json::json;
 
 #[derive(Parser)]
@@ -57,6 +57,8 @@ enum Commands {
     Files(FilesCmd),
     /// GET host /v1/desktop
     Desktop,
+    /// GET host /v1/screens (each screen's display, viewer port and state)
+    Screens,
     /// GET host /v1/chrome
     Chrome,
     /// GET host /v1/egress
@@ -118,6 +120,28 @@ enum FilesCmd {
 
 #[derive(Subcommand)]
 enum CuaCmd {
+    /// POST /v1/cua/wait: until the screen settles, or changes with --change
+    Wait {
+        /// Still for this many ms
+        #[arg(long)]
+        idle: Option<u64>,
+        /// Return at the first change
+        #[arg(long)]
+        change: bool,
+        /// Count changes after this seq
+        #[arg(long)]
+        since: Option<u64>,
+        /// Only watch x,y,w,h
+        #[arg(long)]
+        region: Option<String>,
+        /// Give up after this many ms
+        #[arg(long)]
+        timeout: Option<u64>,
+    },
+    /// POST /v1/cua/record/start
+    RecordStart,
+    /// POST /v1/cua/record/stop: saves the MP4 under the workspace
+    RecordStop { id: u64 },
     Screenshot {
         /// Write raw image/png instead of JSON
         #[arg(long)]
@@ -309,6 +333,7 @@ async fn main() -> Result<()> {
             }
         },
         Commands::Desktop => print_json(&box_client.desktop().await?)?,
+        Commands::Screens => print_json(&box_client.screens().await?)?,
         Commands::Chrome => print_json(&box_client.chrome().await?)?,
         Commands::Egress => print_json(&box_client.egress().await?)?,
         Commands::Windows => print_json(&box_client.windows().await?)?,
@@ -316,6 +341,24 @@ async fn main() -> Result<()> {
         Commands::Metrics => print_json(&box_client.metrics().await?)?,
         Commands::Shutdown { host } => print_json(&box_client.shutdown(host).await?)?,
         Commands::Cua(cmd) => match cmd {
+            CuaCmd::Wait {
+                idle,
+                change,
+                since,
+                region,
+                timeout,
+            } => {
+                let body = serde_json::json!({
+                    "idle": idle,
+                    "change": change,
+                    "since": since,
+                    "region": region,
+                    "timeout": timeout,
+                });
+                print_json(&box_client.cua_wait(body).await?)?;
+            }
+            CuaCmd::RecordStart => print_json(&box_client.cua_record_start().await?)?,
+            CuaCmd::RecordStop { id } => print_json(&box_client.cua_record_stop(id).await?)?,
             CuaCmd::Screenshot { png, output } => {
                 if png {
                     let bytes = box_client.screenshot_png().await?;

@@ -237,6 +237,40 @@ impl BuwizComputer {
             .await
     }
 
+    /// `GET /v1/screens`: every screen of the box with its display, viewer port and state.
+    pub async fn screens(&self) -> Result<Value, Error> {
+        self.send_json("GET", &format!("{}/v1/screens", self.host_url), None, true)
+            .await
+    }
+
+    /// `POST /v1/cua/wait`: when the screen settles or changes. `body` is voxl's `/wait` fields
+    /// (`idle`, `change`, `since`, `region`, `timeout`).
+    pub async fn cua_wait(&self, body: Value) -> Result<Value, Error> {
+        let url = format!("{}/v1/cua/wait{}", self.exec_url, self.screen_query('?'));
+        self.send_json("POST", &url, Some(body), true).await
+    }
+
+    /// `POST /v1/cua/record/start`: `{id}`.
+    pub async fn cua_record_start(&self) -> Result<Value, Error> {
+        let url = format!(
+            "{}/v1/cua/record/start{}",
+            self.exec_url,
+            self.screen_query('?')
+        );
+        self.send_json("POST", &url, None, true).await
+    }
+
+    /// `POST /v1/cua/record/stop`: `{path, bytes}`, the MP4 under the workspace.
+    pub async fn cua_record_stop(&self, id: u64) -> Result<Value, Error> {
+        let url = format!(
+            "{}/v1/cua/record/stop{}",
+            self.exec_url,
+            self.screen_query('?')
+        );
+        self.send_json("POST", &url, Some(json!({ "id": id })), true)
+            .await
+    }
+
     pub async fn chrome(&self) -> Result<Value, Error> {
         self.send_json("GET", &format!("{}/v1/chrome", self.host_url), None, true)
             .await
@@ -694,9 +728,12 @@ mod tests {
     fn connect_requires_all_three() {
         assert!(BuwizComputer::connect("", "http://127.0.0.1:1340", "t").is_err());
         assert!(BuwizComputer::connect("http://127.0.0.1:1337", "", "t").is_err());
-        assert!(BuwizComputer::connect("http://127.0.0.1:1337", "http://127.0.0.1:1340", "").is_err());
+        assert!(
+            BuwizComputer::connect("http://127.0.0.1:1337", "http://127.0.0.1:1340", "").is_err()
+        );
         let box_client =
-            BuwizComputer::connect("http://127.0.0.1:1337/", "http://127.0.0.1:1340/", "tok").unwrap();
+            BuwizComputer::connect("http://127.0.0.1:1337/", "http://127.0.0.1:1340/", "tok")
+                .unwrap();
         assert_eq!(box_client.exec_url(), "http://127.0.0.1:1337");
         assert_eq!(box_client.host_url(), "http://127.0.0.1:1340");
     }
@@ -705,7 +742,8 @@ mod tests {
     #[test]
     fn a_client_on_another_screen_names_it_on_every_screen_call() {
         let shared =
-            BuwizComputer::connect("http://127.0.0.1:1337", "http://127.0.0.1:1340", "tok").unwrap();
+            BuwizComputer::connect("http://127.0.0.1:1337", "http://127.0.0.1:1340", "tok")
+                .unwrap();
         assert_eq!(shared.cua("click"), "http://127.0.0.1:1337/v1/cua/click");
         let own = shared.on(":3");
         assert_eq!(

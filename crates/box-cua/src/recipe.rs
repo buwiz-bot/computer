@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use box_desktop::{screen_workspace, slots_dir};
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
@@ -122,7 +123,7 @@ pub enum RecipeStep {
         ms: u64,
     },
     Screenshot {},
-    /// Close guest windows and leftover jobs. Same X/VNC session; not docker restart.
+    /// Close guest windows and leftover jobs. Same X session; not docker restart.
     #[serde(alias = "reset")]
     ResetDesktop {},
 }
@@ -343,13 +344,15 @@ fn resolve_artifact_dir(raw: &str) -> Result<PathBuf, CuaError> {
     Ok(joined)
 }
 
-fn default_artifact_dir() -> PathBuf {
+/// A cook's video and shots go in the folder of the screen they show.
+fn default_artifact_dir(display: &str) -> PathBuf {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
     workspace_root()
-        .join(".l1/cooks")
+        .join(screen_workspace(display, &slots_dir()))
+        .join("cooks")
         .join(format!("cook-{stamp}"))
 }
 
@@ -531,7 +534,7 @@ pub async fn run_recipe(
         let dir = if let Some(raw) = req.artifact_dir.as_deref() {
             resolve_artifact_dir(raw)?
         } else {
-            default_artifact_dir()
+            default_artifact_dir(&config.display)
         };
         tokio::fs::create_dir_all(&dir)
             .await

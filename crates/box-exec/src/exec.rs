@@ -852,7 +852,7 @@ fn kill_signal() -> i32 {
     }
 }
 
-/// Names never handed to an exec child: the bearer/VNC secrets themselves and
+/// Names never handed to an exec child: the bearer and viewer secrets themselves and
 /// the paths they can be delivered through, since a file the daemon could not
 /// unlink would otherwise be one `cat` away.
 fn strip_env_keys() -> impl Iterator<Item = &'static str> {
@@ -994,9 +994,9 @@ mod tests {
         assert!(is_secret_key("BOX_TOKEN"));
         assert!(is_secret_key("box_token"));
         assert!(is_secret_key("BOX_HOST_TOKEN"));
-        assert!(is_secret_key("BOX_VNC_PASSWORD"));
+        assert!(is_secret_key("BOX_VIEWER_PASSWORD"));
         assert!(is_secret_key("BOX_TOKEN_FILE"));
-        assert!(is_secret_key("box_vnc_password_file"));
+        assert!(is_secret_key("box_viewer_password_file"));
         assert!(is_secret_key("BOX_EGRESS_TUNNEL_BEARER"));
         assert!(is_secret_key("BOX_EGRESS_TUNNEL_BEARER_FILE"));
         assert!(!is_secret_key("PATH"));

@@ -1,7 +1,7 @@
 #!/bin/bash
-# Restore a clean guest desktop without restarting Docker / X / VNC / Chromium.
+# Restore a clean guest desktop without restarting Docker / X / voxl / Chromium.
 # Close client windows and leftover jobs. Leave the xfce session (xfwm4, panel,
-# xfdesktop, settings daemon) + x11vnc + the entrypoint Chromium process running
+# xfdesktop, settings daemon) + voxl + the entrypoint Chromium process running
 # (one Chromium model).
 set -uo pipefail
 
@@ -13,7 +13,7 @@ self="$$"
 
 protected_comm() {
   case "$1" in
-    tini|entrypoint.sh|box-exec|box-host|Xvfb|Xorg|openbox|tint2|xfce4-session|xfwm4|xfce4-panel|xfdesktop|xfsettingsd|xfconfd|x11vnc|websockify|websockify-nodelay|dbus-daemon|dbus-launch|pipewire|pipewire-pulse|pulseaudio|ssh-agent|gpg-agent|ffmpeg|sleep|chromium|chrome)
+    tini|entrypoint.sh|box-exec|box-host|Xvfb|Xorg|openbox|tint2|xfce4-session|xfwm4|xfce4-panel|xfdesktop|xfsettingsd|xfconfd|voxl|dbus-daemon|dbus-launch|pipewire|pipewire-pulse|pulseaudio|ssh-agent|gpg-agent|ffmpeg|sleep|chromium|chrome)
       return 0
       ;;
   esac
@@ -57,7 +57,7 @@ kill_gui() {
 
 kill_stray_jobs() {
   local pid ppid comm args parent_cmd
-  # Entrypoint children include x11vnc, python3 websockify, box-exec, and the
+  # Entrypoint children include voxl, box-exec, and the
   # watchdog `sleep 1` (`set -e`). Killing those exits the container.
   while read -r pid ppid comm args; do
     [[ "${pid}" =~ ^[0-9]+$ ]] || continue
@@ -75,7 +75,7 @@ kill_stray_jobs() {
       continue
     fi
     case "${args}" in
-      *entrypoint.sh*|*websockify*|*x11vnc*|*openbox*|*tint2*)
+      *entrypoint.sh*|*voxl*|*openbox*|*tint2*)
         continue
         ;;
     esac

@@ -4,7 +4,9 @@ info:
   description: |
     Guest HTTP wire for buwiz-computer. Two processes share this document:
     box-exec (port 1337: exec, files, CUA) and box-host (port 1340: identity,
-    readiness, desktop/chrome/egress status). Neither service performs model inference.
+    readiness, desktop/chrome/egress status, screens). Neither service performs model inference.
+    Each screen is also served to a browser by voxl on port 6900+N (`:1` is 6901), behind
+    voxl's own password; that wire is voxl's, not this document's.
     CUA coordinate space is the X framebuffer 1280x800, origin top-left.
     SDKs connect with caller-supplied exec URL, host URL, and token; they ignore
     /v1/info advertised URLs (those are container-local listen addresses).
@@ -186,28 +188,93 @@ components:
         created: { type: boolean }
     Ready:
       type: object
-      required: [status, service, exec_ready, desktop_ready]
+      required: [status, service, exec_ready, desktop_ready, viewer_ready]
       properties:
         status: { type: string }
         service: { type: string }
         exec_ready: { type: boolean }
         desktop_ready: { type: boolean }
+        viewer_ready:
+          type: boolean
+          description: The main screen's voxl takes connections. Never holds up ready; the box works unwatched.
     DesktopStatus:
       type: object
-      required: [enabled, ready, available, display, geometry, vnc, viewer]
+      required: [enabled, ready, available, display, geometry, viewer]
       properties:
         enabled: { type: boolean }
         ready: { type: boolean }
         available: { type: boolean, description: Same as ready (compat) }
         display: { type: string }
         geometry: { type: string }
-        vnc: { type: string }
         viewer:
           type: object
+          required: [kind, port, path, url]
           properties:
+            kind: { type: string, enum: [voxl] }
             port: { type: integer }
             path: { type: string }
-            url: { type: string }
+            url: { type: string, description: "Never carries the password. Sign in with ?token=<password>." }
+    Screen:
+      type: object
+      required: [display, slot, bot, viewer_port, state, workspace]
+      properties:
+        display: { type: string, description: ":1 is the box's own; a Bot's own is :2 and up" }
+        slot: { type: integer, description: The display's number }
+        bot: { type: string, nullable: true, description: The Bot this screen belongs to. Null on the box's own. }
+        viewer_port: { type: integer, description: "6900+slot, inside the box. A caller maps it through its own publish." }
+        state:
+          type: string
+          enum: [running, viewer_down, stopped]
+          description: |
+            running: the display and its voxl are up. viewer_down: the display is up, so input
+            and screenshots work, but voxl is not (yet). stopped: no display.
+        workspace:
+          type: string
+          description: |
+            This screen's folder, relative to the workspace root: agents/<bot> for a Bot's own,
+            shared for the box's own. Recordings, cooks and Chromium downloads land there.
+    ScreenList:
+      type: object
+      required: [screens]
+      properties:
+        screens:
+          type: array
+          description: The box's own screen, then each Bot's by slot. Empty with the desktop off.
+          items: { $ref: "#/components/schemas/Screen" }
+    WaitRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        idle: { type: integer, description: "Return once still this many ms (default 300), counted from the request at the earliest" }
+        change: { type: boolean, description: Return at the first change instead }
+        since: { type: integer, description: Count changes after this seq from an earlier wait }
+        region: { type: string, description: "x,y,w,h in desktop pixels; only watch that rectangle" }
+        timeout: { type: integer, description: Give up after this many ms (default 10000) }
+    WaitResponse:
+      type: object
+      required: [changed, timed_out, seq, waited_ms]
+      properties:
+        changed: { type: boolean }
+        timed_out: { type: boolean }
+        seq: { type: integer, description: Pass as since on a later wait }
+        waited_ms: { type: integer }
+    RecordStarted:
+      type: object
+      required: [id]
+      properties:
+        id: { type: integer }
+    RecordStopRequest:
+      type: object
+      additionalProperties: false
+      required: [id]
+      properties:
+        id: { type: integer }
+    RecordStopResponse:
+      type: object
+      required: [path, bytes]
+      properties:
+        path: { type: string, description: "Relative to the workspace, in the screen's folder: <workspace>/recordings/<time>-<id>.mp4" }
+        bytes: { type: integer }
     ChromeStatus:
       type: object
       required: [enabled, ready, running, profile, display]
@@ -544,6 +611,15 @@ components:
               properties:
                 enabled: { type: boolean }
                 ready: { type: boolean }
+            viewer:
+              type: object
+              description: What serves the main screen to a person. Never carries the password.
+              required: [kind, port, enabled, ready]
+              properties:
+                kind: { type: string, enum: [voxl] }
+                port: { type: integer }
+                enabled: { type: boolean }
+                ready: { type: boolean }
             chrome:
               type: object
               properties:
@@ -840,10 +916,27 @@ paths:
       security: [{ bearer: [] }]
       responses:
         "200":
-          description: Display probe and noVNC viewer URL
+          description: Display probe and voxl viewer URL
           content:
             application/json:
               schema: { $ref: "#/components/schemas/DesktopStatus" }
+        "401":
+          description: Missing or wrong token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/screens:
+    get:
+      tags: [desktop, host]
+      summary: Every screen of the box with its display, viewer port and state (box-host)
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: Screens
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ScreenList" }
         "401":
           description: Missing or wrong token
           content:
@@ -1102,6 +1195,112 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "401":
           description: Missing or wrong token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/cua/wait:
+    post:
+      tags: [cua]
+      summary: Return when the screen settles or changes
+      description: |
+        voxl's /wait, on that screen's voxl, whether or not anyone is watching. With no body,
+        returns once nothing has changed for 300 ms. To wait for what an action caused, take
+        `seq` before the action and pass it as `since` with `change: true` after.
+      security: [{ bearer: [] }]
+      parameters:
+        - name: display
+          in: query
+          required: false
+          description: Another of the box's screens (`:N`). Without it, the box's own.
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/WaitRequest" }
+      responses:
+        "200":
+          description: Settled, changed or timed out
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/WaitResponse" }
+        "401":
+          description: Missing or wrong token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: cua_disabled, or viewer_unavailable when the screen's voxl is down
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/cua/record/start:
+    post:
+      tags: [cua]
+      summary: Start recording the screen
+      description: |
+        The H.264 voxl already encodes, kept as MP4: no extra CPU, no cursor, and only frames
+        where the screen changed. A recording ends on its own at voxl's limit (300 s).
+      security: [{ bearer: [] }]
+      parameters:
+        - name: display
+          in: query
+          required: false
+          description: Another of the box's screens (`:N`). Without it, the box's own.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Recording
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecordStarted" }
+        "401":
+          description: Missing or wrong token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: cua_disabled, or viewer_unavailable when the screen's voxl is down
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/cua/record/stop:
+    post:
+      tags: [cua]
+      summary: Stop a recording and keep the MP4 in the workspace
+      security: [{ bearer: [] }]
+      parameters:
+        - name: display
+          in: query
+          required: false
+          description: Another of the box's screens (`:N`). Without it, the box's own.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RecordStopRequest" }
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RecordStopResponse" }
+        "400":
+          description: voxl has no recording with that id
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401":
+          description: Missing or wrong token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: cua_disabled, or viewer_unavailable when the screen's voxl is down
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
