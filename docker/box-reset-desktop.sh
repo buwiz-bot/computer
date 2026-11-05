@@ -11,9 +11,16 @@ export XDG_CURRENT_DESKTOP="${XDG_CURRENT_DESKTOP:-XFCE}"
 uid="$(id -u)"
 self="$$"
 
+# Other screens of this box run as the same user, and a reset of one must leave them alone.
+on_this_screen() {
+  local display
+  display="$(tr '\0' '\n' <"/proc/$1/environ" 2>/dev/null | sed -n 's/^DISPLAY=//p' | head -n 1)"
+  [[ "${display}" == "${DISPLAY}" ]]
+}
+
 protected_comm() {
   case "$1" in
-    tini|entrypoint.sh|box-exec|box-host|Xvfb|Xorg|openbox|tint2|xfce4-session|xfwm4|xfce4-panel|xfdesktop|xfsettingsd|xfconfd|voxl|dbus-daemon|dbus-launch|pipewire|pipewire-pulse|pulseaudio|ssh-agent|gpg-agent|ffmpeg|sleep|chromium|chrome)
+    tini|entrypoint.sh|box-keeper|box-exec|box-host|Xvfb|Xorg|openbox|tint2|xfce4-session|xfwm4|xfce4-panel|xfdesktop|xfsettingsd|xfconfd|voxl|dbus-daemon|dbus-launch|pipewire|pipewire-pulse|pulseaudio|ssh-agent|gpg-agent|ffmpeg|sleep|chromium|chrome)
       return 0
       ;;
   esac
@@ -50,14 +57,17 @@ close_windows() {
 kill_gui() {
   # Close helper GUI apps. Never kill Chromium: the entrypoint owns that
   # process and will respawn it if we SIGTERM it.
-  pkill -u "${uid}" -x xfce4-terminal >/dev/null 2>&1 || true
-  pkill -u "${uid}" -x thunar >/dev/null 2>&1 || true
-  pkill -u "${uid}" -x Thunar >/dev/null 2>&1 || true
+  local pid
+  for pid in $(pgrep -u "${uid}" -x 'xfce4-terminal|thunar|Thunar'); do
+    if on_this_screen "${pid}"; then
+      kill -TERM "${pid}" >/dev/null 2>&1 || true
+    fi
+  done
 }
 
 kill_stray_jobs() {
   local pid ppid comm args parent_cmd
-  # Entrypoint children include voxl, box-exec, and the
+  # The box's own processes include voxl, box-exec, and the entrypoint's
   # watchdog `sleep 1` (`set -e`). Killing those exits the container.
   while read -r pid ppid comm args; do
     [[ "${pid}" =~ ^[0-9]+$ ]] || continue
@@ -71,7 +81,7 @@ kill_stray_jobs() {
     case "${parent_cmd}" in
       *entrypoint.sh*) continue ;;
     esac
-    if protected_comm "${comm}"; then
+    if protected_comm "${comm}" || ! on_this_screen "${pid}"; then
       continue
     fi
     case "${args}" in
