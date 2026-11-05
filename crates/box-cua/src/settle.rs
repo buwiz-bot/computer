@@ -164,13 +164,20 @@ pub(crate) async fn cdp_json() -> Option<String> {
     .await
     .ok()?
     .ok()?;
-    let req = b"GET /json HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    let req = b"GET /json HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
     stream.write_all(req).await.ok()?;
     let mut buf = Vec::new();
-    tokio::time::timeout(Duration::from_millis(400), stream.read_to_end(&mut buf))
-        .await
-        .ok()?
-        .ok()?;
+    tokio::time::timeout(Duration::from_millis(400), async {
+        let mut chunk = [0u8; 4096];
+        while !box_common::http_response_complete(&buf) {
+            match stream.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            }
+        }
+    })
+    .await
+    .ok()?;
     let text = String::from_utf8_lossy(&buf);
     let split = text.find("\r\n\r\n").or_else(|| text.find("\n\n"))?;
     let start = if text[split..].starts_with("\r\n\r\n") {

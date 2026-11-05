@@ -184,7 +184,8 @@ mod tests {
     #[test]
     fn absolute_inside_ok() {
         let tmp = tmp_root();
-        let abs = tmp.path().join("inside.txt");
+        // Canonical, so the absolute path is inside the jail where temp dirs sit behind a symlink.
+        let abs = tmp.path().canonicalize().unwrap().join("inside.txt");
         fs::write(&abs, b"x").unwrap();
         let resolved = resolve_in_jail(tmp.path(), abs.to_str().unwrap()).unwrap();
         assert_eq!(resolved, abs.canonicalize().unwrap());

@@ -133,10 +133,16 @@ fn cdp_get(port: u16, path: &str) -> Option<String> {
     stream
         .set_write_timeout(Some(Duration::from_millis(200)))
         .ok()?;
-    let req = format!("GET {path} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    let req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
     stream.write_all(req.as_bytes()).ok()?;
     let mut buf = Vec::new();
-    stream.read_to_end(&mut buf).ok()?;
+    let mut chunk = [0u8; 4096];
+    while !box_common::http_response_complete(&buf) {
+        match stream.read(&mut chunk).ok()? {
+            0 => break,
+            n => buf.extend_from_slice(&chunk[..n]),
+        }
+    }
     let text = String::from_utf8_lossy(&buf);
     if !(text.starts_with("HTTP/1.1 200") || text.starts_with("HTTP/1.0 200")) {
         return None;

@@ -32,3 +32,45 @@ pub const PROTOCOL_VERSION: &str = "v1";
 /// Well-known insecure token. Rejected unless `BOX_ALLOW_INSECURE_DEV=1`
 /// and both daemon binds are loopback.
 pub const DEV_BOX_TOKEN: &str = "dev-box-token";
+
+/// True when `buf` holds a whole HTTP response: its headers and `Content-Length` bytes of body.
+/// Chromium's DevTools server speaks only HTTP/1.1 and leaves the socket open even after
+/// `Connection: close`, so reading to the end of the stream would only ever time out.
+pub fn http_response_complete(buf: &[u8]) -> bool {
+    let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+        return false;
+    };
+    let headers = String::from_utf8_lossy(&buf[..end]);
+    let length = headers.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse::<usize>().ok())?
+    });
+    length.is_some_and(|length| buf.len() >= end + 4 + length)
+}
+
+#[cfg(test)]
+mod http_tests {
+    use super::http_response_complete;
+
+    #[test]
+    fn a_response_is_complete_at_its_content_length() {
+        assert!(!http_response_complete(
+            b"HTTP/1.1 200 OK\r\nContent-Length:4"
+        ));
+        assert!(!http_response_complete(
+            b"HTTP/1.1 200 OK\r\nContent-Length:4\r\n\r\nabc"
+        ));
+        assert!(http_response_complete(
+            b"HTTP/1.1 200 OK\r\nContent-Length:4\r\n\r\nabcd"
+        ));
+        assert!(http_response_complete(
+            b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n"
+        ));
+    }
+
+    #[test]
+    fn with_no_length_only_the_end_of_the_stream_can_say() {
+        assert!(!http_response_complete(b"HTTP/1.1 200 OK\r\n\r\nabcd"));
+    }
+}
