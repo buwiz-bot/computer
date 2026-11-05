@@ -1,4 +1,4 @@
-//! Chromium launch metadata for the Linux Grok Box image.
+//! Chromium launch metadata for the Linux Buwiz computer image.
 //!
 //! Chrome (or Chromium) is started by `docker/entrypoint.sh` on `DISPLAY=:1`.
 //! The profile lives at `/home/box/chrome-profile` (compose volume). Optional
@@ -32,7 +32,8 @@ pub struct ChromeConfig {
 
 impl ChromeConfig {
     pub fn from_env() -> Self {
-        let enabled = env_bool("BOX_CHROME", true);
+        // Chromium needs a screen: with the desktop off the entrypoint never starts it.
+        let enabled = env_bool("BOX_CHROME", true) && env_bool("BOX_DESKTOP", true);
         let profile = std::env::var("BOX_CHROME_PROFILE")
             .ok()
             .filter(|s| !s.is_empty())
@@ -133,10 +134,16 @@ fn cdp_get(port: u16, path: &str) -> Option<String> {
     stream
         .set_write_timeout(Some(Duration::from_millis(200)))
         .ok()?;
-    let req = format!("GET {path} HTTP/1.0\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    let req = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
     stream.write_all(req.as_bytes()).ok()?;
     let mut buf = Vec::new();
-    stream.read_to_end(&mut buf).ok()?;
+    let mut chunk = [0u8; 4096];
+    while !box_common::http_response_complete(&buf) {
+        match stream.read(&mut chunk).ok()? {
+            0 => break,
+            n => buf.extend_from_slice(&chunk[..n]),
+        }
+    }
     let text = String::from_utf8_lossy(&buf);
     if !(text.starts_with("HTTP/1.1 200") || text.starts_with("HTTP/1.0 200")) {
         return None;

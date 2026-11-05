@@ -1,0 +1,18 @@
+name: image-smoke
+
+# Build the image and run scripts/smoke.sh against it when the image itself changes.
+on:
+  pull_request:
+    paths:
+      - "docker/**"
+      - "docker-compose.yml"
+      - "scripts/smoke.sh"
+
+jobs:
+  smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: smoke
+        run: bash scripts/smoke.sh

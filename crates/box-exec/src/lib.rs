@@ -1,4 +1,4 @@
-//! HTTP exec daemon for grok-box (`box-exec`).
+//! HTTP exec daemon for buwiz-computer (`box-exec`).
 //!
 //! Shell, workspace files, and Computer Use (CUA) actuators against the
 //! box X display. Inference stays in L4. The process-wide heap is mimalloc
@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use axum::Router;
 use box_common::{cors_layer, BoxConfig, GLOBAL_ALLOCATOR};
-use box_cua::CuaConfig;
+use box_cua::{CuaConfig, ViewerClient};
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, Notify, Semaphore};
 use tower_http::limit::RequestBodyLimitLayer;
@@ -49,6 +49,7 @@ pub struct AppState {
     pub max_concurrent_execs: usize,
     pub kill_grace: Duration,
     pub cua: CuaConfig,
+    pub viewer: ViewerClient,
     pub exec_slots: Arc<Semaphore>,
     pub execs_in_flight: Arc<AtomicUsize>,
     pub execs_started: Arc<AtomicU64>,
@@ -80,6 +81,7 @@ impl AppState {
             max_concurrent_execs,
             kill_grace: config.kill_grace,
             cua: CuaConfig::from_env(),
+            viewer: ViewerClient::new(config.viewer_password.clone()),
             exec_slots: Arc::new(Semaphore::new(max_concurrent_execs)),
             execs_in_flight: Arc::new(AtomicUsize::new(0)),
             execs_started: Arc::new(AtomicU64::new(0)),
@@ -104,6 +106,7 @@ impl AppState {
             max_concurrent_execs: 8,
             kill_grace: Duration::from_millis(400),
             cua: CuaConfig::disabled(),
+            viewer: ViewerClient::default(),
             exec_slots: Arc::new(Semaphore::new(8)),
             execs_in_flight: Arc::new(AtomicUsize::new(0)),
             execs_started: Arc::new(AtomicU64::new(0)),

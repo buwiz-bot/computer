@@ -11,7 +11,7 @@ if [[ "${TOKEN}" == "dev-box-token" || ${#TOKEN} -lt 16 ]]; then
   TOKEN="local-smoke-box-token"
 fi
 export BOX_TOKEN="${TOKEN}"
-export BOX_VNC_PASSWORD="${BOX_VNC_PASSWORD:-smokevnc}"
+export BOX_VIEWER_PASSWORD="${BOX_VIEWER_PASSWORD:-local-smoke-viewer-password}"
 EXEC_URL="${EXEC_URL:-http://127.0.0.1:1337}"
 HOST_URL="${HOST_URL:-http://127.0.0.1:1340}"
 
@@ -43,12 +43,17 @@ fi
 
 mkdir -p workspace-data chrome-profile
 chmod u+rwx workspace-data chrome-profile 2>/dev/null || true
+# The box runs as uid 1000, and on a Linux host a bind mount keeps the host's owner. Docker Desktop
+# hides this on a Mac; a CI runner is uid 1001, so the box couldn't make /workspace/shared.
+if [[ "$(uname -s)" == "Linux" && "$(id -u)" != "1000" ]]; then
+  sudo -n chown 1000:1000 workspace-data chrome-profile || chmod 0777 workspace-data chrome-profile
+fi
 
 # Compose mounts ./secrets/* instead of putting the values in the container
 # environment, so they have to exist before anything is started.
 bash "${ROOT}/scripts/write-secrets.sh"
 
-echo "==> building and starting grok-box"
+echo "==> building and starting buwiz-computer"
 "${COMPOSE[@]}" up --build -d
 
 cleanup() {
@@ -141,19 +146,31 @@ fi
 
 echo "==> secrets are not in any /proc/<pid>/environ"
 # The acceptance check for the file-delivered secrets: with BOX_TOKEN_FILE set,
-# nothing in the box can recover the token or the VNC password by reading an
-# environment block, including pid 1.
+# nothing in the box can recover the token or the viewer password by reading an
+# environment block: not pid 1's, and not voxl's, which has to hold the password
+# there and is execute-only so that it is not dumpable.
 proc_environ="$(curl -fsS \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
-  -d '{"command":["sh","-c","if grep -aq BOX_TOKEN= /proc/1/environ || grep -aq BOX_VNC_PASSWORD= /proc/1/environ; then echo PROC_LEAKED; else echo PROC_CLEAN; fi"]}' \
+  -d '{"command":["sh","-c","if grep -aqE \"(BOX_TOKEN|BOX_VIEWER_PASSWORD|VOXL_PASSWORD)=\" /proc/[0-9]*/environ 2>/dev/null; then echo PROC_LEAKED; else echo PROC_CLEAN; fi"]}' \
   "${EXEC_URL}/v1/exec")"
 echo "${proc_environ}"
 if echo "${proc_environ}" | grep -q PROC_LEAKED; then
-  echo "BOX_TOKEN or BOX_VNC_PASSWORD is readable in /proc/1/environ" >&2
+  echo "BOX_TOKEN or the viewer password is readable in a /proc/<pid>/environ" >&2
   exit 1
 fi
 echo "${proc_environ}" | grep -q PROC_CLEAN
+
+echo "==> an exec child cannot read a secret from any process's memory"
+# The probe gets the secrets on stdin, so only it holds them, and it skips itself. It first finds
+# a secret in a child of its own, so a clean result means the scan works, not that it saw nothing.
+memory_out="$(python3 "${ROOT}/scripts/run-memory-probe.py" "${EXEC_URL}" "${TOKEN}" "${BOX_VIEWER_PASSWORD}")"
+echo "${memory_out}"
+for held in "keeper denied" "exec denied" "host denied" "voxl denied"; do
+  echo "${memory_out}" | grep -q "${held}"
+done
+echo "${memory_out}" | grep -q "control found"
+echo "${memory_out}" | grep -q "leaks none"
 
 echo "==> auth reject"
 code="$(curl -s -o /dev/null -w '%{http_code}' \
@@ -174,9 +191,10 @@ if command -v python3 >/dev/null 2>&1; then
   printf '%s' "${info}" | python3 -c '
 import json, sys
 c = json.load(sys.stdin)["capabilities"]
-for name in ("exec", "files", "desktop", "chrome", "cua", "egress_tunnel"):
+for name in ("exec", "files", "desktop", "viewer", "chrome", "cua", "egress_tunnel"):
     assert "enabled" in c[name] and "ready" in c[name], name
 assert c["exec"]["enabled"] and c["exec"]["ready"]
+assert c["viewer"]["kind"] == "voxl" and c["viewer"]["port"] == 6901, c["viewer"]
 print("capabilities objects ok")
 '
 fi
@@ -186,7 +204,21 @@ desk="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" "${HOST_URL}/v1/desktop")"
 echo "${desk}"
 echo "${desk}" | grep -q '"available":true'
 echo "${desk}" | grep -q '"display":":1"'
-echo "${desk}" | grep -q '"port":6080'
+echo "${desk}" | grep -q '"kind":"voxl"'
+echo "${desk}" | grep -q '"port":6901'
+
+echo "==> GET /v1/screens (host)"
+for _ in $(seq 1 30); do
+  screens="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" "${HOST_URL}/v1/screens")"
+  if echo "${screens}" | grep -q '"state":"running"'; then
+    break
+  fi
+  sleep 1
+done
+echo "${screens}"
+echo "${screens}" | grep -q '"display":":1"'
+echo "${screens}" | grep -q '"viewer_port":6901'
+echo "${screens}" | grep -q '"state":"running"'
 
 echo "==> GET /v1/chrome (host)"
 chrome="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" "${HOST_URL}/v1/chrome")"
@@ -200,13 +232,50 @@ echo "${ready}"
 echo "${ready}" | grep -q '"exec_ready":true'
 echo "${ready}" | grep -q '"desktop_ready":true'
 
-echo "==> noVNC viewer"
-novnc="$(curl -fsS -o /dev/null -w '%{http_code}' http://127.0.0.1:6080/vnc.html)"
-if [[ "${novnc}" != "200" ]]; then
-  echo "expected noVNC /vnc.html 200, got ${novnc}" >&2
+echo "==> voxl viewer"
+VIEWER_URL="${VIEWER_URL:-http://127.0.0.1:6901}"
+curl -fsS "${VIEWER_URL}/healthz" | grep -q ok
+# voxl's own login stays on: without the password there is no page.
+viewer_unauth="$(curl -s -o /dev/null -w '%{http_code}' "${VIEWER_URL}/")"
+if [[ "${viewer_unauth}" != "401" ]]; then
+  echo "expected 401 from voxl without the password, got ${viewer_unauth}" >&2
   "${COMPOSE[@]}" logs || true
   exit 1
 fi
+viewer_page="$(curl -s -o /dev/null -w '%{http_code}' -u ":${BOX_VIEWER_PASSWORD}" "${VIEWER_URL}/")"
+if [[ "${viewer_page}" != "200" ]]; then
+  echo "expected voxl's page 200 with the password, got ${viewer_page}" >&2
+  "${COMPOSE[@]}" logs || true
+  exit 1
+fi
+
+echo "==> POST /v1/cua/wait"
+waited="$(curl -fsS \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"idle":200,"timeout":5000}' \
+  "${EXEC_URL}/v1/cua/wait")"
+echo "${waited}"
+echo "${waited}" | grep -q '"seq"'
+
+echo "==> POST /v1/cua/record/start + stop"
+rec_id="$(curl -fsS \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -X POST \
+  "${EXEC_URL}/v1/cua/record/start" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')"
+curl -fsS \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"x":200,"y":200}' \
+  "${EXEC_URL}/v1/cua/move" >/dev/null
+sleep 1
+recording="$(curl -fsS \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d "{\"id\":${rec_id}}" \
+  "${EXEC_URL}/v1/cua/record/stop")"
+echo "${recording}"
+echo "${recording}" | grep -q '"path":"shared/recordings/'
 
 echo "==> POST /v1/cua/screenshot"
 shot="$(curl -fsS \
@@ -234,7 +303,7 @@ else
     echo "empty png_base64" >&2
     exit 1
   fi
-  printf '%s' "${b64}" | base64 -d | head -c 8 | grep -q $'\x89PNG' || {
+  printf '%s' "${b64}" | base64 -d | head -c 8 | LC_ALL=C grep -aq $'\x89PNG' || {
     echo "decoded screenshot was not a PNG" >&2
     exit 1
   }
@@ -250,7 +319,7 @@ echo "${click}"
 echo "${click}" | grep -q '"ok":true'
 
 echo "==> POST /v1/cua/screenshot?format=png"
-png_code="$(curl -sS -o /tmp/grok-box-smoke.png -w '%{http_code}' \
+png_code="$(curl -sS -o /tmp/buwiz-computer-smoke.png -w '%{http_code}' \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Accept: image/png" \
   -X POST \
@@ -259,7 +328,7 @@ if [[ "${png_code}" != "200" ]]; then
   echo "raw PNG screenshot expected 200, got ${png_code}" >&2
   exit 1
 fi
-head -c 8 /tmp/grok-box-smoke.png | grep -q $'\x89PNG' || {
+head -c 8 /tmp/buwiz-computer-smoke.png | LC_ALL=C grep -aq $'\x89PNG' || {
   echo "raw screenshot was not a PNG" >&2
   exit 1
 }

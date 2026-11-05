@@ -1,8 +1,8 @@
 {
-  "name": "grok-box",
+  "name": "buwiz-computer",
   "version": "0.1.0",
   "private": true,
-  "description": "Connect-only TypeScript client for a grok-box guest. Not published to npm.",
+  "description": "Connect-only TypeScript client for a buwiz-computer guest. Not published to npm.",
   "license": "MIT",
   "type": "module",
   "main": "./src/index.ts",

@@ -202,6 +202,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "http",
+ "libc",
  "mimalloc",
  "serde",
  "serde_json",
@@ -223,11 +224,15 @@ dependencies = [
  "box-desktop",
  "bumpalo",
  "criterion",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
  "mimalloc",
  "png",
  "serde",
  "serde_json",
  "smallvec",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",
@@ -240,6 +245,8 @@ version = "0.1.0"
 dependencies = [
  "box-common",
  "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -267,6 +274,7 @@ dependencies = [
  "base64",
  "box-common",
  "box-cua",
+ "box-desktop",
  "bytes",
  "futures-util",
  "http",
@@ -295,8 +303,10 @@ dependencies = [
  "box-egress-tunnel",
  "http",
  "http-body-util",
+ "libc",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tower",
  "tower-http",
@@ -309,6 +319,24 @@ name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
+
+[[package]]
+name = "buwiz-computer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "clap",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
 
 [[package]]
 name = "bytes"
@@ -656,24 +684,6 @@ dependencies = [
  "cfg-if",
  "libc",
  "r-efi 6.0.0",
-]
-
-[[package]]
-name = "grok-box"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bytes",
- "clap",
- "http",
- "http-body-util",
- "hyper",
- "hyper-rustls",
- "hyper-util",
- "serde",
- "serde_json",
- "thiserror",
- "tokio",
 ]
 
 [[package]]

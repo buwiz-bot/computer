@@ -1,6 +1,6 @@
 # Request processing
 
-How a call moves through grok-box. Inference is out of scope (not this repo).
+How a call moves through buwiz-computer. Inference is out of scope (not this repo).
 
 ## Connect
 
@@ -10,7 +10,7 @@ The caller already has three values from **their** orchestrator:
 2. `hostUrl` — published `box-host` base
 3. `token` — the `BOX_TOKEN` they injected at container start
 
-`GrokBox.connect(execUrl, hostUrl, token)` stores those. It does not start Docker. It does not replace them with `/v1/info.endpoints`.
+`BuwizComputer.connect(execUrl, hostUrl, token)` stores those. It does not start Docker. It does not replace them with `/v1/info.endpoints`.
 
 ## Unauthenticated probes
 
@@ -41,7 +41,7 @@ CORS is not permissive. Server-to-server callers are unaffected. Browsers only g
 
 1. Jail-check `cwd` under `WORKSPACE_ROOT`.
 2. Spawn argv or `/bin/sh -c`.
-3. Strip `BOX_TOKEN`, `BOX_HOST_TOKEN`, `BOX_VNC_PASSWORD`, and `BOX_EGRESS_TUNNEL_BEARER` from the child (including caller-supplied `env`). The daemons also drop those names from their own environ after config load.
+3. Strip `BOX_TOKEN`, `BOX_HOST_TOKEN`, `BOX_VIEWER_PASSWORD`, and `BOX_EGRESS_TUNNEL_BEARER` from the child (including caller-supplied `env`). The daemons also drop those names from their own environ after config load.
 4. Write `stdin` if provided, then close the pipe so the child sees EOF.
 5. Cap stdout/stderr (`BOX_MAX_OUTPUT_BYTES`).
 6. On timeout: **SIGTERM** the process group, wait `BOX_EXEC_KILL_GRACE_MS` (default 2s), then **SIGKILL**. Keep captured output. `timed_out: true`. Response includes `exec_id`.
@@ -91,7 +91,7 @@ Default `screenshot` is `end` (one PNG on the receipt, and a file when `artifact
   "stop_on_error": true,
   "screenshot": "end",
   "record": true,
-  "artifact_dir": ".l1/cooks/demo",
+  "artifact_dir": "shared/cooks/demo",
   "steps": [
     { "op": "reset_desktop" },
     { "op": "click", "x": 640, "y": 80 },
@@ -106,8 +106,4 @@ Default `screenshot` is `end` (one PNG on the receipt, and a file when `artifact
 
 `GET /v1/info` (bearer) returns box id, capability flags, workspace path, and **container-local** endpoint URLs (`scope: container-local`). Use it to see whether desktop/chrome/CUA/egress_tunnel are up. Do not dial those URLs from another machine; dial the URLs you published.
 
-`GET /v1/desktop`, `GET /v1/chrome`, and `GET /v1/egress` are the same: status inside the guest. Viewer and CDP addresses are loopback unless you published noVNC (6080) yourself. Egress `ws` is the guest listen; the laptop dials the URL **you** published or SSH-forwarded.
-
-## Demo proxy (EnsureBox)
-
-When the EnsureBox demo is running, a signed-in L1 user sends requests to `http://127.0.0.1:43142/api/v1/boxes/:id/...`. The L1 **server** attaches `ENSUREBOX_TOKEN`. The browser never receives that token or `BOX_TOKEN`. EnsureBox looks up the guest token and calls the TypeScript `grok-box` SDK with the **published** host ports. Public box JSON omits VNC passwords and guest bind URLs.
+`GET /v1/desktop`, `GET /v1/chrome`, and `GET /v1/egress` are the same: status inside the guest. Viewer and CDP addresses are loopback unless you published them yourself. `GET /v1/screens` lists every screen with its viewer port, state and folder. Egress `ws` is the guest listen; the laptop dials the URL **you** published or SSH-forwarded.

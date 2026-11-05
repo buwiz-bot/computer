@@ -16,6 +16,7 @@ mimalloc = ["box-common/mimalloc"]
 [dependencies]
 box-common = { workspace = true }
 box-cua = { workspace = true }
+box-desktop = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

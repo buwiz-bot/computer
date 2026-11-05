@@ -1,14 +1,14 @@
-# grok-box TypeScript SDK (workspace only)
+# buwiz-computer TypeScript SDK (workspace only)
 
 Connect-only client. Not published to npm.
 
 ```ts
-import { GrokBox } from "grok-box";
+import { BuwizComputer } from "buwiz-computer";
 
-const box = GrokBox.connect(
+const box = BuwizComputer.connect(
   "http://127.0.0.1:1337",
   "http://127.0.0.1:1340",
-  process.env.GROK_BOX_TOKEN!,
+  process.env.BUWIZ_COMPUTER_TOKEN!,
 );
 
 await box.exec({ command: ["echo", "ok"] });

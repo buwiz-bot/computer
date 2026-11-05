@@ -3,6 +3,8 @@
 //! Actuators talk to Xvfb (`DISPLAY=:1`, 1280×800) via in-process XTEST /
 //! GetImage (xdotool / ImageMagick fallback).
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use axum::extract::{Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -11,10 +13,11 @@ use box_common::ApiError;
 use box_cua::{
     click, double_click, drag, key, move_pointer, press, release, run_recipe, screenshot,
     screenshot_png, scroll, type_text, ClickRequest, CuaError, DragRequest, KeyRequest,
-    MoveRequest, OkResponse, RecipeRequest, RecipeResponse, ReleaseRequest, ScrollRequest,
-    TypeRequest,
+    MoveRequest, OkResponse, RecipeRequest, RecipeResponse, RecordStarted, RecordStopRequest,
+    ReleaseRequest, ScrollRequest, TypeRequest, WaitRequest, WaitResponse,
 };
-use serde::Deserialize;
+use box_desktop::{screen_workspace, slots_dir};
+use serde::{Deserialize, Serialize};
 
 use crate::AppState;
 
@@ -49,6 +52,11 @@ pub fn map_err(err: CuaError) -> ApiError {
         }
         CuaError::Invalid(_) => ApiError::invalid_request(err.to_string()),
         CuaError::Tool(_) => ApiError::new(StatusCode::BAD_GATEWAY, "cua_backend", err.to_string()),
+        CuaError::Viewer(_) => ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "viewer_unavailable",
+            err.to_string(),
+        ),
     }
 }
 
@@ -85,6 +93,68 @@ pub async fn screenshot_handler(
         .await
         .map(|body| Json(body).into_response())
         .map_err(map_err)
+}
+
+/// When the screen settles or changes: voxl's `/wait`, on this screen's voxl. With no body, once
+/// nothing has changed for voxl's default 300 ms.
+pub async fn wait_handler(
+    State(state): State<AppState>,
+    Query(on): Query<OnScreen>,
+    req: Option<Json<WaitRequest>>,
+) -> Result<Json<WaitResponse>, ApiError> {
+    let cua = state.cua.on(on.display.as_deref()).map_err(map_err)?;
+    let req = req.map(|Json(req)| req).unwrap_or_default();
+    state
+        .viewer
+        .wait(&cua, &req)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+pub async fn record_start_handler(
+    State(state): State<AppState>,
+    Query(on): Query<OnScreen>,
+) -> Result<Json<RecordStarted>, ApiError> {
+    let cua = state.cua.on(on.display.as_deref()).map_err(map_err)?;
+    state
+        .viewer
+        .record_start(&cua)
+        .await
+        .map(Json)
+        .map_err(map_err)
+}
+
+/// A saved recording: `path` is relative to the workspace, in the folder of the screen it shows,
+/// ready for `GET /v1/files/raw`.
+#[derive(Debug, Serialize)]
+pub struct RecordStopResponse {
+    pub path: String,
+    pub bytes: u64,
+}
+
+pub async fn record_stop_handler(
+    State(state): State<AppState>,
+    Query(on): Query<OnScreen>,
+    Json(req): Json<RecordStopRequest>,
+) -> Result<Json<RecordStopResponse>, ApiError> {
+    let cua = state.cua.on(on.display.as_deref()).map_err(map_err)?;
+    let path = recording_path(&screen_workspace(&cua.display, &slots_dir()), req.id);
+    let bytes = state
+        .viewer
+        .record_stop(&cua, req.id, &state.workspace.join(&path))
+        .await
+        .map_err(map_err)?;
+    Ok(Json(RecordStopResponse { path, bytes }))
+}
+
+/// Where a recording is kept. voxl's ids start over with voxl, so the time keeps names apart.
+fn recording_path(folder: &str, id: u64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    format!("{folder}/recordings/{now}-{id}.mp4")
 }
 
 pub async fn click_handler(

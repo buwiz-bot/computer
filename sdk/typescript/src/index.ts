@@ -1,17 +1,17 @@
 /**
- * Connect-only grok-box client.
+ * Connect-only buwiz-computer client.
  *
  * Pass the published exec URL, host URL, and token. This package never starts
  * Docker and never treats `/v1/info` advertised URLs as the dial address.
  */
 
-export class GrokBoxError extends Error {
+export class BuwizComputerError extends Error {
   readonly status: number;
   readonly body: unknown;
 
   constructor(message: string, status: number, body: unknown) {
     super(message);
-    this.name = "GrokBoxError";
+    this.name = "BuwizComputerError";
     this.status = status;
     this.body = body;
   }
@@ -206,20 +206,20 @@ export type RecipeResponse = {
   recording_error?: string;
 };
 
-export class GrokBox {
+export class BuwizComputer {
   private constructor(
     readonly execUrl: string,
     readonly hostUrl: string,
     private readonly token: string,
   ) {}
 
-  static connect(execUrl: string, hostUrl: string, token: string): GrokBox {
+  static connect(execUrl: string, hostUrl: string, token: string): BuwizComputer {
     const exec = trimSlash(execUrl);
     const host = trimSlash(hostUrl);
     if (!exec || !host || !token) {
       throw new Error("execUrl, hostUrl, and token are required");
     }
-    return new GrokBox(exec, host, token);
+    return new BuwizComputer(exec, host, token);
   }
 
   async healthExec(): Promise<unknown> {
@@ -255,7 +255,7 @@ export class GrokBox {
     });
     const text = await response.text();
     if (!response.ok) {
-      throw new GrokBoxError(`exec stream returned ${response.status}`, response.status, text);
+      throw new BuwizComputerError(`exec stream returned ${response.status}`, response.status, text);
     }
     return text;
   }
@@ -310,7 +310,7 @@ export class GrokBox {
     });
     if (!response.ok) {
       const body = await parseBody(response);
-      throw new GrokBoxError(`raw GET returned ${response.status}`, response.status, body);
+      throw new BuwizComputerError(`raw GET returned ${response.status}`, response.status, body);
     }
     return new Uint8Array(await response.arrayBuffer());
   }
@@ -323,13 +323,43 @@ export class GrokBox {
     });
     const parsed = await parseBody(response);
     if (!response.ok) {
-      throw new GrokBoxError(`raw PUT returned ${response.status}`, response.status, parsed);
+      throw new BuwizComputerError(`raw PUT returned ${response.status}`, response.status, parsed);
     }
     return parsed as { path: string; bytes_written: number };
   }
 
   async desktop(): Promise<unknown> {
     return this.authJson("GET", `${this.hostUrl}/v1/desktop`);
+  }
+
+  /** Every screen of the box with its display, viewer port and state. */
+  async screens(): Promise<unknown> {
+    return this.authJson("GET", `${this.hostUrl}/v1/screens`);
+  }
+
+  /** When the screen settles or changes: voxl's `/wait` fields, times in ms. */
+  async cuaWait(request: {
+    idle?: number;
+    change?: boolean;
+    since?: number;
+    region?: string;
+    timeout?: number;
+  } = {}): Promise<{ changed: boolean; timed_out: boolean; seq: number; waited_ms: number }> {
+    return this.authJson(
+      "POST",
+      `${this.execUrl}/v1/cua/wait`,
+      request,
+      (request.timeout ?? 10_000) + 5_000,
+    );
+  }
+
+  async recordStart(): Promise<{ id: number }> {
+    return this.authJson("POST", `${this.execUrl}/v1/cua/record/start`);
+  }
+
+  /** Saves the MP4 under the workspace; `path` works with the file calls. */
+  async recordStop(id: number): Promise<{ path: string; bytes: number }> {
+    return this.authJson("POST", `${this.execUrl}/v1/cua/record/stop`, { id }, 60_000);
   }
 
   async chrome(): Promise<unknown> {
@@ -368,7 +398,7 @@ export class GrokBox {
     });
     if (!response.ok) {
       const body = await parseBody(response);
-      throw new GrokBoxError(`screenshot PNG returned ${response.status}`, response.status, body);
+      throw new BuwizComputerError(`screenshot PNG returned ${response.status}`, response.status, body);
     }
     return new Uint8Array(await response.arrayBuffer());
   }
@@ -429,7 +459,7 @@ export class GrokBox {
     const response = await fetch(url, { cache: "no-store" });
     const body = await parseBody(response);
     if (!response.ok) {
-      throw new GrokBoxError(`${url} returned ${response.status}`, response.status, body);
+      throw new BuwizComputerError(`${url} returned ${response.status}`, response.status, body);
     }
     return body;
   }
@@ -457,7 +487,7 @@ export class GrokBox {
     });
     const parsed = await parseBody(response);
     if (!response.ok) {
-      throw new GrokBoxError(`${url} returned ${response.status}`, response.status, parsed);
+      throw new BuwizComputerError(`${url} returned ${response.status}`, response.status, parsed);
     }
     return parsed as T;
   }

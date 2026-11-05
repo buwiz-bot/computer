@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# grok-box: box-exec + box-host + Xvfb desktop + Chromium + CUA tools.
+# buwiz-computer: box-exec + box-host + Xvfb desktop + Chromium + CUA tools + voxl.
 #
 # box-exec / box-host default features compile in mimalloc (needs gcc, already
 # in rust:bookworm). Opt out with cargo --no-default-features.
@@ -12,9 +12,26 @@ COPY crates ./crates
 COPY Cargo.lock* ./
 
 RUN cargo build --release -p box-exec -p box-host -p box-egress-tunnel \
-    && strip target/release/box-exec target/release/box-host target/release/box-egress-tunnel target/release/box-active-tab
+    && strip target/release/box-exec target/release/box-host target/release/box-egress-tunnel \
+        target/release/box-keeper target/release/box-active-tab
+
+# voxl serves each screen to a browser: H.264 over a WebSocket, and /wait, /screenshot and
+# /record for the agent. Pinned, because it moves fast: bump it on purpose. It stays a separate
+# process (x264 is GPL) and needs a newer Rust than the box's own 1.85.
+FROM rust:1.93-bookworm AS voxl-builder
+ARG VOXL_VERSION=0.3.3
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        pkg-config clang libclang-dev libx264-dev libyuv-dev libopus-dev libpulse-dev esbuild \
+    && rm -rf /var/lib/apt/lists/*
+RUN cargo install voxl-server --version "=${VOXL_VERSION}" --locked --root /opt/voxl \
+    && strip /opt/voxl/bin/voxl
 
 FROM debian:bookworm-slim AS runtime
+
+LABEL org.opencontainers.image.source="https://github.com/buwiz-bot/computer" \
+      org.opencontainers.image.title="buwiz-computer" \
+      app.buwiz.box.desktop="1"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -22,9 +39,12 @@ RUN apt-get update \
         curl \
         tini \
         xvfb \
-        x11vnc \
-        novnc \
-        websockify \
+        # What voxl links to. ffmpeg below already brings libx264 and libopus; these are named
+        # so that dropping ffmpeg could never quietly take voxl down with it.
+        libx264-164 \
+        libyuv0 \
+        libopus0 \
+        libpulse0 \
         # A real desktop: xfce4 session with xfwm4, the panel as the dock
         # (Terminal, Chromium, Files), Thunar, a terminal, and the default
         # wallpaper. dbus-x11 is what the xfce pieces talk over. Measured at
@@ -48,26 +68,30 @@ RUN apt-get update \
         chromium \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --uid 1000 --shell /bin/bash box \
-    && mkdir -p /workspace /home/box/chrome-profile /home/box/.vnc /tmp/.X11-unix \
+    && mkdir -p /workspace /home/box/chrome-profile /tmp/.X11-unix \
         /etc/chromium/policies/managed /etc/opt/chrome/policies/managed \
     && chmod 1777 /tmp/.X11-unix \
     && chown -R box:box /workspace /home/box
 
-COPY --from=builder /src/target/release/box-exec /usr/local/bin/box-exec
-COPY --from=builder /src/target/release/box-host /usr/local/bin/box-host
-COPY --from=builder /src/target/release/box-egress-tunnel /usr/local/bin/box-egress-tunnel
+# Everything that holds a secret is execute-only. A process run from a file it cannot read is not
+# dumpable, so nothing else running as the box user can open its /proc/<pid>/mem or environ, or
+# ptrace it, from its first instruction. voxl has to hold its password in its environment and
+# cannot set this itself; the others also call PR_SET_DUMPABLE.
+COPY --from=voxl-builder --chmod=0111 /opt/voxl/bin/voxl /usr/local/bin/voxl
+COPY --from=builder --chmod=0111 /src/target/release/box-keeper /usr/local/bin/box-keeper
+COPY --from=builder --chmod=0111 /src/target/release/box-exec /usr/local/bin/box-exec
+COPY --from=builder --chmod=0111 /src/target/release/box-host /usr/local/bin/box-host
+COPY --from=builder --chmod=0111 /src/target/release/box-egress-tunnel /usr/local/bin/box-egress-tunnel
 # The page in front, for the server's check before it types a saved login: an extension with
 # only the `tabs` permission reports it to box-active-tab over native messaging, and
 # box-host serves it at GET /v1/chrome/active-tab. Every Chromium launch loads the extension.
 COPY --from=builder /src/target/release/box-active-tab /usr/local/bin/box-active-tab
-COPY docker/dev.opengrok.active_tab.json /etc/chromium/native-messaging-hosts/dev.opengrok.active_tab.json
+COPY docker/app.buwiz.active_tab.json /etc/chromium/native-messaging-hosts/app.buwiz.active_tab.json
 COPY docker/active-tab /opt/box/active-tab
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
-COPY docker/websockify-nodelay.py /usr/local/bin/websockify-nodelay
 COPY docker/box-reset-desktop.sh /usr/local/bin/box-reset-desktop
-COPY docker/box-release-keys /usr/local/bin/box-release-keys
-COPY docker/chromium-policies.json /etc/chromium/policies/managed/grok-box.json
-COPY docker/chromium-policies.json /etc/opt/chrome/policies/managed/grok-box.json
+COPY docker/chromium-policies.json /etc/chromium/policies/managed/buwiz-computer.json
+COPY docker/chromium-policies.json /etc/opt/chrome/policies/managed/buwiz-computer.json
 # The dock's Chromium launcher: same profile as the entrypoint's Chromium, so a
 # click opens a window in the running instance instead of a second browser.
 COPY docker/box-chromium /usr/local/bin/box-chromium
@@ -85,13 +109,15 @@ COPY --chown=box:box docker/xfce/launchers/chromium.desktop /home/box/.config/xf
 COPY --chown=box:box docker/xfce/launchers/files.desktop /home/box/.config/xfce4/panel/launcher-2/files.desktop
 COPY --chown=box:box docker/xfce/launchers/terminal.desktop /home/box/.config/xfce4/panel/launcher-3/terminal.desktop
 # The desktop's wallpaper, named by xfce4-desktop.xml above.
-COPY docker/xfce/wallpaper.png /usr/share/backgrounds/grok-box.png
+COPY docker/xfce/wallpaper.png /usr/share/backgrounds/buwiz-computer.png
 # chromium-launch.sh is intentionally not installed. Entrypoint owns Chromium.
-RUN chmod 755 /usr/local/bin/entrypoint.sh /usr/local/bin/websockify-nodelay /usr/local/bin/box-exec /usr/local/bin/box-host \
-        /usr/local/bin/box-egress-tunnel \
-        /usr/local/bin/box-reset-desktop /usr/local/bin/box-release-keys /usr/local/bin/box-chromium \
+RUN chmod 755 /usr/local/bin/entrypoint.sh \
+        /usr/local/bin/box-reset-desktop /usr/local/bin/box-chromium \
         /usr/local/bin/box-chromium-pipe /usr/local/bin/box-active-tab \
         /usr/local/bin/box-screen /usr/local/bin/box-refresh-extension \
+    # COPY keeps the mode each file has on the machine building, and git keeps only the exec bit,
+    # so a checkout under umask 077 would leave these unreadable to the box user.
+    && chmod -R a+rX /opt/box /etc/chromium /etc/opt/chrome /usr/share/backgrounds \
     && chown -R box:box /home/box/.config
 
 ENV WORKSPACE_ROOT=/workspace \
@@ -102,9 +128,6 @@ ENV WORKSPACE_ROOT=/workspace \
     BOX_DESKTOP_REQUIRED=1 \
     BOX_DISPLAY=:1 \
     BOX_DISPLAY_GEOM=1280x800x24 \
-    BOX_VNC_BIND=127.0.0.1:5900 \
-    BOX_NOVNC_PORT=6080 \
-    BOX_NOVNC_WEB=/usr/share/novnc \
     BOX_CHROME=1 \
     BOX_CHROME_PROFILE=/home/box/chrome-profile \
     BOX_CDP_PORT=9222 \
@@ -119,6 +142,6 @@ ENV WORKSPACE_ROOT=/workspace \
 
 USER box
 WORKDIR /workspace
-EXPOSE 1337 1340 6080 8790
+EXPOSE 1337 1340 6901 6902 6903 6904 6905 8790
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/box-keeper"]

@@ -1,12 +1,12 @@
 # Egress tunnel (`box-egress-v1`)
 
 Guest Chromium can send HTTPS through a client on **your** machine. That is how
-prod OpenGrok avoids “the box IP is not a home IP → Facebook email verify”.
+a production Bot avoids “the box IP is not a home IP → Facebook email verify”.
 
 This repo owns the **guest** half: `box-egress-tunnel` (MIT, our names). It is
 not Cursor `sand-egress-tunnel` and does not re-host any proprietary binary.
 
-NativeChat / “Review an action” chrome is **out of scope**. OpenGrok should
+The Bot’s own chrome is **out of scope**. The Bot should
 read the host setting plus this capability; flipping
 `isEgressTunnelAvailable` lives in that repo.
 
@@ -15,11 +15,11 @@ read the host setting plus this capability; flipping
 On a laptop, the guest and the browser often share the host’s public IP.
 Facebook sees a normal client.
 
-On a **prod VM**, the OpenGrok origin and the box’s egress IP are different, and
+On a **prod VM**, the Bot’s origin and the box’s egress IP are different, and
 traffic leaves from a cloud / China (or other) range. Sites force extra checks.
 
 Do **not** assume Docker `network_mode: host` in prod. Publish loopback and
-tunnel, same as 1337/1340/6080.
+tunnel, same as 1337/1340/6901-6905.
 
 ## What is and is not tunneled
 
@@ -64,12 +64,12 @@ Enabled but no client: `enabled: true, ready: false`. Chromium CONNECT
 
 `ws` / `proxy` are **container-local listen addresses** (unspecified binds
 rewritten to loopback), same honesty as `/v1/info.endpoints`. They are not the
-URL OpenGrok should dial. OpenGrok already knows how it published **8790**.
+URL the Bot should dial. The Bot already knows how it published **8790**.
 
 `ready` is not on `GET /v1/ready`. Chrome is not either. The box can be ready
 for exec while the tunnel has no client.
 
-OpenGrok / NativeChat:
+The Bot:
 
 1. Host setting says the user opted into laptop egress.
 2. Box `capabilities.egress_tunnel.enabled` is true (guest actually started the server).
@@ -109,7 +109,7 @@ OpenGrok / NativeChat:
    ssh -N \
      -L 1337:127.0.0.1:1337 \
      -L 1340:127.0.0.1:1340 \
-     -L 6080:127.0.0.1:6080 \
+     -L 6901:127.0.0.1:6901 \
      -L 8790:127.0.0.1:8790 \
      user@box-vm
    ```
@@ -125,7 +125,7 @@ OpenGrok / NativeChat:
      BOX_EGRESS_TUNNEL_BEARER_FILE: /run/secrets/box_egress_tunnel_bearer
    secrets:
      - box_token
-     - box_vnc_password
+     - box_viewer_password
      - box_egress_tunnel_bearer
    # top-level:
    # secrets:
@@ -136,9 +136,9 @@ OpenGrok / NativeChat:
    The default `docker-compose.yml` does **not** require that secret file
    (tunnel is off). Add the mount when you turn it on.
 
-## Client on the operator machine (OpenGrok spawn this)
+## Client on the operator machine (the Bot spawns this)
 
-Binary: `box-egress-tunnel` (workspace crate; copy it next to OpenGrok or
+Binary: `box-egress-tunnel` (workspace crate; copy it next to the Bot or
 `cargo run -p box-egress-tunnel`).
 
 ```bash
@@ -163,7 +163,7 @@ accepted if a proxy eats `Authorization`. No query-string token (logs).
 
 While attached, `/v1/info` → `capabilities.egress_tunnel.ready: true`.
 
-If OpenGrok’s WS URL is `wss://host.example/egress`, the proxy must forward
+If the Bot’s WS URL is `wss://host.example/egress`, the proxy must forward
 the Bearer header and WebSocket upgrades. Path may be `/` or anything; the
 server does not care.
 

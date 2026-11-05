@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    image: grok-box:local
+    image: buwiz-computer:local
     # Hardening is not a kernel sandbox. Unprivileged uid 1000 + Chromium
     # --no-sandbox. These limits reduce blast radius; they do not isolate the
     # guest from the host kernel.
@@ -11,7 +11,9 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
-    pids_limit: 1024
+    # A screen with Chromium runs about 180 processes and threads: the box's own and four Bots'
+    # come to about 950, and at the limit even an exec cannot start.
+    pids_limit: 2048
     mem_limit: 4g
     shm_size: "256mb"
     # Secrets arrive as mounted files, not as environment values. A value in
@@ -20,10 +22,10 @@ services:
     # `docker inspect` on the host. Run `bash scripts/write-secrets.sh` first.
     secrets:
       - box_token
-      - box_vnc_password
+      - box_viewer_password
     environment:
       BOX_TOKEN_FILE: /run/secrets/box_token
-      BOX_VNC_PASSWORD_FILE: /run/secrets/box_vnc_password
+      BOX_VIEWER_PASSWORD_FILE: /run/secrets/box_viewer_password
       BOX_ID: ${BOX_ID:-local-dev}
       RUST_LOG: ${RUST_LOG:-info}
       WORKSPACE_ROOT: /workspace
@@ -31,8 +33,6 @@ services:
       BOX_DESKTOP_REQUIRED: ${BOX_DESKTOP_REQUIRED:-1}
       BOX_DISPLAY: ${BOX_DISPLAY:-:1}
       BOX_DISPLAY_GEOM: ${BOX_DISPLAY_GEOM:-1280x800x24}
-      BOX_VNC_BIND: ${BOX_VNC_BIND:-127.0.0.1:5900}
-      BOX_NOVNC_PORT: ${BOX_NOVNC_PORT:-6080}
       BOX_CHROME: ${BOX_CHROME:-1}
       BOX_CHROME_PROFILE: /home/box/chrome-profile
       BOX_CDP_PORT: ${BOX_CDP_PORT:-9222}
@@ -50,28 +50,32 @@ services:
     ports:
       - "127.0.0.1:1337:1337"
       - "127.0.0.1:1340:1340"
-      - "127.0.0.1:6080:6080"
+      # voxl: 6901 is the box's own screen, 6902-6905 the Bots' own.
+      - "127.0.0.1:6901-6905:6901-6905"
       - "127.0.0.1:8790:8790"
     volumes:
       - ./workspace-data:/workspace
       - ./chrome-profile:/home/box/chrome-profile
+    # The public health routes, on purpose: a check that sent the token would put it in curl's
+    # argv, and in a dumpable process's memory, every few seconds. /v1/ready is for callers.
     healthcheck:
       test:
         [
           "CMD-SHELL",
-          "curl -fsS -H \"Authorization: Bearer $$(cat /run/secrets/box_token)\" http://127.0.0.1:1340/v1/ready",
+          "curl -fsS http://127.0.0.1:1340/v1/health && curl -fsS http://127.0.0.1:1337/v1/health",
         ]
       interval: 5s
       timeout: 3s
       retries: 12
       start_period: 25s
 
-# Compose mounts these read-only at /run/secrets/<name>. The mount stays
-# readable by uid 1000 inside the container — that is what lets the healthcheck
-# authenticate — so this hides the token from /proc and from `docker inspect`,
-# not from code already running as the box user. See README §Auth.
+# Compose mounts these read-only at /run/secrets/<name>, and box-keeper, which runs
+# as uid 1000, has to read them. So they stay readable to anything running as the
+# box user for the life of the box: this hides them from `docker inspect`, not from
+# an exec child. For that, stage them on a writable mount, as the Bot does: box-keeper
+# unlinks what it reads. See README §Auth.
 secrets:
   box_token:
     file: ./secrets/box_token
-  box_vnc_password:
-    file: ./secrets/box_vnc_password
+  box_viewer_password:
+    file: ./secrets/box_viewer_password

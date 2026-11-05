@@ -1,4 +1,4 @@
-//! Thin host gateway for grok-box (`box-host`).
+//! Thin host gateway for buwiz-computer (`box-host`).
 //!
 //! This process does **not** run inference. It advertises box identity,
 //! capabilities (exec, files, desktop, chrome, cua, egress_tunnel), and readiness of
@@ -6,6 +6,7 @@
 //! mimalloc feature as `box-exec`.
 
 pub mod active_tab;
+pub mod keeper;
 
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicBool;
@@ -23,7 +24,7 @@ use box_common::{
     tokens_equal, ApiError, BoxConfig, GLOBAL_ALLOCATOR, PROTOCOL_VERSION,
 };
 use box_cua::CuaConfig;
-use box_desktop::{DesktopConfig, DesktopStatus, WindowList};
+use box_desktop::{slots_dir, DesktopConfig, DesktopStatus, ScreenList, WindowList, VIEWER_KIND};
 use box_egress_tunnel::{probe_egress, EgressConfig, EgressStatus};
 use serde::Serialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -79,6 +80,7 @@ struct ReadyResponse {
     service: &'static str,
     exec_ready: bool,
     desktop_ready: bool,
+    viewer_ready: bool,
 }
 
 #[derive(Serialize)]
@@ -105,11 +107,22 @@ struct Capability {
     ready: bool,
 }
 
+/// What serves the box's screens to a person. The viewer password is never here:
+/// whoever started the box already holds it.
+#[derive(Serialize)]
+struct ViewerCapability {
+    kind: &'static str,
+    port: u16,
+    enabled: bool,
+    ready: bool,
+}
+
 #[derive(Serialize)]
 struct Capabilities {
     exec: Capability,
     files: Capability,
     desktop: Capability,
+    viewer: ViewerCapability,
     chrome: Capability,
     cua: Capability,
     egress_tunnel: Capability,
@@ -129,6 +142,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/info", get(info))
         .route("/v1/desktop", get(desktop))
         .route("/v1/desktop/windows", get(windows))
+        .route("/v1/screens", get(screens))
         .route("/v1/chrome", get(chrome))
         .route("/v1/chrome/active-tab", get(active_tab_now))
         .route("/v1/egress", get(egress))
@@ -194,6 +208,7 @@ async fn ready(State(state): State<AppState>) -> Result<Json<ReadyResponse>, Api
         service: "box-host",
         exec_ready: true,
         desktop_ready,
+        viewer_ready: state.desktop.viewer_ready(),
     }))
 }
 
@@ -219,6 +234,12 @@ async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
             desktop: Capability {
                 enabled: state.desktop.enabled,
                 ready: state.desktop.probe_display(),
+            },
+            viewer: ViewerCapability {
+                kind: VIEWER_KIND,
+                port: state.desktop.viewer_port(),
+                enabled: state.desktop.enabled,
+                ready: state.desktop.viewer_ready(),
             },
             chrome: {
                 let st = probe_chrome(&state.chrome);
@@ -251,6 +272,11 @@ async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
 async fn desktop(State(state): State<AppState>) -> Json<DesktopStatus> {
     let host = container_local_host(state.host_bind);
     Json(DesktopStatus::from_config(&state.desktop, &host))
+}
+
+/// The box's own screen and every Bot's, with each one's viewer port and state.
+async fn screens(State(state): State<AppState>) -> Json<ScreenList> {
+    Json(ScreenList::from_config(&state.desktop, &slots_dir()))
 }
 
 async fn chrome(State(state): State<AppState>) -> Json<ChromeStatus> {
@@ -536,6 +562,10 @@ mod tests {
         assert_eq!(body["capabilities"]["files"]["enabled"], true);
         assert_eq!(body["capabilities"]["desktop"]["enabled"], false);
         assert_eq!(body["capabilities"]["desktop"]["ready"], false);
+        assert_eq!(body["capabilities"]["viewer"]["kind"], "voxl");
+        assert_eq!(body["capabilities"]["viewer"]["port"], 6901);
+        assert_eq!(body["capabilities"]["viewer"]["enabled"], false);
+        assert_eq!(body["capabilities"]["viewer"]["ready"], false);
         assert_eq!(body["capabilities"]["chrome"]["enabled"], false);
         assert_eq!(body["capabilities"]["chrome"]["ready"], false);
         assert_eq!(body["capabilities"]["cua"]["enabled"], false);
@@ -609,8 +639,37 @@ mod tests {
         assert_eq!(body["enabled"], false);
         assert_eq!(body["ready"], false);
         assert_eq!(body["display"], ":1");
-        assert_eq!(body["viewer"]["port"], 6080);
-        assert_eq!(body["viewer"]["path"], "/vnc.html");
+        assert_eq!(body["viewer"]["kind"], "voxl");
+        assert_eq!(body["viewer"]["port"], 6901);
+        assert_eq!(body["viewer"]["path"], "/");
+        assert!(body.get("vnc").is_none());
+    }
+
+    #[tokio::test]
+    async fn screens_rejects_missing_auth() {
+        let (status, body) = send(
+            Request::builder()
+                .uri("/v1/screens")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn screens_empty_when_the_desktop_is_off() {
+        let (status, body) = send(
+            Request::builder()
+                .uri("/v1/screens")
+                .header("authorization", "Bearer host-secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, serde_json::json!({ "screens": [] }));
     }
 
     #[test]

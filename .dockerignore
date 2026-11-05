@@ -8,6 +8,4 @@
 .env.*
 !/.env.example
 /tmp-scaffold
-/ensurebox
-/l1
 /sdk

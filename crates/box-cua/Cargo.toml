@@ -12,6 +12,10 @@ publish = false
 box-common = { workspace = true }
 box-desktop = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 base64 = { workspace = true }
@@ -29,7 +33,7 @@ default = []
 mimalloc = ["dep:mimalloc"]
 
 [dev-dependencies]
-serde_json = { workspace = true }
+tempfile = { workspace = true }
 # `test-util` pauses the clock so the actuator-wait test asserts the shape of
 # the timeout without spending ten seconds of wall clock on it.
 tokio = { workspace = true, features = ["test-util"] }

@@ -7,16 +7,9 @@
 .env
 .env.*
 !/.env.example
-!/ensurebox/.env.example
-!/l1/.env.example
 /workspace-data/
 /chrome-profile/
 /tmp-scaffold/
-/ensurebox/node_modules/
-/ensurebox/.next/
-/ensurebox/data/
-/l1/node_modules/
-/l1/.next/
 /sdk/typescript/node_modules/
 /sdk/python/**/__pycache__/
 /sdk/python/**/*.egg-info/

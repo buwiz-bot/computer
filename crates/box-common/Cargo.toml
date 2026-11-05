@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Shared types, auth, and workspace path jail for grok-box"
+description = "Shared types, auth, and workspace path jail for buwiz-computer"
 rust-version.workspace = true
 
 [features]
@@ -14,6 +14,7 @@ default = []
 mimalloc = ["dep:mimalloc"]
 
 [dependencies]
+libc = { workspace = true }
 mimalloc = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

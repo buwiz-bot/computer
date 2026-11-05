@@ -1,10 +1,10 @@
-# grok-box API contract
+# buwiz-computer API contract
 
 Base URLs (Compose defaults — **your** published URLs, not `/v1/info`):
 
 - Exec: `http://127.0.0.1:1337`
 - Host: `http://127.0.0.1:1340`
-- Desktop viewer: `http://127.0.0.1:6080/vnc.html`
+- Live view: `http://127.0.0.1:6901/` (voxl; `6900+N` for display `:N`)
 
 SDKs and the CLI are connect-only: pass those three values (exec URL, host URL, token). They ignore advertised `/v1/info` URLs.
 
@@ -69,7 +69,7 @@ Run a process. `cwd` defaults to the workspace root and is jail-checked.
 }
 ```
 
-On timeout: `timed_out: true`; the process group gets **SIGTERM**, then **SIGKILL** after `BOX_EXEC_KILL_GRACE_MS` (default 2s). `exit_code` is the wait status if the child dies on SIGTERM (often 143) or `null` if SIGKILL was required. **Captured stdout/stderr are kept.** Output streams are capped (`BOX_MAX_OUTPUT_BYTES`, default 8 MiB); `truncated` is true if a cap hit. After writing `stdin`, the pipe is closed so the child sees EOF. `BOX_TOKEN`, `BOX_HOST_TOKEN`, `BOX_VNC_PASSWORD`, and their `_FILE` forms are stripped from the child environment.
+On timeout: `timed_out: true`; the process group gets **SIGTERM**, then **SIGKILL** after `BOX_EXEC_KILL_GRACE_MS` (default 2s). `exit_code` is the wait status if the child dies on SIGTERM (often 143) or `null` if SIGKILL was required. **Captured stdout/stderr are kept.** Output streams are capped (`BOX_MAX_OUTPUT_BYTES`, default 8 MiB); `truncated` is true if a cap hit. After writing `stdin`, the pipe is closed so the child sees EOF. `BOX_TOKEN`, `BOX_HOST_TOKEN`, `BOX_VIEWER_PASSWORD`, and their `_FILE` forms are stripped from the child environment.
 
 #### Commands that leave something running
 
@@ -263,7 +263,7 @@ Hover; no button.
 { "x1": 100, "y1": 100, "x2": 400, "y2": 300, "button": 1 }
 ```
 
-Mouse down at (x1,y1), interpolated `mousemove` events, mouse up at (x2,y2). A short pause after press lets Openbox start a title-bar grab. Both points must be in range.
+Mouse down at (x1,y1), interpolated `mousemove` events, mouse up at (x2,y2). A short pause after press lets the window manager start a title-bar grab. Both points must be in range.
 
 ### `POST /v1/cua/type`
 
@@ -299,7 +299,7 @@ Many CUA steps in **one** request. The guest lints the plan (empty, too many ste
   "stop_on_error": true,
   "screenshot": "end",
   "record": true,
-  "artifact_dir": ".l1/cooks/demo",
+  "artifact_dir": "shared/cooks/demo",
   "steps": [
     { "op": "reset_desktop" },
     { "op": "click", "x": 640, "y": 80, "button": 1 },
@@ -408,16 +408,53 @@ Uses `BOX_HOST_TOKEN` if set, else `BOX_TOKEN`.
   "available": true,
   "display": ":1",
   "geometry": "1280x800x24",
-  "vnc": "127.0.0.1:5900",
   "viewer": {
-    "port": 6080,
-    "path": "/vnc.html",
-    "url": "http://127.0.0.1:6080/vnc.html"
+    "kind": "voxl",
+    "port": 6901,
+    "path": "/",
+    "url": "http://127.0.0.1:6901/"
   }
 }
 ```
 
-Connect to `viewer.url` through a tunnel or loopback publish. VNC password is `BOX_VNC_PASSWORD` (x11vnc uses the first **8** characters). It is independent of `BOX_TOKEN`. RFB is localhost-only inside the container; Compose publishes noVNC on **127.0.0.1:6080**. 6080 is **not** Bearer-authenticated.
+Connect to `viewer.url` through a tunnel or loopback publish. voxl asks for `BOX_VIEWER_PASSWORD`, which is independent of `BOX_TOKEN`; `?token=<password>` signs a link in, and programs send `Authorization: Bearer <password>`. The URL here never carries it, and neither does any other response of this API.
+
+### Screens
+
+One computer serves one or more agents, each on a screen of its own. `GET /v1/info` gives `capabilities.viewer: {kind: "voxl", port, enabled, ready}` for the box's own screen.
+
+`GET /v1/screens` (bearer):
+
+```json
+{
+  "screens": [
+    {"display": ":1", "slot": 1, "bot": null, "viewer_port": 6901, "state": "running", "workspace": "shared"},
+    {"display": ":2", "slot": 2, "bot": "amy", "viewer_port": 6902, "state": "running", "workspace": "agents/amy"}
+  ]
+}
+```
+
+`state` is `running`, `viewer_down` (the display is up, so input and screenshots work, but voxl is not, or not yet) or `stopped`. `viewer_port` is the port inside the box: a caller that publishes it elsewhere maps it. The list is empty with `BOX_DESKTOP=0`.
+
+Add and remove a Bot's screen while the computer runs with `POST /v1/exec`: `box-screen up <bot>` prints its slot once its voxl takes connections, and `box-screen down <bot>` stops it and keeps its folder and profile. Slots hold for the life of the home directory, so a Bot comes back on the same display.
+
+`?display=:N` puts any `/v1/cua/*` call on that screen. Through `/v1/cua` and the viewer, input on one screen does not reach another: each is its own X server with its own pointer, keyboard focus and clipboard.
+
+That isolation stops there. `POST /v1/exec` can reach any screen: its `env` can set `DISPLAY`, the X servers accept any local client, and everything runs as the box user, so an exec child can type into another agent's screen and read another agent's folder. Give an agent `/v1/cua` and not `/v1/exec` if it must stay on its screen, and a computer of its own if it must not touch another agent's work.
+
+### `POST /v1/cua/wait` (bearer)
+
+Returns when the screen settles or changes, from voxl's own damage tracking, so an agent need not sleep and hope. It works with no viewer open. All fields are optional and times are in ms:
+
+```json
+{"idle": 300, "change": false, "since": 812, "region": "0,0,800,600", "timeout": 10000}
+```
+
+Answer: `{"changed": true, "timed_out": false, "seq": 813, "waited_ms": 340}`. To wait for what an action caused: take `seq` first, act, then wait with `{"change": true, "since": <seq>}`, then with `{"idle": 300}`. A blinking caret redraws about twice a second, so keep `idle` under 500 or leave it out of `region`. `503 viewer_unavailable` means that screen's voxl is down.
+
+### `POST /v1/cua/record/start` and `/stop` (bearer)
+
+`start` answers `{"id": 3}`. `stop` takes `{"id": 3}` and answers `{"path": "agents/amy/recordings/1794000000000-3.mp4", "bytes": 182044}`, relative to the workspace, in the folder of the screen recorded. A recording is the H.264 voxl already encodes, so it costs no extra CPU. It holds frames only where the screen changed, has no cursor, and ends on its own after 300 s; `stop` must arrive within 60 s of that. Call `stop` on the same `?display=` as `start`: ids belong to that screen's voxl, and they start over when it does.
 
 ### `GET /v1/chrome` (bearer)
 

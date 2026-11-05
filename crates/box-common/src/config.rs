@@ -15,6 +15,9 @@ pub struct BoxConfig {
     pub box_id: String,
     pub token: String,
     pub host_token: String,
+    /// voxl's password, for `box-exec` to reach `/wait` and `/record` on the box's loopback.
+    /// `None` on a box without a viewer, and in `box-host`, which never needs it.
+    pub viewer_password: Option<String>,
     pub workspace: PathBuf,
     pub exec_bind: SocketAddr,
     pub host_bind: SocketAddr,
@@ -51,12 +54,16 @@ impl BoxConfig {
             )
         })?;
         let host_token = secret_from_env("BOX_HOST_TOKEN")?.unwrap_or_else(|| token.clone());
+        let viewer_password = secret_from_env("BOX_VIEWER_PASSWORD")?;
         let exec_bind = parse_addr("BOX_EXEC_BIND", "127.0.0.1:1337");
         let host_bind = parse_addr("BOX_HOST_BIND", "127.0.0.1:1340");
 
         validate_token("BOX_TOKEN", &token, exec_bind, host_bind)?;
         if host_token != token {
             validate_token("BOX_HOST_TOKEN", &host_token, exec_bind, host_bind)?;
+        }
+        if let Some(password) = &viewer_password {
+            ensure_viewer_password_strength(password)?;
         }
 
         let workspace = PathBuf::from(env::var("WORKSPACE_ROOT").unwrap_or_else(|_| {
@@ -71,6 +78,7 @@ impl BoxConfig {
             box_id: default_box_id(),
             token,
             host_token,
+            viewer_password,
             workspace,
             exec_bind,
             host_bind,
@@ -96,7 +104,8 @@ impl BoxConfig {
 pub const SECRET_ENV_KEYS: &[&str] = &[
     "BOX_TOKEN",
     "BOX_HOST_TOKEN",
-    "BOX_VNC_PASSWORD",
+    "BOX_VIEWER_PASSWORD",
+    "VOXL_PASSWORD",
     "BOX_EGRESS_TUNNEL_BEARER",
 ];
 
@@ -105,7 +114,7 @@ pub const SECRET_ENV_KEYS: &[&str] = &[
 pub const SECRET_FILE_ENV_KEYS: &[&str] = &[
     "BOX_TOKEN_FILE",
     "BOX_HOST_TOKEN_FILE",
-    "BOX_VNC_PASSWORD_FILE",
+    "BOX_VIEWER_PASSWORD_FILE",
     "BOX_EGRESS_TUNNEL_BEARER_FILE",
 ];
 
@@ -126,7 +135,7 @@ pub const SECRET_FILE_ENV_KEYS: &[&str] = &[
 ///
 /// To keep a secret out of `/proc/<pid>/environ` it has to never enter the
 /// environment in the first place. Deliver it as `BOX_TOKEN_FILE` /
-/// `BOX_HOST_TOKEN_FILE` / `BOX_VNC_PASSWORD_FILE` /
+/// `BOX_HOST_TOKEN_FILE` / `BOX_VIEWER_PASSWORD_FILE` /
 /// `BOX_EGRESS_TUNNEL_BEARER_FILE`; the daemon reads the file and unlinks it.
 /// See README §Auth for the residual exposure.
 pub fn wipe_secret_environ() {
@@ -205,6 +214,18 @@ pub fn ensure_token_strength(
     )))
 }
 
+/// The viewer password has no insecure-dev exemption. That exemption rests on the daemons binding
+/// loopback, and voxl always listens on every interface inside the box, so the port map, not the
+/// bind, is all that keeps it off the network.
+pub fn ensure_viewer_password_strength(password: &str) -> Result<(), ConfigError> {
+    if token_is_insecure(password) {
+        return Err(ConfigError(format!(
+            "BOX_VIEWER_PASSWORD is shorter than {MIN_TOKEN_LEN} characters or a well-known value. Set a long random one; BOX_ALLOW_INSECURE_DEV does not cover it."
+        )));
+    }
+    Ok(())
+}
+
 pub fn token_is_insecure(token: &str) -> bool {
     token.is_empty() || token.len() < MIN_TOKEN_LEN || token == DEV_BOX_TOKEN
 }
@@ -227,7 +248,7 @@ fn default_box_id() -> String {
         .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
         .ok()
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "grok-box".to_string())
+        .unwrap_or_else(|| "buwiz-computer".to_string())
 }
 
 fn parse_addr(var: &str, default: &str) -> SocketAddr {
@@ -289,6 +310,38 @@ mod tests {
     }
 
     #[test]
+    fn a_weak_viewer_password_is_refused() {
+        let (_lock, _guard) = isolate(&[
+            ("BOX_TOKEN", Some("long-enough-box-token")),
+            ("BOX_TOKEN_FILE", None),
+            ("BOX_HOST_TOKEN", None),
+            ("BOX_HOST_TOKEN_FILE", None),
+            ("BOX_VIEWER_PASSWORD", Some("short")),
+            ("BOX_VIEWER_PASSWORD_FILE", None),
+            ("BOX_ALLOW_INSECURE_DEV", None),
+        ]);
+        let err = BoxConfig::from_env().unwrap_err();
+        assert!(err.0.contains("BOX_VIEWER_PASSWORD"), "{err}");
+    }
+
+    #[test]
+    fn insecure_dev_does_not_excuse_a_weak_viewer_password() {
+        let (_lock, _guard) = isolate(&[
+            ("BOX_TOKEN", Some("short")),
+            ("BOX_TOKEN_FILE", None),
+            ("BOX_HOST_TOKEN", None),
+            ("BOX_HOST_TOKEN_FILE", None),
+            ("BOX_VIEWER_PASSWORD", Some("short")),
+            ("BOX_VIEWER_PASSWORD_FILE", None),
+            ("BOX_EXEC_BIND", Some("127.0.0.1:1337")),
+            ("BOX_HOST_BIND", Some("127.0.0.1:1340")),
+            ("BOX_ALLOW_INSECURE_DEV", Some("1")),
+        ]);
+        let err = BoxConfig::from_env().unwrap_err();
+        assert!(err.0.contains("BOX_VIEWER_PASSWORD"), "{err}");
+    }
+
+    #[test]
     fn default_box_id_never_empty() {
         assert!(!default_box_id().is_empty());
     }
@@ -306,7 +359,7 @@ mod tests {
         let (_lock, _guard) = isolate(&[
             ("BOX_TOKEN", None),
             ("BOX_HOST_TOKEN", None),
-            ("BOX_VNC_PASSWORD", None),
+            ("BOX_VIEWER_PASSWORD", None),
             ("BOX_ALLOW_INSECURE_DEV", None),
             ("BOX_EXEC_BIND", Some("127.0.0.1:1337")),
             ("BOX_HOST_BIND", Some("127.0.0.1:1340")),
@@ -320,7 +373,7 @@ mod tests {
         let (_lock, _guard) = isolate(&[
             ("BOX_TOKEN", Some(DEV_BOX_TOKEN)),
             ("BOX_HOST_TOKEN", None),
-            ("BOX_VNC_PASSWORD", Some("vncpass1")),
+            ("BOX_VIEWER_PASSWORD", Some("viewer-password-one")),
             ("BOX_ALLOW_INSECURE_DEV", None),
             ("BOX_EXEC_BIND", Some("127.0.0.1:1337")),
             ("BOX_HOST_BIND", Some("127.0.0.1:1340")),
@@ -334,7 +387,7 @@ mod tests {
         let (_lock, _guard) = isolate(&[
             ("BOX_TOKEN", Some(DEV_BOX_TOKEN)),
             ("BOX_HOST_TOKEN", None),
-            ("BOX_VNC_PASSWORD", Some("vncpass1")),
+            ("BOX_VIEWER_PASSWORD", Some("viewer-password-one")),
             ("BOX_ALLOW_INSECURE_DEV", Some("1")),
             ("BOX_EXEC_BIND", Some("0.0.0.0:1337")),
             ("BOX_HOST_BIND", Some("0.0.0.0:1340")),
@@ -348,7 +401,7 @@ mod tests {
         let (_lock, _guard) = isolate(&[
             ("BOX_TOKEN", Some(DEV_BOX_TOKEN)),
             ("BOX_HOST_TOKEN", None),
-            ("BOX_VNC_PASSWORD", Some("vncpass1")),
+            ("BOX_VIEWER_PASSWORD", Some("viewer-password-one")),
             ("BOX_ALLOW_INSECURE_DEV", Some("1")),
             ("BOX_EXEC_BIND", Some("127.0.0.1:1337")),
             ("BOX_HOST_BIND", Some("127.0.0.1:1340")),
@@ -357,7 +410,7 @@ mod tests {
         let config = BoxConfig::from_env().unwrap();
         assert_eq!(config.token, DEV_BOX_TOKEN);
         assert!(env::var("BOX_TOKEN").is_err());
-        assert!(env::var("BOX_VNC_PASSWORD").is_err());
+        assert!(env::var("BOX_VIEWER_PASSWORD").is_err());
     }
 
     #[test]
@@ -365,7 +418,7 @@ mod tests {
         let (_lock, _guard) = isolate(&[
             ("BOX_TOKEN", Some("local-smoke-box-token")),
             ("BOX_HOST_TOKEN", Some("local-smoke-host-token")),
-            ("BOX_VNC_PASSWORD", Some("vncpass1")),
+            ("BOX_VIEWER_PASSWORD", Some("viewer-password-one")),
             ("BOX_ALLOW_INSECURE_DEV", None),
             ("BOX_EXEC_BIND", Some("0.0.0.0:1337")),
             ("BOX_HOST_BIND", Some("0.0.0.0:1340")),
@@ -377,7 +430,7 @@ mod tests {
         assert_eq!(config.exec_bind, "0.0.0.0:1337".parse().unwrap());
         assert!(env::var("BOX_TOKEN").is_err());
         assert!(env::var("BOX_HOST_TOKEN").is_err());
-        assert!(env::var("BOX_VNC_PASSWORD").is_err());
+        assert!(env::var("BOX_VIEWER_PASSWORD").is_err());
     }
 
     #[test]
@@ -390,7 +443,7 @@ mod tests {
             ("BOX_TOKEN_FILE", Some(token_path.to_str().unwrap())),
             ("BOX_HOST_TOKEN", None),
             ("BOX_HOST_TOKEN_FILE", None),
-            ("BOX_VNC_PASSWORD", None),
+            ("BOX_VIEWER_PASSWORD", None),
             ("BOX_ALLOW_INSECURE_DEV", None),
             ("BOX_EXEC_BIND", Some("0.0.0.0:1337")),
             ("BOX_HOST_BIND", Some("0.0.0.0:1340")),
@@ -418,7 +471,7 @@ mod tests {
             ("BOX_TOKEN_FILE", Some(token_path.to_str().unwrap())),
             ("BOX_HOST_TOKEN", None),
             ("BOX_HOST_TOKEN_FILE", Some(host_path.to_str().unwrap())),
-            ("BOX_VNC_PASSWORD", None),
+            ("BOX_VIEWER_PASSWORD", None),
             ("BOX_ALLOW_INSECURE_DEV", None),
             ("BOX_EXEC_BIND", Some("0.0.0.0:1337")),
             ("BOX_HOST_BIND", Some("0.0.0.0:1340")),
@@ -436,7 +489,7 @@ mod tests {
             ("BOX_TOKEN_FILE", Some("/nonexistent/box_token")),
             ("BOX_HOST_TOKEN", None),
             ("BOX_HOST_TOKEN_FILE", None),
-            ("BOX_VNC_PASSWORD", None),
+            ("BOX_VIEWER_PASSWORD", None),
             ("BOX_ALLOW_INSECURE_DEV", None),
             ("BOX_EXEC_BIND", Some("127.0.0.1:1337")),
             ("BOX_HOST_BIND", Some("127.0.0.1:1340")),

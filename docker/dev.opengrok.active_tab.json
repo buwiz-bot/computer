@@ -1,7 +1,0 @@
-{
-  "name": "dev.opengrok.active_tab",
-  "description": "Records the page in front for box-host",
-  "path": "/usr/local/bin/box-active-tab",
-  "type": "stdio",
-  "allowed_origins": ["chrome-extension://cbjepbfbnglbibbkcpbikdokebodbaip/"]
-}

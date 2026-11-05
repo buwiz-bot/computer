@@ -1,7 +1,7 @@
 # Review status (for follow-up agents)
 
 **Branch:** `main`  
-**Baseline merge:** [PR #7](https://github.com/hexuria/box/pull/7) — BOX-REVIEW P0 → P1 (selective P2)  
+**Baseline merge:** [PR #7](https://github.com/buwiz-bot/computer/pull/7) — BOX-REVIEW P0 → P1 (selective P2)  
 **Merged:** 2026-09-14 (commit includes merge of `gol/box-review-p0-p1-cff5`)
 
 Prior analysis-only review: conversation artifact `BOX-REVIEW.md` (keep/cut/add). Implementation tracked in PR #7 body + `docs/CHANGELOG.md` if present.
@@ -40,7 +40,6 @@ Prior analysis-only review: conversation artifact `BOX-REVIEW.md` (keep/cut/add)
 | Item | Reason |
 | --- | --- |
 | Interactive **PTY** (`pty: true`) | Returns 400; use `/v1/exec/stream` |
-| Move `ensurebox/` + `l1/` to another repo | Frozen demos, still in-tree as non-product |
 | Vendor **trycua/cua** | Optional later backend; Linux X11 is default |
 | Full Docker image smoke on CI runner | May be environment-limited; use `scripts/smoke.sh` locally |
 
@@ -50,4 +49,3 @@ Prior analysis-only review: conversation artifact `BOX-REVIEW.md` (keep/cut/add)
 2. `cargo test --workspace` && clippy.
 3. `./scripts/smoke-native.sh`; optionally `./scripts/smoke.sh` with Docker.
 4. Compare OpenAPI to `crates/box-exec/src/routes.rs` + `box-host` routes.
-5. Treat `ensurebox/` and `l1/` as demos unless the task is about those UIs.

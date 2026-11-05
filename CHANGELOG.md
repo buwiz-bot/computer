@@ -1,5 +1,39 @@
 # Changelog
 
+## The Bot's computer
+
+Imported from `hexuria/box` at `64f2b13` with its history, as `buwiz-bot/computer`.
+
+| Item | Where |
+| --- | --- |
+| Named `buwiz-computer` throughout: crate, CLI, image, SDKs, `BUWIZ_COMPUTER_*`, native host `app.buwiz.active_tab` | everywhere |
+| voxl 0.3.3 replaces x11vnc, websockify and noVNC: one per screen on `6900+N`, `BOX_VIEWER_PASSWORD` with `_FILE` | `docker/Dockerfile`, `docker/entrypoint.sh`, `docker/box-screen` |
+| `box-keeper` is the one process that reads the secrets, and runs the rest. It, `box-exec`, `box-host`, `box-egress-tunnel` and voxl are undumpable, so an exec child cannot read their memory; `entrypoint.sh` holds no secret. Proved on every smoke by `scripts/memory-probe.py` | `crates/box-host/src/bin/box-keeper.rs`, `docker/` |
+| A voxl that dies restarts after 1 s, doubling to 30 s; the fifo takes only allocated slots | `crates/box-host/src/keeper.rs` |
+| `BOX_VIEWER_PASSWORD` gets the token strength check, with no insecure-dev exemption, before anything starts | `crates/box-common/src/config.rs` |
+| `reset_desktop` on one screen leaves the others alone | `docker/box-reset-desktop.sh` |
+| `/v1/info` `capabilities.viewer: {kind, port, enabled, ready}`; `/v1/desktop` `viewer.kind`, no more `vnc`; `/v1/ready` `viewer_ready` | `crates/box-host`, `crates/box-desktop` |
+| `GET /v1/screens`: every screen's display, viewer port, state and folder | `crates/box-desktop`, `crates/box-host` |
+| `POST /v1/cua/wait`, `/v1/cua/record/start`, `/v1/cua/record/stop` on voxl, password held by `box-exec` | `crates/box-cua/src/voxl.rs`, `crates/box-exec` |
+| A folder per screen under `/workspace` (`agents/<bot>`, `shared`) for recordings, cooks and downloads | `docker/box-screen`, `crates/box-desktop` |
+| `/v1/chrome` reports ready again: Chromium 156 refuses HTTP/1.0 on CDP. With `BOX_DESKTOP=0`, `capabilities.chrome.enabled` is false, as nothing starts it | `crates/box-chrome`, `crates/box-cua/src/settle.rs` |
+| Multi-arch publish to `ghcr.io/buwiz-bot/computer` on native runners, and an image smoke on PRs | `.github/workflows/` |
+| Removed: the frozen `ensurebox/` and `l1/` demos, `docker/Dockerfile.remasure`, `box-release-keys` (voxl lets go of held keys when a viewer leaves) | history keeps them |
+
+Compose's `pids_limit` is 2048. Measured per screen with Chromium: about 510 MiB and 180 processes and threads.
+
+**Not done:**
+
+- `settle` on actions: `/v1/cua/wait` covers it by hand.
+- amd64 is neither built nor tested, and the publish and image smoke workflows are written, not run.
+- A recording over `BOX_MAX_FILE_BYTES` (10 MB) may not come back through `/v1/files/raw`. Not tested.
+- voxl letting go of held keys when a viewer leaves is read from its source, not tested live.
+- Screens are not a security boundary: exec reaches every screen and folder.
+- A secret on a read-only mount, Compose's included, stays readable to anything running as the box user. Only staging on a writable mount closes that. Moving secrets to another uid would need `CAP_SETUID` and a split between `box-exec` and its children.
+- The box's own Chromium keeps its DevTools port on the box's loopback, open to any exec child.
+
+**Breaking:** `BOX_VNC_PASSWORD` is now `BOX_VIEWER_PASSWORD`, with no fallback; `BOX_VNC_BIND`, `BOX_NOVNC_PORT` and port 6080 are gone; `/v1/desktop` lost `vnc`; the entrypoint is now `box-keeper`, so a start with `_FILE` set and no file there fails; Compose's healthcheck is the public `/v1/health`; default cook folder moved from `.l1/cooks` to `<screen folder>/cooks`.
+
 Guest honesty and wire parity against BOX-REVIEW P0 → P1 (selective P2). Baseline `main` @ `3c67b576e2d4b67da5849b55bc2de6231d31ff47`.
 
 ## Egress tunnel (laptop CONNECT for prod Chromium)
@@ -10,7 +44,7 @@ Guest honesty and wire parity against BOX-REVIEW P0 → P1 (selective P2). Basel
 | Guest starts the server before Chromium when `BOX_EGRESS_TUNNEL=1`; Chromium `--proxy-server` + bypass list | `docker/entrypoint.sh`, `docker/box-chromium`, `docker/Dockerfile` |
 | Compose loopback publish **8790** only (never 8791/8792) | `docker-compose.yml` |
 | `/v1/info` `capabilities.egress_tunnel: {enabled, ready}`; `GET /v1/egress` | `crates/box-host`, OpenAPI, CLI/SDKs |
-| Docs: prod without host-network, OpenGrok client flags, capability JSON | `docs/EGRESS.md`, README, DEPLOY, ARCHITECTURE |
+| Docs: prod without host-network, client flags, capability JSON | `docs/EGRESS.md`, README, DEPLOY, ARCHITECTURE |
 
 ## P0
 
@@ -25,7 +59,7 @@ Guest honesty and wire parity against BOX-REVIEW P0 → P1 (selective P2). Basel
 | Compose `cap_drop ALL`, `no-new-privileges`, `pids_limit`, `mem_limit` — not a kernel sandbox | `docker-compose.yml`, README |
 | `BOX_MAX_CONCURRENT_EXECS` (default 8), 429 `busy`, SIGTERM then SIGKILL, `exec_id` | `crates/box-exec` |
 | CI: test, clippy `-D warnings`, smoke-native, OpenAPI presence | `.github/workflows/ci.yml`, `scripts/check-openapi.sh` |
-| Rust client HTTPS (hyper-rustls). Guest daemons remain HTTP; TLS is at a proxy | `crates/grok-box`, `docs/DEPLOY.md` |
+| Rust client HTTPS (hyper-rustls). Guest daemons remain HTTP; TLS is at a proxy | `crates/buwiz-computer`, `docs/DEPLOY.md` |
 
 ## P1
 

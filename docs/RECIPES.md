@@ -1,8 +1,8 @@
 # Recipes (one call, many CUA steps)
 
-This is grok-box’s custom take on [reverse-web-mcp](https://github.com/hexuria/reverse-web-mcp): **pay the model once to write a plan, then execute that plan as one guest request.**
+This is buwiz-computer’s custom take on [reverse-web-mcp](https://github.com/hexuria/reverse-web-mcp): **pay the model once to write a plan, then execute that plan as one guest request.**
 
-It is **not** a fork of `rwmcp`. grok-box is the Linux **screen** (Xvfb + XTEST). reverse-web-mcp is a **compiler** for apps that publish a world model (`x-reverse-webmcp` on OpenAPI). Different layer, same idea: stop doing click → screenshot → click as N tool calls.
+It is **not** a fork of `rwmcp`. buwiz-computer is the Linux **screen** (Xvfb + XTEST). reverse-web-mcp is a **compiler** for apps that publish a world model (`x-reverse-webmcp` on OpenAPI). Different layer, same idea: stop doing click → screenshot → click as N tool calls.
 
 ## What reverse-web-mcp does
 
@@ -14,7 +14,7 @@ It is **not** a fork of `rwmcp`. grok-box is the Linux **screen** (Xvfb + XTEST)
 
 The measured win vs a WebMCP/MCP loop is model calls and tokens, not pixels.
 
-## What grok-box CUA already was
+## What buwiz-computer CUA already was
 
 Each verb is its own HTTP round trip:
 
@@ -24,7 +24,7 @@ That is the “agent does click/scroll on multiple requests” path. Fine when t
 
 There was **no** preceding batch/recipe endpoint on this guest. Single-op CUA (including press / release / double-click / drag / move) is still there.
 
-## What grok-box recipes are
+## What buwiz-computer recipes are
 
 `POST /v1/cua/recipe` — one Bearer call, many sequential pointer steps, one **receipt**.
 
@@ -52,15 +52,15 @@ ffmpeg -nostdin -hide_banner -loglevel error -y \
   -an -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
   -b:v 700k -maxrate 900k -bufsize 1800k \
   -movflags +frag_keyframe+empty_moov+default_base_moof \
-  /workspace/.l1/cooks/<run>/cook.mp4
+  /workspace/<screen folder>/cooks/<run>/cook.mp4
 
 ffmpeg -nostdin -hide_banner -loglevel error -y \
-  -i /workspace/.l1/cooks/<run>/cook.mp4 \
+  -i /workspace/<screen folder>/cooks/<run>/cook.mp4 \
   -an -c:v copy -movflags +faststart \
-  /workspace/.l1/cooks/<run>/cook.faststart.mp4
+  /workspace/<screen folder>/cooks/<run>/cook.faststart.mp4
 ```
 
-The video is a guest file (`cook.mp4`), not a new VNC session. `reset_desktop` (alias `reset`) closes non-Chromium guest windows — **same box id**, no Docker restart. Chromium stays with the entrypoint (killing it would fight the respawn loop).
+The video is a guest file (`cook.mp4`), not a new viewer session. `reset_desktop` (alias `reset`) closes non-Chromium guest windows — **same box id**, no Docker restart. Chromium stays with the entrypoint (killing it would fight the respawn loop).
 
 Wait is capped at 10s per step. `stop_on_error` defaults true; earlier steps stay in the receipt (`ok: false`, `stopped_at`).
 
@@ -122,14 +122,14 @@ No process is forked for either mode. This deliberately does not go through `wmc
 CLI:
 
 ```bash
-cargo run -p grok-box -- cua recipe --file plan.json
+cargo run -p buwiz-computer -- cua recipe --file plan.json
 ```
 
-SDKs: `client.recipe({ steps: [...] })`. EnsureBox demo proxy: `POST /api/v1/boxes/:id/cua/recipe`.
+SDKs: `client.recipe({ steps: [...] })`. 
 
 ## Honest comparison
 
-| | reverse-web-mcp | grok-box single CUA | grok-box recipe |
+| | reverse-web-mcp | buwiz-computer single CUA | buwiz-computer recipe |
 | --- | --- | --- | --- |
 | Who writes the plan | Compiler from wants + world model | The model, every turn | The caller (usually the model, once) |
 | Model in the loop | Median 1, then 0 on `--recipe` | Every click | Not during this HTTP call |
@@ -141,14 +141,14 @@ SDKs: `client.recipe({ steps: [...] })`. EnsureBox demo proxy: `POST /api/v1/box
 
 CUA cannot be a parallel DAG. Two clicks share one cursor. Recipes still win on **round trips** and **model turns** when the path does not need vision between steps.
 
-Optional `record: true` plus `artifact_dir` writes a cook video and PNG files so a UI can show them without stuffing megabytes of base64 through the receipt. L1’s **Record cook** switch (default on) uses that. `reset_desktop` is a real step for a clean empty desktop between runs.
+Optional `record: true` plus `artifact_dir` writes a cook video and PNG files so a UI can show them without stuffing megabytes of base64 through the receipt. `reset_desktop` is a real step for a clean empty desktop between runs.
 
 If the agent must look at the framebuffer after every click, keep single-op CUA (or `screenshot: "each"`, which is still one HTTP call but a large body).
 
 ## What this is not (yet)
 
 - Not a world-model compiler. The guest does not parse wants like `invoice(customer=…).status='sent'`.
-- Not WebMCP. Chromium in the guest may load a site that speaks WebMCP; grok-box does not broker those tools yet.
+- Not WebMCP. Chromium in the guest may load a site that speaks WebMCP; buwiz-computer does not broker those tools yet.
 - Not mixed exec/files + CUA in one document. Exec and files stay their own routes. A later `/v1/recipe` could mix them; CUA stays sequential even then.
 
 The product stay: you start the guest, `connect(execUrl, hostUrl, token)`, send a recipe.

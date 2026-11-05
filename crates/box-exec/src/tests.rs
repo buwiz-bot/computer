@@ -133,12 +133,12 @@ async fn files_put_and_get() {
             "PUT",
             "/v1/files",
             "secret-token",
-            json!({"path":"notes/hello.txt","content":"hello from grok-box"}),
+            json!({"path":"notes/hello.txt","content":"hello from buwiz-computer"}),
         ),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["bytes_written"], "hello from grok-box".len());
+    assert_eq!(body["bytes_written"], "hello from buwiz-computer".len());
 
     let (status, body) = send(
         s,
@@ -152,7 +152,7 @@ async fn files_put_and_get() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["kind"], "file");
-    assert_eq!(body["content"], "hello from grok-box");
+    assert_eq!(body["content"], "hello from buwiz-computer");
 }
 
 #[tokio::test]
@@ -247,6 +247,9 @@ async fn cua_type_key_scroll_disabled() {
             "/v1/cua/recipe",
             json!({"steps":[{"op":"move","x":10,"y":10}]}),
         ),
+        ("/v1/cua/wait", json!({"change": true})),
+        ("/v1/cua/record/start", json!({})),
+        ("/v1/cua/record/stop", json!({"id": 1})),
     ] {
         let (status, body) = send(s.clone(), auth_json("POST", uri, "secret-token", payload)).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{uri}");

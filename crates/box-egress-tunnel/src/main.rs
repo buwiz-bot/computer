@@ -70,6 +70,7 @@ fn init_tracing() {
 
 #[tokio::main]
 async fn main() {
+    box_common::make_undumpable();
     init_tracing();
     if let Err(err) = run().await {
         tracing::error!(error = %err, "box-egress-tunnel exited");
