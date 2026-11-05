@@ -1,0 +1,27 @@
+<!doctype html>
+<title>settle bench</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; }
+  #spin { position: fixed; left: 0; bottom: 0; width: 120px; height: 40px; background: #fff; display: none; }
+</style>
+<div id="spin"></div>
+<script>
+  // Each click flips the page between black and white after the next delay in the list, so one
+  // pixel says whether a screenshot came before or after the effect. ?animate=1 adds a block at
+  // the bottom left that never stops moving.
+  const delays = [0, 150, 400, 900];
+  let clicks = 0;
+  addEventListener("mousedown", () => {
+    const flipped = ++clicks % 2 === 1;
+    setTimeout(() => {
+      document.documentElement.style.background = flipped ? "#fff" : "#000";
+      document.body.style.background = flipped ? "#fff" : "#000";
+    }, delays[(clicks - 1) % delays.length]);
+  });
+  if (new URLSearchParams(location.search).get("animate")) {
+    const spin = document.getElementById("spin");
+    spin.style.display = "block";
+    let t = 0;
+    setInterval(() => { spin.style.width = 60 + (t++ % 60) + "px"; }, 33);
+  }
+</script>
