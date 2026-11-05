@@ -175,9 +175,14 @@ What the file form buys, precisely:
 - `grep -a BOX_TOKEN= /proc/*/environ` finds nothing — not in pid 1, not in either daemon, not in Chromium.
 - `docker inspect` does not show the token in `Config.Env`.
 - The daemons unlink the staged copies the entrypoint writes for them, so those exist for milliseconds.
-- voxl takes its password only from argv or its environment, so it gets it in its environment, and `/usr/local/bin/voxl` is execute-only (mode 0111): a process run from a file it cannot read is not dumpable, so nothing else running as uid 1000 can read `/proc/<voxl>/environ`. No file holds the password for a later screen: the entrypoint's viewer keeper keeps it in memory, and `box-screen` asks the keeper over a fifo that names a display and nothing else.
+- `box-keeper`, the first process after `tini`, is the only one that reads the secrets. `entrypoint.sh` never holds one: a shell cannot be made undumpable. `box-keeper`, `box-exec`, `box-host` and `box-egress-tunnel` set `PR_SET_DUMPABLE` to 0, and they and voxl are execute-only (mode 0111): a process run from a file it cannot read is not dumpable. So nothing else running as uid 1000 can open their `/proc/<pid>/mem` or `environ`, or ptrace them. `scripts/smoke.sh` proves it from an exec child with `scripts/memory-probe.py`.
+- voxl takes its password only from argv or its environment, so it gets it in its environment, which only it can read. `box-screen` asks `box-keeper` for a viewer over a fifo that names a display and nothing else.
 
-What it does **not** buy: the file the operator mounts stays readable by uid 1000 (the Compose healthcheck needs it to authenticate). Code already executing as the box user — a compromised Chromium renderer, or any binary the agent downloaded and ran — can read `/run/secrets/box_token` and recover both secrets. Treat any code execution in the box as full compromise of `BOX_TOKEN` and `BOX_VIEWER_PASSWORD`. Rotate on suspicion; do not reuse a box token anywhere else.
+**Stage the files on a writable mount.** `box-keeper` unlinks each file it reads, so on a writable mount nothing is left once the box is up, and whoever starts the box stages them again for the next start. That is what the Bot does. Then an exec child has no file to read and no memory to read: a read-only mount is what would leave one.
+
+What a **read-only mount** does not buy, and Compose's `secrets:` is one: `box-keeper` runs as uid 1000, so the file it reads stays readable to uid 1000 for the life of the box. Code already executing as the box user — a compromised Chromium renderer, or any binary the agent downloaded and ran — can read `/run/secrets/box_token` and recover both secrets. On that kind of mount, treat any code execution in the box as full compromise of `BOX_TOKEN` and `BOX_VIEWER_PASSWORD`. A value passed as an environment variable is worse in the same way, as above. Rotate on suspicion; do not reuse a box token anywhere else.
+
+Moving the secrets to another uid would close this for every mount, but it needs the container to start with `CAP_SETUID` and `box-exec` to run as a different user from its own children. Under `USER box`, `cap_drop: ALL` and `no-new-privileges`, nothing can change uid.
 
 Exec children never receive any of these variables, in either form.
 
@@ -211,7 +216,7 @@ curl -fsS http://127.0.0.1:1337/v1/exec \
 
 Measured on arm64 with a page holding about 200 MB of data open on each screen: about 510 MiB and 180 processes and threads per screen. Compose's 4 GB limit holds the box's own screen and seven Bots', so the default four leave room; at eight it runs out and the kernel starts killing browser processes. Anything that starts the image itself needs `--pids-limit 2048` too: at 1024 a fifth Bot's Chromium cannot start, and at the limit neither can an exec.
 
-Screens keep agents apart for input and viewing; they are not a security boundary. All of them run as the box user, and anything with exec on the box can reach every screen. See [API](docs/API.md#screens).
+Screens keep agents apart through `/v1/cua` and the viewer; they are not a security boundary. All of them run as the box user, and anything with exec on the box can reach every screen, for one by setting `DISPLAY`. See [API](docs/API.md#screens).
 
 ## Volumes
 

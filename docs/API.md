@@ -438,7 +438,9 @@ One computer serves one or more agents, each on a screen of its own. `GET /v1/in
 
 Add and remove a Bot's screen while the computer runs with `POST /v1/exec`: `box-screen up <bot>` prints its slot once its voxl takes connections, and `box-screen down <bot>` stops it and keeps its folder and profile. Slots hold for the life of the home directory, so a Bot comes back on the same display.
 
-`?display=:N` puts any `/v1/cua/*` call on that screen. Input on one screen does not reach another: each is its own X server with its own pointer, keyboard focus and clipboard. Screens are not a security boundary, though. They all run as the box user, the X servers accept any local client, and anything with exec on the box can reach every screen and every folder.
+`?display=:N` puts any `/v1/cua/*` call on that screen. Through `/v1/cua` and the viewer, input on one screen does not reach another: each is its own X server with its own pointer, keyboard focus and clipboard.
+
+That isolation stops there. `POST /v1/exec` can reach any screen: its `env` can set `DISPLAY`, the X servers accept any local client, and everything runs as the box user, so an exec child can type into another agent's screen and read another agent's folder. Give an agent `/v1/cua` and not `/v1/exec` if it must stay on its screen, and a computer of its own if it must not touch another agent's work.
 
 ### `POST /v1/cua/wait` (bearer)
 

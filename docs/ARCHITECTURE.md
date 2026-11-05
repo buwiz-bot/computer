@@ -55,10 +55,11 @@ Bind addresses: inside the guest image, `BOX_EXEC_BIND` / `BOX_HOST_BIND` defaul
 - **Authenticated:** everything else, including `/v1/ready`, file I/O, CUA, and `/v1/info`.
 - **Insecure tokens:** `dev-box-token`, empty, or shorter than 16 characters are rejected unless `BOX_ALLOW_INSECURE_DEV=1` **and** both daemon binds are loopback.
 - **Delivery:** as a file (`BOX_TOKEN_FILE`, `BOX_HOST_TOKEN_FILE`, `BOX_VIEWER_PASSWORD_FILE`, `BOX_EGRESS_TUNNEL_BEARER_FILE`) or as a value. The file form wins and is what Compose uses. A value passed through the container environment lands in pid 1's environ block, which `/proc/1/environ` serves to every process in the box; `unsetenv` cannot take it back out, because it edits the pointer array and not the block. See README §Auth.
-- **Docker:** the entrypoint exits if neither `BOX_TOKEN` nor `BOX_TOKEN_FILE` is set. It hands each daemon a path, never a value, so no daemon has a secret in its own environ. Each daemon reads its staged file and unlinks it.
-- **Residual exposure:** the file the operator mounts is readable by uid 1000, because the container healthcheck has to authenticate. Code execution in the box is compromise of `BOX_TOKEN` and `BOX_VIEWER_PASSWORD`.
+- **Docker:** `box-keeper` exits if neither `BOX_TOKEN` nor `BOX_TOKEN_FILE` is set. It is the only process that reads the secrets, and it unlinks each file it reads. It hands each daemon a path, never a value, so no daemon has a secret in its own environ, and each daemon reads its staged file and unlinks it. `box-exec` starts last, once `box-host` has unlinked its copies, so no exec child can exist while a staged copy does.
+- **Memory:** every process holding a secret is undumpable: execute-only binaries, and `PR_SET_DUMPABLE` 0 in our own. `entrypoint.sh` holds none. Exec children, which run as the same user, cannot read them through `/proc/<pid>/mem` or ptrace. `scripts/memory-probe.py` checks it on every smoke.
+- **Residual exposure:** a file on a read-only mount stays readable by uid 1000, because `box-keeper` runs as that user and cannot unlink it. A value passed through the environment stays in `/proc/1/environ`. With files on a writable mount, unlinked at start, neither applies. Code execution in the box still reaches every screen, every folder, and Chromium.
 - **Exec children:** `BOX_TOKEN`, `BOX_HOST_TOKEN`, `BOX_VIEWER_PASSWORD`, and their `_FILE` forms are stripped from the child environment.
-- **Viewer:** voxl has its own login, with `BOX_VIEWER_PASSWORD`, independent of `BOX_TOKEN`; only `/healthz` and its page's scripts load without it. Host publish is loopback. `box-exec` holds the password to reach `/wait` and `/record`; `box-host` does not have it. voxl's environ is unreadable to other processes because its binary is execute-only. See README §Auth.
+- **Viewer:** voxl has its own login, with `BOX_VIEWER_PASSWORD`, independent of `BOX_TOKEN`; only `/healthz` and its page's scripts load without it. Host publish is loopback. `box-exec` holds the password to reach `/wait` and `/record`; `box-host` does not have it. See README §Auth.
 - **CORS:** default is no browser origins. Set `BOX_CORS_ORIGINS` to an explicit comma-separated list if a browser must call the guest. `*` is ignored.
 
 WebSocket streaming for exec is **not** in this tree. Use `POST /v1/exec` (bounded output, timeout; stdout/stderr are kept on timeout) or `POST /v1/exec/stream` (NDJSON/SSE). PTY is deferred.
@@ -79,23 +80,23 @@ That is inventory for the process inside the guest, not a second connect source 
 
 ```
 tini
- └── entrypoint.sh
-      ├── Xvfb :1  (1280x800x24)          if BOX_DESKTOP=1
-      ├── xfce4-session
-      ├── viewer keeper  (subshell holding the password; restarts voxl if it dies)
-      │     └── voxl :6901, and 6900+N for each Bot's screen box-screen asks for
-      ├── chromium (profile volume; CDP 127.0.0.1:9222)
-      │     optional --proxy-server=http://127.0.0.1:8791 when BOX_EGRESS_TUNNEL=1
-      │     not in the death-watch — closing the browser must not kill the box
-      ├── box-egress-tunnel  (WS 8790, CONNECT 127.0.0.1:8791, admin 127.0.0.1:8792)
-      │     only if BOX_EGRESS_TUNNEL=1; death-watched; start before Chromium
-      ├── box-exec   (1337)
-      └── box-host   (1340)  ──probes──► 127.0.0.1:1337/v1/health
-                                         + X socket when desktop is required
-                                         + 127.0.0.1:8792/v1/status when egress on
+ └── box-keeper                            holds the secrets; not dumpable
+      ├── entrypoint.sh                    the desktop; holds no secret
+      │    ├── Xvfb :1  (1280x800x24)      if BOX_DESKTOP=1
+      │    ├── xfce4-session
+      │    ├── chromium (profile volume; CDP 127.0.0.1:9222)
+      │    │     optional --proxy-server=http://127.0.0.1:8791 when BOX_EGRESS_TUNNEL=1
+      │    │     not in the death-watch — closing the browser must not kill the box
+      │    └── box-egress-tunnel  (WS 8790, CONNECT 127.0.0.1:8791, admin 127.0.0.1:8792)
+      │          only if BOX_EGRESS_TUNNEL=1; death-watched; start before Chromium
+      ├── voxl :6901, and 6900+N for each Bot's screen box-screen asks for
+      ├── box-host   (1340)  ──probes──► 127.0.0.1:1337/v1/health
+      │                                  + X socket when desktop is required
+      │                                  + 127.0.0.1:8792/v1/status when egress on
+      └── box-exec   (1337)
 ```
 
-If `box-exec`, `box-host` or the X stack dies, the entrypoint stops siblings and the container exits so the orchestrator can restart or replace it. Chromium exiting is ignored, and a voxl that dies is started again: the box's work does not depend on anyone watching.
+If `box-exec`, `box-host` or the X stack dies, `box-keeper` stops the rest and the container exits so the orchestrator can restart or replace it. Chromium exiting is ignored, and a voxl that dies is started again after 1 s, doubling to 30 s: the box's work does not depend on anyone watching.
 
 Runtime user is `box` (uid 1000), not root. Ports are unprivileged.
 
