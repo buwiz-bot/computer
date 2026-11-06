@@ -40,14 +40,17 @@ CORS is not permissive. Set `BOX_CORS_ORIGINS` to an explicit allowlist if a bro
 
 No service or version fields. This is a liveness probe, not an inventory.
 
+All `/v1/files*` routes take `bot` the same way, in the query or the body, and work as that user.
+
 ### `POST /v1/exec`
 
-Run a process. `cwd` defaults to the workspace root and is jail-checked.
+Run a process, as a user of its own ([`USERS.md`](USERS.md)): `bot` names the Bot it's for, and a Bot this computer hasn't got is a 404. Without it, the shared `agent` user. `cwd` defaults to the workspace root and is jail-checked as that user. It gets no `DISPLAY`, and no X server would take it: only `/v1/cua/*` and `/v1/screen` reach a screen.
 
 ```json
 {
   "command": ["echo", "ok"],
   "cwd": "",
+  "bot": "amy",
   "timeout_ms": 30000,
   "env": { "FOO": "bar" },
   "stdin": null
@@ -436,11 +439,19 @@ One computer serves one or more agents, each on a screen of its own. `GET /v1/in
 
 `state` is `running`, `viewer_down` (the display is up, so input and screenshots work, but voxl is not, or not yet) or `stopped`. `viewer_port` is the port inside the box: a caller that publishes it elsewhere maps it. The list is empty with `BOX_DESKTOP=0`.
 
-Add and remove a Bot's screen while the computer runs with `POST /v1/exec`: `box-screen up <bot>` prints its slot once its voxl takes connections, and `box-screen down <bot>` stops it and keeps its folder and profile. Slots hold for the life of the home directory, so a Bot comes back on the same display.
+Add and remove a Bot's screen while the computer runs with `POST /v1/screen` (bearer), `{"action": …, "bot": …}`. It answers with `box-screen`'s JSON, with an `error` when that failed:
+
+- `up` starts it, and answers with its slot once its voxl takes connections.
+- `down` stops it and keeps its slot, folder and profile.
+- `forget` also ends the Bot's commands and frees its slot. Its folder, profile and users stay its own.
+- `open` opens `url`, http or https, in its browser.
+- `list` takes no `bot`.
+
+Slots hold for the life of the home volume, so a Bot keeps its display number across restarts and updates. Every Bot has two users of its own, never given to another.
 
 `?display=:N` puts any `/v1/cua/*` call on that screen. Through `/v1/cua` and the viewer, input on one screen does not reach another: each is its own X server with its own pointer, keyboard focus and clipboard.
 
-That isolation stops there. `POST /v1/exec` can reach any screen: its `env` can set `DISPLAY`, the X servers accept any local client, and everything runs as the box user, so an exec child can type into another agent's screen and read another agent's folder. Give an agent `/v1/cua` and not `/v1/exec` if it must stay on its screen, and a computer of its own if it must not touch another agent's work.
+Commands can't reach a screen at all, and a Bot's commands can't reach another Bot's folder: see [`USERS.md`](USERS.md), including what isn't a wall.
 
 ### `POST /v1/cua/wait` (bearer)
 
@@ -463,7 +474,7 @@ Answer: `{"changed": true, "timed_out": false, "seq": 813, "waited_ms": 340}`. T
   "enabled": true,
   "ready": true,
   "running": true,
-  "profile": "/home/box/chrome-profile",
+  "profile": "/home/box/desktops/main/chrome-profile",
   "cdp": "127.0.0.1:9222",
   "display": ":1"
 }

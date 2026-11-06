@@ -17,7 +17,7 @@ fi
 proxy_server=""
 proxy_bypass=""
 proxy_webrtc=""
-port_file="/tmp/box-egress-proxy.port"
+port_file="/run/box/egress/port"
 tunnel="${BOX_EGRESS_TUNNEL:-}"
 port="${BOX_EGRESS_PROXY_PORT:-}"
 if [ -z "${tunnel}" ] && [ -r "${port_file}" ]; then tunnel=1; fi
@@ -42,7 +42,7 @@ win_w="${geom%%x*}"
 rest="${geom#*x}"
 win_h="${rest%%x*}"
 exec chromium \
-  --user-data-dir="${BOX_CHROME_PROFILE:-/home/box/chrome-profile}" \
+  --user-data-dir="${BOX_CHROME_PROFILE:-${HOME}/chrome-profile}" \
   --no-first-run \
   --no-default-browser-check \
   --disable-dev-shm-usage \

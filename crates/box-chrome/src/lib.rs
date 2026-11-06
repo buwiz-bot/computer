@@ -1,7 +1,7 @@
 //! Chromium launch metadata for the Linux Buwiz computer image.
 //!
 //! Chrome (or Chromium) is started by `docker/entrypoint.sh` on `DISPLAY=:1`.
-//! The profile lives at `/home/box/chrome-profile` (compose volume). Optional
+//! The profile lives at `/home/box/desktops/main/chrome-profile` (compose volume). Optional
 //! Chrome DevTools Protocol listens on **localhost only**.
 //!
 //! Readiness is CDP (`GET /json/version` on loopback). We do not walk `/proc`
@@ -15,12 +15,12 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Default Chromium `--user-data-dir`.
-pub const DEFAULT_PROFILE: &str = "/home/box/chrome-profile";
+pub const DEFAULT_PROFILE: &str = "/home/box/desktops/main/chrome-profile";
 
 /// CDP is never published; agents inside the box talk to this loopback port.
 pub const DEFAULT_CDP_PORT: u16 = 9222;
 
-pub const PID_FILE: &str = "/tmp/box-chrome.pid";
+pub const PID_FILE: &str = "/run/box/x/1/chrome.pid";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChromeConfig {

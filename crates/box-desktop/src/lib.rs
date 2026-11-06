@@ -224,10 +224,9 @@ impl ScreenList {
     }
 }
 
-/// Where `box-screen` keeps a Bot's slot: one file per Bot, its display number inside.
+/// Where `box-screen` keeps a Bot's slot: one file per Bot, its display number inside. Root's.
 pub fn slots_dir() -> PathBuf {
-    let home = std::env::var_os("HOME").map_or_else(|| "/home/box".into(), PathBuf::from);
-    home.join(".box-screens")
+    PathBuf::from("/home/box/.box/slots")
 }
 
 /// The folder of a screen, relative to the workspace root: `agents/<bot>` for a Bot's own,
@@ -240,6 +239,14 @@ pub fn screen_workspace(display: &str, slots_dir: &Path) -> String {
             .map(|(bot, _)| bot)
     });
     workspace_of(bot.as_deref())
+}
+
+/// The Bot holding this slot.
+pub fn slot_holder(slots_dir: &Path, slot: u16) -> Option<String> {
+    read_slots(slots_dir)
+        .into_iter()
+        .find(|(_, held)| *held == slot)
+        .map(|(bot, _)| bot)
 }
 
 /// True when `box-screen` gave this slot to a Bot.

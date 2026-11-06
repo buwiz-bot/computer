@@ -21,6 +21,7 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
+use crate::users::{as_user, Identity};
 use crate::{AppState, ChildGroups, DetachedJob};
 
 const MAX_DETACHED_JOBS: usize = 64;
@@ -49,6 +50,9 @@ pub struct ExecRequest {
     /// Argv (`["echo","ok"]`) or a shell string (`"echo ok"` → `/bin/sh -c`).
     pub command: CommandSpec,
     pub cwd: Option<String>,
+    /// Which Bot this is for: it runs as that Bot's user. Without it, the shared `agent` user.
+    /// Never as anything else, and a Bot this computer doesn't have is refused.
+    pub bot: Option<String>,
     pub timeout_ms: Option<u64>,
     pub env: Option<HashMap<String, String>>,
     pub stdin: Option<String>,
@@ -118,6 +122,7 @@ enum StreamEvent {
 
 struct Prepared {
     argv: Vec<String>,
+    who: Option<Identity>,
     cwd: PathBuf,
     timeout: Duration,
     env: Option<HashMap<String, String>>,
@@ -485,17 +490,23 @@ fn prepare(state: &AppState, req: ExecRequest) -> Result<Prepared, ApiError> {
         }
     };
 
+    let who = state.users.who(req.bot.as_deref())?;
     let cwd_input = req.cwd.as_deref().unwrap_or("");
-    let cwd = resolve_in_canonical_jail(&state.workspace, cwd_input)?;
-    if !cwd.is_dir() {
-        return Err(ApiError::invalid_request(format!(
-            "cwd is not a directory: {}",
-            cwd.display()
-        )));
-    }
+    // as the user who'll run in it: `box-exec` itself can't see into a Bot's folder
+    let cwd = as_user(who.as_ref(), || {
+        let cwd = resolve_in_canonical_jail(&state.workspace, cwd_input)?;
+        if !cwd.is_dir() {
+            return Err(ApiError::invalid_request(format!(
+                "cwd is not a directory: {}",
+                cwd.display()
+            )));
+        }
+        Ok(cwd)
+    })??;
 
     Ok(Prepared {
         argv,
+        who,
         cwd,
         timeout: clamp_timeout(state, req.timeout_ms),
         env: req.env,
@@ -597,6 +608,7 @@ async fn run_blocking(state: &AppState, prepared: Prepared) -> Result<ExecRespon
     let cwd_display = prepared.cwd.display().to_string();
     let mut child = spawn_child(
         prepared.argv,
+        prepared.who.as_ref(),
         &prepared.cwd,
         prepared.env,
         prepared.stdin.is_some(),
@@ -685,6 +697,7 @@ async fn stream_child(
     let cwd_display = prepared.cwd.display().to_string();
     let mut child = spawn_child(
         prepared.argv,
+        prepared.who.as_ref(),
         &prepared.cwd,
         prepared.env,
         prepared.stdin.is_some(),
@@ -803,6 +816,7 @@ async fn pump_stream<R: AsyncReadExt + Unpin>(
 
 fn spawn_child(
     argv: Vec<String>,
+    who: Option<&Identity>,
     cwd: &std::path::Path,
     env: Option<HashMap<String, String>>,
     has_stdin: bool,
@@ -818,9 +832,24 @@ fn spawn_child(
     } else {
         cmd.stdin(Stdio::null());
     }
+    if let Some(who) = who {
+        // `box-exec`'s environment is its own, and it has no supplementary groups to hand on.
+        // Its capabilities go at the exec: none is ambient (`users::keep_capabilities_here`).
+        cmd.env_clear().envs(who.env()).uid(who.uid).gid(who.gid);
+    }
     apply_child_env(&mut cmd, env.as_ref())?;
+    // A session of its own, which is also a process group. In `box-exec`'s session a command could
+    // send SIGCONT to anything else in it, whoever's it is: the kernel allows that inside a session.
     #[cfg(unix)]
-    cmd.process_group(0);
+    // SAFETY: setsid is async-signal-safe, and this touches nothing else.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     cmd.spawn().map_err(|err| {
         ApiError::new(
             axum::http::StatusCode::BAD_REQUEST,

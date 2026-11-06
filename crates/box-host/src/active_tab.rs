@@ -5,7 +5,7 @@
 //! can drive it or read its cookies. To know which page is in front on every screen, the image
 //! loads a small extension (`docker/active-tab`) with only the `tabs`
 //! permission. It sends the front tab's URL over native messaging to `box-active-tab`, which
-//! keeps the latest in [`ACTIVE_TAB_FILE`]; `GET /v1/chrome/active-tab` reads it back.
+//! keeps the latest in [`file_for`]; `GET /v1/chrome/active-tab` reads it back.
 //!
 //! The server asks before it types a saved login, and types nothing when the page in front is
 //! not the login's own site. The file is written by the box user, so a process in the box
@@ -18,30 +18,24 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-/// Where `box-active-tab` keeps the latest report for the box's own screen. Removed when
-/// Chromium closes the port.
-pub const ACTIVE_TAB_FILE: &str = "/tmp/box-active-tab.json";
-
-/// Where the report for a screen is kept. Each of the box's screens has its own Chromium
-/// (`box-screen`: a Bot's own screen on a computer several Bots share), and each Chromium starts
-/// its own `box-active-tab`, which inherits that Chromium's `DISPLAY`. The shared screen
-/// (`BOX_SHARED_DISPLAY`, `:1` by default) keeps [`ACTIVE_TAB_FILE`]; any other `:N` is
-/// `/tmp/box-active-tab.N.json`. Anything that is not a display name is the shared screen.
+/// Where a screen's report is kept: in that screen's run folder, which its desktop user owns and
+/// `box-host`'s user may read, and a command can't reach. Each of the box's screens has its own
+/// Chromium, and each starts its own `box-active-tab`, which inherits that Chromium's `DISPLAY`.
+/// Anything that is not a display name is the main screen (`BOX_SHARED_DISPLAY`, `:1` by default).
 ///
 /// Not `BOX_DISPLAY`: a Bot's own Chromium is started with `BOX_DISPLAY` set to its own screen,
-/// and its host would take that screen for the shared one.
+/// and its host would take that screen for the main one.
 pub fn file_for(display: Option<&str>) -> std::path::PathBuf {
     let own = std::env::var("BOX_SHARED_DISPLAY").unwrap_or_else(|_| ":1".to_string());
     let number = |d: &str| {
         let n = d.trim().strip_prefix(':')?.split('.').next()?.to_string();
         (!n.is_empty() && n.len() <= 3 && n.bytes().all(|b| b.is_ascii_digit())).then_some(n)
     };
-    match display.and_then(number) {
-        Some(n) if Some(n.clone()) != number(&own) => {
-            std::path::PathBuf::from(format!("/tmp/box-active-tab.{n}.json"))
-        }
-        _ => std::path::PathBuf::from(ACTIVE_TAB_FILE),
-    }
+    let screen = display
+        .and_then(number)
+        .or_else(|| number(&own))
+        .unwrap_or_else(|| "1".to_string());
+    std::path::PathBuf::from(format!("/run/box/x/{screen}/active-tab.json"))
 }
 
 /// Native messaging caps a message to the host at 64 MiB; a URL is far smaller, and anything
@@ -209,18 +203,19 @@ mod tests {
         );
     }
 
-    /// Each screen's Chromium reports to its own file; the box's own screen keeps the old one.
+    /// Each screen's Chromium reports to its own file.
     #[test]
     fn each_screen_has_its_own_report() {
-        assert_eq!(file_for(None), Path::new(ACTIVE_TAB_FILE));
-        assert_eq!(file_for(Some(":1")), Path::new(ACTIVE_TAB_FILE));
-        assert_eq!(file_for(Some(":1.0")), Path::new(ACTIVE_TAB_FILE));
+        let main = Path::new("/run/box/x/1/active-tab.json");
+        assert_eq!(file_for(None), main);
+        assert_eq!(file_for(Some(":1")), main);
+        assert_eq!(file_for(Some(":1.0")), main);
         assert_eq!(
             file_for(Some(":3")),
-            Path::new("/tmp/box-active-tab.3.json")
+            Path::new("/run/box/x/3/active-tab.json")
         );
-        assert_eq!(file_for(Some("../../etc")), Path::new(ACTIVE_TAB_FILE));
-        assert_eq!(file_for(Some(":3/../x")), Path::new(ACTIVE_TAB_FILE));
+        assert_eq!(file_for(Some("../../etc")), main);
+        assert_eq!(file_for(Some(":3/../x")), main);
     }
 
     #[test]

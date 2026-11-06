@@ -11,6 +11,8 @@ mod fdcount;
 mod files;
 mod middleware;
 mod routes;
+mod screens;
+pub mod users;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -58,6 +60,9 @@ pub struct AppState {
     pub started_at: Instant,
     pub jobs: Arc<Mutex<HashMap<String, DetachedJob>>>,
     pub child_groups: ChildGroups,
+    pub users: users::Users,
+    /// Where `box-keeper` takes screen requests.
+    pub keeper_socket: PathBuf,
 }
 
 #[derive(Clone, Debug)]
@@ -90,6 +95,8 @@ impl AppState {
             started_at: Instant::now(),
             jobs: Arc::new(Mutex::new(HashMap::new())),
             child_groups: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            users: users::Users::from_env(),
+            keeper_socket: PathBuf::from(box_common::KEEPER_SOCKET),
         }
     }
 
@@ -115,6 +122,8 @@ impl AppState {
             started_at: Instant::now(),
             jobs: Arc::new(Mutex::new(HashMap::new())),
             child_groups: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            users: users::Users::Same,
+            keeper_socket: PathBuf::from("/nonexistent/keeper.sock"),
         }
     }
 }

@@ -29,7 +29,7 @@ Production consumers are CLI/SDK against the guest HTTP wire (`:1337` exec, `:13
 
 ### What the guest actually is
 
-One **unprivileged** container (user `box`, **uid 1000**). Not privileged. Compose drops all capabilities and sets `no-new-privileges` plus pids/memory limits. **That is not a kernel sandbox.** **No** `docker.sock`. Chromium is started with `--no-sandbox` because it is not root.
+One container, not privileged. It starts as root for `box-keeper`, which starts everything else as a user of its own ([`USERS.md`](USERS.md)). Compose drops all capabilities but the few that takes, and sets `no-new-privileges` plus pids/memory limits. **That is not a kernel sandbox.** **No** `docker.sock`. Chromium is started with `--no-sandbox` because it is not root.
 
 Inside (see [`docs/ARCHITECTURE.md`](ARCHITECTURE.md)):
 

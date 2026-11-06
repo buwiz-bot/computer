@@ -6,7 +6,7 @@ use axum::Router;
 use serde::Serialize;
 
 use crate::middleware::require_token;
-use crate::{control, cua, exec, files, AppState};
+use crate::{control, cua, exec, files, screens, AppState};
 
 #[derive(Serialize)]
 struct HealthResponse {
@@ -25,6 +25,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/files/raw", get(files::get_raw).put(files::put_raw))
         .route("/v1/files/mkdir", post(files::mkdir))
         .route("/v1/files/rename", post(files::rename))
+        .route("/v1/screen", post(screens::handle))
         .route("/v1/busy", get(control::busy))
         .route("/v1/shutdown", post(control::shutdown))
         .route("/v1/metrics", get(control::metrics))

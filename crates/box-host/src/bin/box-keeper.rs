@@ -1,23 +1,31 @@
-//! `box-keeper`: the one process in the box that reads the secrets, and the parent of the rest.
+//! `box-keeper`: the one process in the box that reads the secrets, the parent of the rest, and the
+//! only one that stays root.
 //!
-//! Everything in the box runs as one user, so any process that holds a secret and can be dumped
-//! gives it to any exec child through `/proc/<pid>/mem`. A shell cannot be made safe that way,
-//! so `entrypoint.sh` never sees a secret. This process reads them, and it is not dumpable: its
-//! binary is execute-only and it sets `PR_SET_DUMPABLE` to 0, as `box-exec`, `box-host`,
-//! `box-egress-tunnel` and voxl do in their own way.
+//! It sets the box up (`box-prepare`), then starts everything as the user it should be, and nothing
+//! else in the box can act on it or them:
 //!
-//! It starts `entrypoint.sh` for the desktop, hands `box-host` and `box-exec` what each needs in
-//! a staged file they unlink, and keeps one voxl per screen. It starts them on what it can see for
-//! itself, the display accepting clients and the egress bearer unlinked, and not on anyone's word:
-//! anything running as the box user can write to its fifo, so the fifo only carries Bots' screens. voxl takes its password from argv or
-//! its environment only, so it gets it in its environment, which only it can read.
+//! - `box-host` and `box-exec` as `boxsvc`.
+//! - the main screen's desktop as `box`, and each Bot's as that Bot's desktop user (`box-screen`).
+//!   Each screen's voxl runs as its desktop's user too: X only shares memory with a client of its
+//!   own user, and that's how voxl reads the screen. It holds the viewer password from an
+//!   execute-only binary, as the daemons hold theirs, so a process of its user can't read it.
+//! - commands as a user that has neither: `box-exec` drops to it for each one.
+//!
+//! This process reads the secrets and is not dumpable. `entrypoint.sh` never sees one: a shell
+//! cannot be made safe that way. `box-host` and `box-exec` get what each needs in a staged file
+//! they unlink, and voxl, which takes its password from argv or its environment only, in its
+//! environment. Daemons start on what this process can see for itself, the display accepting
+//! clients and the egress bearer unlinked, and not on anyone's word.
+//!
+//! `box-exec` asks for screens over a socket only its user can open, because a screen takes root:
+//! a request is checked at both ends and runs `box-screen` with these words as arguments.
 
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs::{self, OpenOptions};
 use std::io::{BufReader, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -25,15 +33,37 @@ use std::time::{Duration, Instant};
 
 use box_common::{
     ensure_viewer_password_strength, env_bool, env_nonempty, make_undumpable, read_secret_from_env,
+    ScreenCall, KEEPER_SOCKET,
 };
 use box_desktop::{display_number, slots_dir, DesktopConfig, VIEWER_PORT_BASE};
-use box_host::keeper::{may_have_viewer, next_line, restart_delay, Request, STABLE};
+use box_host::keeper::{desktop_uid, may_have_viewer, next_line, restart_delay, Request, STABLE};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+use tokio::net::UnixListener;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
 
 const ENTRYPOINT: &str = "/usr/local/bin/entrypoint.sh";
-const DEFAULT_CTL: &str = "/tmp/box-viewer.ctl";
-const SECRET_DIR_PREFIX: &str = "box-secrets.";
+const PREPARE: &str = "/usr/local/bin/box-prepare";
+const BOX_SCREEN: &str = "/usr/local/bin/box-screen";
+const SETPRIV: &str = "/usr/bin/setpriv";
+const DEFAULT_CTL: &str = "/run/box/viewer.ctl";
+const SVC_UID: u32 = 990;
+const SVC_HOME: &str = "/run/box/svc";
+const SVC_AUTH: &str = "/run/box/x/svc.auth";
+const DESKTOP_UID: u32 = 1000;
+const DESKTOP_HOME: &str = "/home/box/desktops/main";
+const DESKTOP_GROUPS: &str = "--groups=1400";
+const BOTS_DIR: &str = "/home/box/.box/bots";
+/// The capabilities each keeps past its exec, which is why they're ambient. `box-exec` takes them
+/// out of the ambient set as it starts, and holds them for itself.
+const VOXL_CAPS: &str = "net_bind_service";
+const HOST_CAPS: &str = "net_bind_service";
+const EXEC_CAPS: &str = "net_bind_service,setuid,setgid,kill";
+/// `box-screen` waits on its lock, then for an X server and a viewer.
+const SCREEN_PATIENCE: Duration = Duration::from_secs(40);
+const REQUEST_PATIENCE: Duration = Duration::from_secs(5);
+/// Longer than any request. See `ScreenCall`.
+const MAX_REQUEST: u64 = 16 * 1024;
 const TICK: Duration = Duration::from_millis(200);
 const STOP_PATIENCE: Duration = Duration::from_secs(8);
 /// How often to look for the desktop before the daemons are up: this is on the wake path.
@@ -74,8 +104,8 @@ struct Secrets {
     egress_bearer: Option<String>,
 }
 
-/// Read one secret. A mount that is read-only keeps its copy readable to the box user, and that
-/// is worth saying out loud at every start.
+/// Read one secret. What's staged on a read-only mount stays until the Bot removes it, and that is
+/// worth saying out loud at every start.
 fn secret(name: &str) -> Result<Option<String>, String> {
     let path = env_nonempty(&format!("{name}_FILE"));
     if path.is_none() && env_nonempty(name).is_some() {
@@ -83,10 +113,7 @@ fn secret(name: &str) -> Result<Option<String>, String> {
     }
     let value = read_secret_from_env(name, true).map_err(|err| err.to_string())?;
     if let Some(path) = path.filter(|path| Path::new(path).exists()) {
-        eprintln!(
-            "{path} could not be unlinked: anything running as the box user can read it. \
-             Stage it on a writable mount so it is gone once the box is up."
-        );
+        eprintln!("{path} could not be unlinked: it stays until whoever staged it removes it.");
     }
     Ok(value)
 }
@@ -127,28 +154,20 @@ impl Secrets {
 /// Files a daemon reads and unlinks: no secret goes into a daemon's environment or argv.
 struct Staging {
     dir: PathBuf,
+    owner: u32,
 }
 
 impl Staging {
-    fn new() -> Result<Self, String> {
-        // A killed box leaves its directory behind, and nothing else makes one of these.
-        if let Ok(entries) = fs::read_dir("/tmp") {
-            for entry in entries.flatten() {
-                if entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with(SECRET_DIR_PREFIX)
-                {
-                    let _ = fs::remove_dir_all(entry.path());
-                }
-            }
-        }
-        let dir = PathBuf::from(format!("/tmp/{SECRET_DIR_PREFIX}{}", std::process::id()));
+    /// A folder for `owner`, under `/run/box`, which `box-prepare` has just emptied.
+    fn new(name: &str, owner: u32) -> Result<Self, String> {
+        let dir = PathBuf::from(format!("/run/box/{name}"));
         fs::DirBuilder::new()
             .mode(0o700)
             .create(&dir)
             .map_err(|err| format!("secret staging: {err}"))?;
-        Ok(Self { dir })
+        std::os::unix::fs::chown(&dir, Some(owner), Some(owner))
+            .map_err(|err| format!("secret staging: {err}"))?;
+        Ok(Self { dir, owner })
     }
 
     fn stage(&self, name: &str, value: &str) -> Result<PathBuf, String> {
@@ -161,6 +180,8 @@ impl Staging {
             .map_err(|err| format!("secret staging: {err}"))?;
         file.write_all(value.as_bytes())
             .map_err(|err| format!("secret staging: {err}"))?;
+        std::os::unix::fs::chown(&path, Some(self.owner), Some(self.owner))
+            .map_err(|err| format!("secret staging: {err}"))?;
         Ok(path)
     }
 }
@@ -169,6 +190,40 @@ impl Drop for Staging {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.dir);
     }
+}
+
+/// `program` as `uid`, with `caps` and no groups.
+fn as_user(uid: u32, program: &str, caps: &str) -> Command {
+    let mut command = Command::new(SETPRIV);
+    command
+        .args([
+            format!("--reuid={uid}"),
+            format!("--regid={uid}"),
+            "--clear-groups".to_string(),
+            format!("--inh-caps={}", plus(caps)),
+            format!("--ambient-caps={}", plus(caps)),
+            program.to_string(),
+        ])
+        .current_dir("/");
+    command
+}
+
+/// `program` as `boxsvc`. Its environment says where it lives, and X lets it into every screen.
+fn service(program: &str, caps: &str) -> Command {
+    let mut command = as_user(SVC_UID, program, caps);
+    command
+        .env("HOME", SVC_HOME)
+        .env("TMPDIR", SVC_HOME)
+        .env("XAUTHORITY", SVC_AUTH);
+    command
+}
+
+/// `a,b` as `setpriv` wants it: `+a,+b`.
+fn plus(caps: &str) -> String {
+    caps.split(',')
+        .map(|cap| format!("+{cap}"))
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 struct Viewer {
@@ -194,8 +249,18 @@ impl Viewers {
         let log = OpenOptions::new()
             .create(true)
             .append(true)
-            .open(format!("/tmp/voxl-{slot}.log"))?;
-        Command::new("voxl")
+            .open(format!("/run/box/log/voxl-{slot}.log"))?;
+        let uid = desktop_uid(
+            slot,
+            self.main,
+            &self.slots,
+            Path::new(BOTS_DIR),
+            DESKTOP_UID,
+        )
+        .ok_or_else(|| std::io::Error::other("this screen has no user"))?;
+        as_user(uid, "voxl", VOXL_CAPS)
+            .env("HOME", format!("/run/box/x/{slot}"))
+            .env("XAUTHORITY", format!("/run/box/x/{slot}/auth"))
             .env("DISPLAY", format!(":{slot}"))
             .env("VOXL_PASSWORD", password)
             .args([
@@ -317,6 +382,59 @@ fn make_fifo(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The socket `box-exec` asks for screens on. Nobody else's user can open it.
+fn screen_socket() -> Result<UnixListener, String> {
+    let listener =
+        UnixListener::bind(KEEPER_SOCKET).map_err(|err| format!("keeper socket: {err}"))?;
+    std::os::unix::fs::chown(KEEPER_SOCKET, Some(SVC_UID), Some(SVC_UID))
+        .and_then(|()| fs::set_permissions(KEEPER_SOCKET, PermissionsExt::from_mode(0o600)))
+        .map_err(|err| format!("keeper socket: {err}"))?;
+    Ok(listener)
+}
+
+/// One request: its line in, what `box-screen` printed out. `box-screen` gets a bare environment
+/// and what it prints goes straight back: it's JSON, with an `error` when it failed.
+async fn serve_screen_request(stream: tokio::net::UnixStream) {
+    let (reader, mut writer) = stream.into_split();
+    let mut line = String::new();
+    let mut limited = tokio::io::BufReader::new(reader.take(MAX_REQUEST));
+    let read = tokio::time::timeout(REQUEST_PATIENCE, limited.read_line(&mut line)).await;
+    let answer = match (read, ScreenCall::parse(&line)) {
+        (Ok(Ok(_)), Some(call)) => run_box_screen(&call).await,
+        _ => br#"{"error":"that isn't a screen request"}"#.to_vec(),
+    };
+    let _ = writer.write_all(&answer).await;
+}
+
+async fn run_box_screen(call: &ScreenCall) -> Vec<u8> {
+    let mut command = tokio::process::Command::new(BOX_SCREEN);
+    command
+        .args(call.args())
+        .env_clear()
+        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+        .stdin(Stdio::null())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true);
+    for key in [
+        "WORKSPACE_ROOT",
+        "BOX_DISPLAY_GEOM",
+        "BOX_MAX_OWN_SCREENS",
+        "BOX_VIEWER_CTL",
+    ] {
+        if let Some(value) = env_nonempty(key) {
+            command.env(key, value);
+        }
+    }
+    command.env(
+        "BOX_SHARED_DISPLAY",
+        env_nonempty("BOX_DISPLAY").unwrap_or_else(|| ":1".into()),
+    );
+    match tokio::time::timeout(SCREEN_PATIENCE, command.output()).await {
+        Ok(Ok(out)) => out.stdout,
+        _ => br#"{"error":"box-screen didn't finish"}"#.to_vec(),
+    }
+}
+
 /// Lines from the fifo, on a thread: holding it open for writing too means it never reads EOF.
 fn listen(path: PathBuf) -> mpsc::UnboundedReceiver<String> {
     let (lines, receiver) = mpsc::unbounded_channel();
@@ -334,7 +452,7 @@ fn listen(path: PathBuf) -> mpsc::UnboundedReceiver<String> {
     receiver
 }
 
-/// True once the daemons can start: the display takes clients, and the tunnel has unlinked its
+/// True once the daemons can start: the display takes connections, and the tunnel has unlinked its
 /// bearer, so that no exec child can ever exist while a staged copy does.
 fn desktop_is_up(features: Features, display: &DesktopConfig, egress_file: Option<&Path>) -> bool {
     let display_up = !features.desktop || UnixStream::connect(display.x11_socket_path()).is_ok();
@@ -344,15 +462,16 @@ fn desktop_is_up(features: Features, display: &DesktopConfig, egress_file: Optio
 /// Start a daemon on its staged files, then wait until it has unlinked them. `box-exec` goes last,
 /// so no exec child can ever exist while a staged copy does. A copy still there after the wait is
 /// a secret on disk nobody is going to clear, so the box does not go on.
-async fn start_daemon(name: &str, display: &str, env: &[(&str, &Path)]) -> Result<Child, String> {
-    let home = env_nonempty("HOME").unwrap_or_else(|| "/home/box".into());
-    let mut child = Command::new(name)
+async fn start_daemon(
+    name: &str,
+    caps: &str,
+    display: &str,
+    env: &[(&str, &Path)],
+) -> Result<Child, String> {
+    let mut child = service(name, caps)
         .envs(env.iter().copied())
-        // What the entrypoint sets for the desktop, for the daemons and their exec children.
         .env("DISPLAY", display)
         .env("BOX_SHARED_DISPLAY", display)
-        .env("XDG_RUNTIME_DIR", "/tmp/runtime-box")
-        .env("XDG_CONFIG_HOME", format!("{home}/.config"))
         .stdin(Stdio::null())
         .spawn()
         .map_err(|err| format!("{name}: {err}"))?;
@@ -420,8 +539,8 @@ impl Daemons {
             host_files.iter().map(|(k, v)| (*k, v.as_path())).collect();
         let exec_env: Vec<(&str, &Path)> =
             exec_files.iter().map(|(k, v)| (*k, v.as_path())).collect();
-        let host = start_daemon("box-host", display, &host_env).await?;
-        let exec = match start_daemon("box-exec", display, &exec_env).await {
+        let host = start_daemon("box-host", HOST_CAPS, display, &host_env).await?;
+        let exec = match start_daemon("box-exec", EXEC_CAPS, display, &exec_env).await {
             Ok(exec) => exec,
             Err(err) => {
                 stop(vec![host]).await;
@@ -429,6 +548,23 @@ impl Daemons {
             }
         };
         Ok(vec![("box-host", host), ("box-exec", exec)])
+    }
+}
+
+/// The box made ready, as root, before anything of it runs. It doesn't start without this.
+fn prepare() -> Result<(), String> {
+    // SAFETY: geteuid takes nothing and can't fail.
+    if unsafe { libc::geteuid() } != 0 {
+        return Err("box-keeper runs as root: it starts each part as its own user".into());
+    }
+    let status = Command::new(PREPARE)
+        .stdin(Stdio::null())
+        .status()
+        .map_err(|err| format!("{PREPARE}: {err}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{PREPARE} failed ({status})"))
     }
 }
 
@@ -440,19 +576,40 @@ async fn run() -> Result<i32, String> {
         viewer_password,
         egress_bearer,
     } = Secrets::load(features)?;
-    let staging = Staging::new()?;
+    prepare()?;
+    let staging = Staging::new("secrets", SVC_UID)?;
     let ctl = PathBuf::from(env_nonempty("BOX_VIEWER_CTL").unwrap_or_else(|| DEFAULT_CTL.into()));
     make_fifo(&ctl)?;
     let mut requests = listen(ctl);
+    let screen_requests = screen_socket()?;
 
-    let mut desktop = Command::new(ENTRYPOINT);
+    let display_config = DesktopConfig::from_env();
+    let display = display_config.display.clone();
+    let main_slot = display_number(&display).unwrap_or(1);
+
+    let mut desktop = Command::new(SETPRIV);
     desktop
+        .args([
+            format!("--reuid={DESKTOP_UID}"),
+            format!("--regid={DESKTOP_UID}"),
+            DESKTOP_GROUPS.to_string(),
+            "--inh-caps=-all".to_string(),
+            ENTRYPOINT.to_string(),
+        ])
         .stdin(Stdio::null())
+        .current_dir(DESKTOP_HOME)
+        .env("HOME", DESKTOP_HOME)
+        .env("XAUTHORITY", format!("/run/box/x/{main_slot}/auth"))
+        .env("BOX_SCREEN_RUN", format!("/run/box/x/{main_slot}"))
         .env("BOX_DESKTOP", flag(features.desktop))
         .env("BOX_EGRESS_TUNNEL", flag(features.egress));
-    let egress_file = match egress_bearer.as_deref().filter(|_| features.egress) {
-        Some(bearer) => Some(staging.stage("egress", bearer)?),
+    let egress_staging = match egress_bearer.as_deref().filter(|_| features.egress) {
+        Some(_) => Some(Staging::new("egress-secret", DESKTOP_UID)?),
         None => None,
+    };
+    let egress_file = match (&egress_staging, egress_bearer.as_deref()) {
+        (Some(staging), Some(bearer)) => Some(staging.stage("egress", bearer)?),
+        _ => None,
     };
     drop(egress_bearer);
     if let Some(path) = &egress_file {
@@ -462,9 +619,6 @@ async fn run() -> Result<i32, String> {
         .spawn()
         .map_err(|err| format!("{ENTRYPOINT}: {err}"))?;
 
-    let display_config = DesktopConfig::from_env();
-    let display = display_config.display.clone();
-    let main_slot = display_number(&display).unwrap_or(1);
     let mut viewers = Viewers {
         password: viewer_password.clone().filter(|_| features.desktop),
         main: main_slot,
@@ -492,6 +646,9 @@ async fn run() -> Result<i32, String> {
                 Some(Request::Up(slot)) => viewers.up(slot),
                 Some(Request::Down(slot)) => viewers.down(slot),
                 None => {}
+            },
+            Ok((stream, _)) = screen_requests.accept() => {
+                tokio::spawn(serve_screen_request(stream));
             },
             _ = tokio::time::sleep(START_POLL), if waiting.is_some() => {
                 if desktop_is_up(features, &display_config, egress_file.as_deref()) {

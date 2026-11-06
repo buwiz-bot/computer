@@ -15,6 +15,7 @@ need=(
   "/v1/ready:"
   "/v1/info:"
   "/v1/exec:"
+  "/v1/screen:"
   "/v1/exec/{id}:"
   "/v1/exec/stream:"
   "/v1/files:"

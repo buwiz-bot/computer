@@ -24,7 +24,8 @@ pub(crate) async fn capture_png(display: &str) -> Result<Vec<u8>, CuaError> {
     {
         return Ok(png);
     }
-    let tmp = format!("/tmp/box-cua-{}.png", std::process::id());
+    // TMPDIR is this service's own: in /tmp a command could leave a link at this name
+    let tmp = std::env::temp_dir().join(format!("box-cua-{}.png", std::process::id()));
     let status = Command::new("scrot")
         .env("DISPLAY", display)
         .arg("-o")

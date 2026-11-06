@@ -1,0 +1,90 @@
+#!/bin/bash
+# The box as root, once, at every start, before anything else of it runs: box-keeper calls this and
+# stops the box if it fails. Nothing a command left is running yet, and nothing here trusts a file
+# on a volume: a link is never followed, and a home from an older image isn't used.
+#
+# Who runs what is in docs/USERS.md. /run/box is rebuilt every start, /home/box and /workspace are
+# the volumes.
+set -euo pipefail
+
+WORKSPACE="${WORKSPACE_ROOT:-/workspace}"
+MAIN_SLOT="${BOX_DISPLAY:-:1}"
+MAIN_SLOT="${MAIN_SLOT#:}"
+MAIN_SLOT="${MAIN_SLOT%%.*}"
+
+# shellcheck source=box-screen
+source /usr/local/bin/box-screen --library
+
+# Everything a process left in the layer: a command's plants, an X lock, an old socket.
+find /tmp -xdev -mindepth 1 -delete
+# Only a desktop may make an X socket: a command can't plant one for a screen that isn't up yet.
+install -d -o root -g boxx -m 1775 /tmp/.X11-unix
+
+find /run/box -xdev -mindepth 1 -delete 2>/dev/null || true
+install -d -o root -g root -m 0755 /run/box /run/box/x /run/box/log
+install -d -o boxsvc -g boxsvc -m 0700 /run/box/svc /run/box/recordings
+install -d -o box -g box -m 0755 /run/box/egress
+install -o root -g boxsvc -m 0640 /dev/null "${SVC_AUTH}"
+
+# A volume from an image where commands ran as the box user: its top is that user's, which nothing
+# here ever makes it. Everything in the home was theirs to write, autostart and browser profile
+# included, so a desktop mustn't run on it. It's kept, whole, for the person who wants it.
+if [[ "$(stat -c %u /home/box)" != 0 ]]; then
+  old="/home/box/old-home-$(date +%s)"
+  mkdir -m 0700 "${old}"
+  find /home/box -mindepth 1 -maxdepth 1 ! -path "${old}" -exec mv -t "${old}" -- {} +
+  chown -hR agent:agent "${old}"
+  chown root:root /home/box
+  echo "box-prepare: this home came from an older image; it's in ${old}"
+fi
+chmod 0711 /home/box
+install -d -o root -g root -m 0755 "${STATE}" "${STATE}/bots" "${STATE}/slots"
+install -d -o root -g root -m 0711 /home/box/agents /home/box/desktops
+install -d -o agent -g agent -m 0700 /home/box/agents/shared
+# Compose may mount a profile in here, so the folder can be there with nothing else.
+if [[ ! -e /home/box/desktops/main/.config ]]; then
+  install -d -m 0700 /home/box/desktops/main
+  cp -a /opt/box/desktop-home/. /home/box/desktops/main/
+  chown -hR box:box /home/box/desktops/main
+  # `cp -a` gave the folder the template's mode
+  chmod 0700 /home/box/desktops/main
+fi
+
+# The same for the workspace, whose files stay where they are: a Bot's are its own from now on.
+if [[ "$(stat -c %u "${WORKSPACE}")" != 0 ]]; then
+  if [[ -d "${WORKSPACE}/agents" && ! -L "${WORKSPACE}/agents" ]]; then
+    for dir in "${WORKSPACE}"/agents/*; do
+      [[ -e "${dir}" || -L "${dir}" ]] || continue
+      bot="$(basename -- "${dir}")"
+      if [[ -d "${dir}" && ! -L "${dir}" && "${bot}" =~ ^[A-Za-z0-9_-]{1,80}$ && "${bot}" != main && "${bot}" != shared ]]; then
+        bot_users "${bot}"
+        chown -hR "${AGENT_UID}:${AGENT_UID}" "${dir}"
+        chmod 2770 "${dir}"
+      else
+        chown -h agent:agent "${dir}"
+      fi
+    done
+  fi
+  find "${WORKSPACE}" -mindepth 1 -maxdepth 1 ! -name agents -exec chown -hR agent:agent {} +
+  chown root:agent "${WORKSPACE}"
+fi
+chmod 1775 "${WORKSPACE}"
+if [[ -L "${WORKSPACE}/agents" || (-e "${WORKSPACE}/agents" && ! -d "${WORKSPACE}/agents") ]]; then
+  mv -- "${WORKSPACE}/agents" "${WORKSPACE}/old-agents-$(date +%s)"
+fi
+install -d -o root -g root -m 0711 "${WORKSPACE}/agents"
+# the shared user could have left a link here, and `install` would change what it leads to
+if [[ -L "${WORKSPACE}/shared" ]]; then
+  mv -- "${WORKSPACE}/shared" "${WORKSPACE}/old-shared-$(date +%s)"
+fi
+install -d -o agent -g agent -m 0755 "${WORKSPACE}/shared"
+
+# /etc/passwd lives in the layer and the Bots on the volume: a rebuilt box gets them back.
+for file in "${STATE}"/bots/*; do
+  [[ -f "${file}" ]] || continue
+  bot_users "$(basename -- "${file}")"
+done
+
+# The main screen's cookie, before its X server: one with no cookie lets anybody in.
+screen_cookie "${MAIN_SLOT}" box
+install -d -o box -g box -m 0700 "/run/box/x/${MAIN_SLOT}/runtime"

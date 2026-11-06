@@ -17,6 +17,7 @@ Imported from `hexuria/box` at `64f2b13` with its history, as `buwiz-bot/compute
 | `POST /v1/cua/wait`, `/v1/cua/record/start`, `/v1/cua/record/stop` on voxl, password held by `box-exec` | `crates/box-cua/src/voxl.rs`, `crates/box-exec` |
 | A folder per screen under `/workspace` (`agents/<bot>`, `shared`) for recordings, cooks and downloads | `docker/box-screen`, `crates/box-desktop` |
 | `/v1/chrome` reports ready again: Chromium 156 refuses HTTP/1.0 on CDP. With `BOX_DESKTOP=0`, `capabilities.chrome.enabled` is false, as nothing starts it | `crates/box-chrome`, `crates/box-cua/src/settle.rs` |
+| Everything the model runs is a user that can't reach a desktop, a browser or a service: each Bot has an agent user and a desktop user, `box-exec` and `box-host` are `boxsvc`, `box-keeper` alone is root. Per-screen X cookies, no `-ac` or `-shmem`, no terminal on the dock, a port floor at 6906. `POST /v1/screen`, `bot` on `/v1/exec` and `/v1/files*`. A volume from an older image keeps its files, with its home set aside | `docs/USERS.md`, `docker/`, `crates/box-exec`, `crates/box-host` |
 | Multi-arch publish to `ghcr.io/buwiz-bot/computer` on native runners, and an image smoke on PRs | `.github/workflows/` |
 | Removed: the frozen `ensurebox/` and `l1/` demos, `docker/Dockerfile.remasure`, `box-release-keys` (voxl lets go of held keys when a viewer leaves) | history keeps them |
 

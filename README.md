@@ -145,7 +145,7 @@ Compose also sets `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, `
 | `BOX_VIEWER_PASSWORD` | **required when desktop on** | Viewer password, for every screen; independent of `BOX_TOKEN`. At least 16 characters, with no `BOX_ALLOW_INSECURE_DEV` exemption: voxl listens on every interface inside the box |
 | `BOX_VIEWER_PASSWORD_FILE` | unset | Path to a file holding `BOX_VIEWER_PASSWORD`. Preferred, same reason. |
 | `BOX_CHROME` | `1` | Launch Chromium on `:1` |
-| `BOX_CHROME_PROFILE` | `/home/box/chrome-profile` | Persistent profile (compose volume) |
+| `BOX_CHROME_PROFILE` | `/home/box/desktops/main/chrome-profile` | Persistent profile (compose volume) |
 | `BOX_CDP_PORT` | `9222` | CDP on `127.0.0.1` only |
 | `BOX_CUA` | `1` | Enable `/v1/cua/*` |
 | `BOX_EGRESS_TUNNEL` | `0` | `1` starts `box-egress-tunnel` before Chromium and sets `--proxy-server`. See [EGRESS.md](docs/EGRESS.md). |
@@ -176,13 +176,11 @@ What the file form buys, precisely:
 - `docker inspect` does not show the token in `Config.Env`.
 - The daemons unlink the staged copies the entrypoint writes for them, so those exist for milliseconds.
 - `box-keeper`, the first process after `tini`, is the only one that reads the secrets. `entrypoint.sh` never holds one: a shell cannot be made undumpable. `box-keeper`, `box-exec`, `box-host` and `box-egress-tunnel` set `PR_SET_DUMPABLE` to 0, and they and voxl are execute-only (mode 0111): a process run from a file it cannot read is not dumpable. So nothing else running as uid 1000 can open their `/proc/<pid>/mem` or `environ`, or ptrace them. `scripts/smoke.sh` proves it from an exec child with `scripts/memory-probe.py`.
-- voxl takes its password only from argv or its environment, so it gets it in its environment, which only it can read. `box-screen` asks `box-keeper` for a viewer over a fifo that names a display and nothing else.
+- voxl takes its password only from argv or its environment, so it gets it in its environment, which only it can read. `box-screen` asks `box-keeper` for a viewer over a root-only fifo that names a display and nothing else.
 
 **Stage the files on a writable mount.** `box-keeper` unlinks each file it reads, so on a writable mount nothing is left once the box is up, and whoever starts the box stages them again for the next start. That is what the Bot does. Then an exec child has no file to read and no memory to read: a read-only mount is what would leave one.
 
-What a **read-only mount** does not buy, and Compose's `secrets:` is one: `box-keeper` runs as uid 1000, so the file it reads stays readable to uid 1000 for the life of the box. Code already executing as the box user — a compromised Chromium renderer, or any binary the agent downloaded and ran — can read `/run/secrets/box_token` and recover both secrets. On that kind of mount, treat any code execution in the box as full compromise of `BOX_TOKEN` and `BOX_VIEWER_PASSWORD`. A value passed as an environment variable is worse in the same way, as above. Rotate on suspicion; do not reuse a box token anywhere else.
-
-Moving the secrets to another uid would close this for every mount, but it needs the container to start with `CAP_SETUID` and `box-exec` to run as a different user from its own children. Under `USER box`, `cap_drop: ALL` and `no-new-privileges`, nothing can change uid.
+What a **read-only mount** does not buy, and Compose's `secrets:` is one: the file stays for the life of the box. Its mode keeps other users out only where the mount enforces modes, and Docker Desktop's file share doesn't. Use a writable mount, or have whoever staged it remove it, as the Bot does.
 
 Exec children never receive any of these variables, in either form.
 
@@ -203,13 +201,15 @@ sdk/python           Python client (workspace only)
 
 ## Screens
 
+Who runs what, and what is and isn't a wall, is in [`docs/USERS.md`](docs/USERS.md).
+
 One computer serves one or more agents, and each agent gets a screen of its own: its own X display, input, viewer, browser profile and folder. The box's own screen is `:1`. `box-screen` adds and removes a Bot's while the computer runs, up to four (`BOX_MAX_OWN_SCREENS`), as `:2`–`:5`:
 
 ```bash
-curl -fsS http://127.0.0.1:1337/v1/exec \
+curl -fsS http://127.0.0.1:1337/v1/screen \
   -H "Authorization: Bearer $BOX_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"command":["box-screen","up","amy"]}'
+  -d '{"action":"up","bot":"amy"}'
 ```
 
 `GET /v1/screens` lists them, and `?display=:N` puts any `/v1/cua/*` call on that screen. Everything an agent makes on a screen lands in that screen's folder under `/workspace`: `agents/<bot>` for a Bot's, `shared` for the box's own. Recordings, recipe cooks and Chromium downloads go there, and a terminal from a Bot's dock opens in its folder. `box-screen down` stops the screen and keeps the folder and the profile.
@@ -223,7 +223,7 @@ Screens keep agents apart through `/v1/cua` and the viewer; they are not a secur
 | Mount | Role |
 | --- | --- |
 | `/workspace` | Jail root for cwd and file APIs, and each screen's folder. Persist across hibernate. |
-| `/home/box/chrome-profile` | Chromium `--user-data-dir`. Persist cookies/session. Must be writable by uid **1000**; otherwise the entrypoint falls back to `/tmp/box-chrome-profile`. |
+| `/home/box/desktops/main/chrome-profile` | The main screen's Chromium `--user-data-dir`. Persist cookies/session. `box-prepare` gives it to the `box` user. |
 
 ## Docs
 

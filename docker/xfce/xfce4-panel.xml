@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- The dock: one floating panel, bottom centre, sized to its three launchers
-     (Chromium, Files, Terminal), transparent, no clock or window list — the
+<!-- The dock: one floating panel, bottom centre, sized to its two launchers
+     (Chromium, Files), transparent, no clock or window list — the
      desktop is the coworker's screen, not a workstation. Shipped so the
      panel never asks its first-run question on a fresh box. -->
 <channel name="xfce4-panel" version="1.0">
@@ -29,7 +29,6 @@
       <property name="plugin-ids" type="array">
         <value type="int" value="1"/>
         <value type="int" value="2"/>
-        <value type="int" value="3"/>
       </property>
     </property>
   </property>
@@ -44,12 +43,6 @@
       <property name="disable-tooltips" type="bool" value="true"/>
       <property name="items" type="array">
         <value type="string" value="files.desktop"/>
-      </property>
-    </property>
-    <property name="plugin-3" type="string" value="launcher">
-      <property name="disable-tooltips" type="bool" value="true"/>
-      <property name="items" type="array">
-        <value type="string" value="terminal.desktop"/>
       </property>
     </property>
   </property>

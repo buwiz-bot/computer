@@ -1,3 +1,7 @@
+//! Files, as the user they belong to. Every route here does its work under that user's file
+//! identity, so what a link leads to is decided by the kernel and not by a check made first: a
+//! Bot's request reaches what that Bot's user can reach, and `box-exec`'s own files stay out of it.
+
 use std::path::Path;
 
 use axum::extract::{Query, State};
@@ -10,6 +14,7 @@ use box_common::{resolve_in_canonical_jail, ApiError};
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 
+use crate::users::on_disk;
 use crate::AppState;
 
 fn b64_encode(input: &[u8]) -> String {
@@ -28,6 +33,8 @@ fn b64_decode(input: &str) -> Result<Vec<u8>, &'static str> {
 
 #[derive(Debug, Deserialize)]
 pub struct FileQuery {
+    /// Whose folder this is: the file work runs as that Bot's user. The shared user without it.
+    pub bot: Option<String>,
     pub path: Option<String>,
     pub encoding: Option<String>,
 }
@@ -57,6 +64,8 @@ pub struct DirEntry {
 
 #[derive(Debug, Deserialize)]
 pub struct FilePutRequest {
+    /// Whose folder this is: the file work runs as that Bot's user. The shared user without it.
+    pub bot: Option<String>,
     pub path: String,
     pub content: String,
     pub encoding: Option<String>,
@@ -71,6 +80,8 @@ pub struct FilePutResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct FileDeleteQuery {
+    /// Whose folder this is: the file work runs as that Bot's user. The shared user without it.
+    pub bot: Option<String>,
     pub path: Option<String>,
     pub recursive: Option<String>,
 }
@@ -83,6 +94,8 @@ pub struct FileDeleteResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct MkdirRequest {
+    /// Whose folder this is: the file work runs as that Bot's user. The shared user without it.
+    pub bot: Option<String>,
     pub path: String,
     pub parents: Option<bool>,
 }
@@ -95,6 +108,8 @@ pub struct MkdirResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct RenameRequest {
+    /// Whose folder this is: the file work runs as that Bot's user. The shared user without it.
+    pub bot: Option<String>,
     pub from: String,
     pub to: String,
 }
@@ -109,9 +124,14 @@ pub async fn get(
     State(state): State<AppState>,
     Query(query): Query<FileQuery>,
 ) -> Result<Json<FileGetResponse>, ApiError> {
+    let who = state.users.who(query.bot.as_deref())?;
+    on_disk(who, move || get_now(&state, query)).await?
+}
+
+fn get_now(state: &AppState, query: FileQuery) -> Result<Json<FileGetResponse>, ApiError> {
     let user_path = query.path.as_deref().unwrap_or("");
     let resolved = resolve_in_canonical_jail(&state.workspace, user_path)?;
-    let meta = tokio::fs::metadata(&resolved).await.map_err(|err| {
+    let meta = std::fs::metadata(&resolved).map_err(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {
             ApiError::not_found(format!("not found: {}", resolved.display()))
         } else {
@@ -122,21 +142,15 @@ pub async fn get(
     if meta.is_dir() {
         let mut entries = Vec::new();
         let mut truncated = false;
-        let mut read = tokio::fs::read_dir(&resolved)
-            .await
-            .map_err(|err| ApiError::io(err.to_string()))?;
-        while let Some(entry) = read
-            .next_entry()
-            .await
-            .map_err(|err| ApiError::io(err.to_string()))?
-        {
+        let read = std::fs::read_dir(&resolved).map_err(|err| ApiError::io(err.to_string()))?;
+        for entry in read {
+            let entry = entry.map_err(|err| ApiError::io(err.to_string()))?;
             if entries.len() >= state.max_dir_entries {
                 truncated = true;
                 break;
             }
             let file_type = entry
                 .file_type()
-                .await
                 .map_err(|err| ApiError::io(err.to_string()))?;
             let kind = if file_type.is_dir() {
                 "directory"
@@ -146,7 +160,7 @@ pub async fn get(
                 "file"
             };
             let size = if file_type.is_file() {
-                entry.metadata().await.ok().map(|m| m.len())
+                entry.metadata().ok().map(|m| m.len())
             } else {
                 None
             };
@@ -172,9 +186,7 @@ pub async fn get(
         )));
     }
 
-    let bytes = tokio::fs::read(&resolved)
-        .await
-        .map_err(|err| ApiError::io(err.to_string()))?;
+    let bytes = std::fs::read(&resolved).map_err(|err| ApiError::io(err.to_string()))?;
     let want = query.encoding.as_deref().unwrap_or("utf8");
     if want.eq_ignore_ascii_case("raw") {
         return Err(ApiError::invalid_request(
@@ -205,6 +217,8 @@ pub async fn get(
 
 #[derive(Debug, Deserialize)]
 pub struct FileRawQuery {
+    /// Whose folder this is: the file work runs as that Bot's user. The shared user without it.
+    pub bot: Option<String>,
     pub path: Option<String>,
     pub create_dirs: Option<String>,
 }
@@ -213,12 +227,17 @@ pub async fn get_raw(
     State(state): State<AppState>,
     Query(query): Query<FileRawQuery>,
 ) -> Result<Response, ApiError> {
+    let who = state.users.who(query.bot.as_deref())?;
+    on_disk(who, move || get_raw_now(&state, query)).await?
+}
+
+fn get_raw_now(state: &AppState, query: FileRawQuery) -> Result<Response, ApiError> {
     let user_path = query.path.as_deref().unwrap_or("");
     if user_path.is_empty() {
         return Err(ApiError::invalid_request("path is required"));
     }
     let resolved = resolve_in_canonical_jail(&state.workspace, user_path)?;
-    let meta = tokio::fs::metadata(&resolved).await.map_err(|err| {
+    let meta = std::fs::metadata(&resolved).map_err(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {
             ApiError::not_found(format!("not found: {}", resolved.display()))
         } else {
@@ -237,15 +256,22 @@ pub async fn get_raw(
             state.max_file_bytes
         )));
     }
-    let bytes = tokio::fs::read(&resolved)
-        .await
-        .map_err(|err| ApiError::io(err.to_string()))?;
+    let bytes = std::fs::read(&resolved).map_err(|err| ApiError::io(err.to_string()))?;
     Ok(([(header::CONTENT_TYPE, "application/octet-stream")], bytes).into_response())
 }
 
 pub async fn put_raw(
     State(state): State<AppState>,
     Query(query): Query<FileRawQuery>,
+    body: Bytes,
+) -> Result<Json<FilePutResponse>, ApiError> {
+    let who = state.users.who(query.bot.as_deref())?;
+    on_disk(who, move || put_raw_now(&state, query, body)).await?
+}
+
+fn put_raw_now(
+    state: &AppState,
+    query: FileRawQuery,
     body: Bytes,
 ) -> Result<Json<FilePutResponse>, ApiError> {
     let user_path = query.path.as_deref().unwrap_or("");
@@ -281,14 +307,10 @@ pub async fn put_raw(
     );
     if create_dirs {
         if let Some(parent) = resolved.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|err| ApiError::io(err.to_string()))?;
+            std::fs::create_dir_all(parent).map_err(|err| ApiError::io(err.to_string()))?;
         }
     }
-    tokio::fs::write(&resolved, &body)
-        .await
-        .map_err(|err| ApiError::io(err.to_string()))?;
+    std::fs::write(&resolved, &body).map_err(|err| ApiError::io(err.to_string()))?;
     Ok(Json(FilePutResponse {
         path: display_under_workspace(&state.workspace, &resolved),
         bytes_written: body.len() as u64,
@@ -299,6 +321,11 @@ pub async fn put(
     State(state): State<AppState>,
     Json(req): Json<FilePutRequest>,
 ) -> Result<Json<FilePutResponse>, ApiError> {
+    let who = state.users.who(req.bot.as_deref())?;
+    on_disk(who, move || put_now(&state, req)).await?
+}
+
+fn put_now(state: &AppState, req: FilePutRequest) -> Result<Json<FilePutResponse>, ApiError> {
     if req.path.is_empty() {
         return Err(ApiError::invalid_request("path is required"));
     }
@@ -337,15 +364,11 @@ pub async fn put(
 
     if req.create_dirs.unwrap_or(true) {
         if let Some(parent) = resolved.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|err| ApiError::io(err.to_string()))?;
+            std::fs::create_dir_all(parent).map_err(|err| ApiError::io(err.to_string()))?;
         }
     }
 
-    tokio::fs::write(&resolved, &bytes)
-        .await
-        .map_err(|err| ApiError::io(err.to_string()))?;
+    std::fs::write(&resolved, &bytes).map_err(|err| ApiError::io(err.to_string()))?;
 
     Ok(Json(FilePutResponse {
         path: display_under_workspace(&state.workspace, &resolved),
@@ -356,6 +379,14 @@ pub async fn put(
 pub async fn delete(
     State(state): State<AppState>,
     Query(query): Query<FileDeleteQuery>,
+) -> Result<Json<FileDeleteResponse>, ApiError> {
+    let who = state.users.who(query.bot.as_deref())?;
+    on_disk(who, move || delete_now(&state, query)).await?
+}
+
+fn delete_now(
+    state: &AppState,
+    query: FileDeleteQuery,
 ) -> Result<Json<FileDeleteResponse>, ApiError> {
     let user_path = query.path.as_deref().unwrap_or("");
     if user_path.is_empty() {
@@ -369,7 +400,7 @@ pub async fn delete(
         ));
     }
 
-    let meta = tokio::fs::metadata(&resolved).await.map_err(|err| {
+    let meta = std::fs::metadata(&resolved).map_err(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {
             ApiError::not_found(format!("not found: {}", resolved.display()))
         } else {
@@ -388,11 +419,9 @@ pub async fn delete(
 
     if meta.is_dir() {
         if recursive {
-            tokio::fs::remove_dir_all(&resolved)
-                .await
-                .map_err(|err| ApiError::io(err.to_string()))?;
+            std::fs::remove_dir_all(&resolved).map_err(|err| ApiError::io(err.to_string()))?;
         } else {
-            tokio::fs::remove_dir(&resolved).await.map_err(|err| {
+            std::fs::remove_dir(&resolved).map_err(|err| {
                 if err.kind() == std::io::ErrorKind::DirectoryNotEmpty {
                     ApiError::invalid_request(
                         "directory is not empty; pass recursive=true to delete it",
@@ -403,9 +432,7 @@ pub async fn delete(
             })?;
         }
     } else {
-        tokio::fs::remove_file(&resolved)
-            .await
-            .map_err(|err| ApiError::io(err.to_string()))?;
+        std::fs::remove_file(&resolved).map_err(|err| ApiError::io(err.to_string()))?;
     }
 
     Ok(Json(FileDeleteResponse {
@@ -418,6 +445,11 @@ pub async fn mkdir(
     State(state): State<AppState>,
     Json(req): Json<MkdirRequest>,
 ) -> Result<Json<MkdirResponse>, ApiError> {
+    let who = state.users.who(req.bot.as_deref())?;
+    on_disk(who, move || mkdir_now(&state, req)).await?
+}
+
+fn mkdir_now(state: &AppState, req: MkdirRequest) -> Result<Json<MkdirResponse>, ApiError> {
     if req.path.is_empty() {
         return Err(ApiError::invalid_request("path is required"));
     }
@@ -443,13 +475,9 @@ pub async fn mkdir(
     }
 
     if req.parents.unwrap_or(true) {
-        tokio::fs::create_dir_all(&resolved)
-            .await
-            .map_err(|err| ApiError::io(err.to_string()))?;
+        std::fs::create_dir_all(&resolved).map_err(|err| ApiError::io(err.to_string()))?;
     } else {
-        tokio::fs::create_dir(&resolved)
-            .await
-            .map_err(|err| ApiError::io(err.to_string()))?;
+        std::fs::create_dir(&resolved).map_err(|err| ApiError::io(err.to_string()))?;
     }
 
     Ok(Json(MkdirResponse {
@@ -462,6 +490,11 @@ pub async fn rename(
     State(state): State<AppState>,
     Json(req): Json<RenameRequest>,
 ) -> Result<Json<RenameResponse>, ApiError> {
+    let who = state.users.who(req.bot.as_deref())?;
+    on_disk(who, move || rename_now(&state, req)).await?
+}
+
+fn rename_now(state: &AppState, req: RenameRequest) -> Result<Json<RenameResponse>, ApiError> {
     if req.from.is_empty() || req.to.is_empty() {
         return Err(ApiError::invalid_request("from and to are required"));
     }
@@ -483,13 +516,9 @@ pub async fn rename(
         return Err(ApiError::invalid_request("destination already exists"));
     }
     if let Some(parent) = to.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|err| ApiError::io(err.to_string()))?;
+        std::fs::create_dir_all(parent).map_err(|err| ApiError::io(err.to_string()))?;
     }
-    tokio::fs::rename(&from, &to)
-        .await
-        .map_err(|err| ApiError::io(err.to_string()))?;
+    std::fs::rename(&from, &to).map_err(|err| ApiError::io(err.to_string()))?;
     Ok(Json(RenameResponse {
         from: display_under_workspace(&state.workspace, &from),
         to: display_under_workspace(&state.workspace, &to),
