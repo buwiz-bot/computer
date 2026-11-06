@@ -218,7 +218,11 @@ echo "==> GET /v1/chrome (host)"
 chrome="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" "${HOST_URL}/v1/chrome")"
 echo "${chrome}"
 echo "${chrome}" | grep -q '"enabled":true'
-echo "${chrome}" | grep -q '"cdp":"127.0.0.1:9222"'
+echo "${chrome}" | grep -q '"running":true'
+if echo "${chrome}" | grep -q '"cdp"'; then
+  echo "the browser must have no DevTools port" >&2
+  exit 1
+fi
 
 echo "==> GET /v1/ready (host)"
 ready="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" "${HOST_URL}/v1/ready")"
