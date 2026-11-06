@@ -15,8 +15,7 @@ const MAX_RESTART_DELAY: Duration = Duration::from_secs(30);
 /// Longer than any request. A longer line is dropped whole.
 const MAX_LINE: u64 = 64;
 
-/// A request on the keeper's fifo. Anything running as the box user can write to it, which is why
-/// it carries a display number and nothing else.
+/// A request on the keeper's fifo, from `box-screen`. It carries a display number and nothing else.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Request {
     /// Start the voxl of this display.

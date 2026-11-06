@@ -1,7 +1,7 @@
 #!/bin/sh
 # The dock's Chromium. Same profile as the Chromium the entrypoint starts
 # (BOX_CHROME=1), so this opens a window in that instance; with no instance
-# running it starts one. uid 1000 has no setuid sandbox in this image, hence
+# running it starts one. A desktop's user has no setuid sandbox in this image, hence
 # --no-sandbox, and --test-type hides the banner about it.
 #
 # When BOX_EGRESS_TUNNEL is on, pass the same CONNECT proxy flags as the
@@ -12,7 +12,7 @@ proxy_webrtc=""
 # The entrypoint records the proxy port when it starts the tunnel, so a launch
 # from a shell that did not inherit BOX_EGRESS_TUNNEL still goes through the
 # proxy rather than quietly out of the VM.
-port_file="/tmp/box-egress-proxy.port"
+port_file="/run/box/egress/port"
 tunnel="${BOX_EGRESS_TUNNEL:-}"
 port="${BOX_EGRESS_PROXY_PORT:-}"
 if [ -z "${tunnel}" ] && [ -r "${port_file}" ]; then tunnel=1; fi
@@ -37,7 +37,7 @@ win_w="${geom%%x*}"
 rest="${geom#*x}"
 win_h="${rest%%x*}"
 exec chromium \
-  --user-data-dir="${BOX_CHROME_PROFILE:-/home/box/chrome-profile}" \
+  --user-data-dir="${BOX_CHROME_PROFILE:-${HOME}/chrome-profile}" \
   --window-size="${win_w},${win_h}" \
   --window-position=0,0 \
   --no-first-run \

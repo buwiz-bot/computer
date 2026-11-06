@@ -619,7 +619,7 @@ pub async fn run_recipe(
         // After `settle`, so a recipe that already waited for a navigation
         // gets the page it waited for rather than the one it left.
         if let (Some(watch), Some(obs)) = (watch.as_ref(), observed.as_mut()) {
-            watch.after(obs).await;
+            watch.after(config, obs).await;
         }
         match result {
             Ok(()) => {

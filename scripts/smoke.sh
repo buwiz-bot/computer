@@ -43,12 +43,6 @@ fi
 
 mkdir -p workspace-data chrome-profile
 chmod u+rwx workspace-data chrome-profile 2>/dev/null || true
-# The box runs as uid 1000, and on a Linux host a bind mount keeps the host's owner. Docker Desktop
-# hides this on a Mac; a CI runner is uid 1001, so the box couldn't make /workspace/shared.
-if [[ "$(uname -s)" == "Linux" && "$(id -u)" != "1000" ]]; then
-  sudo -n chown 1000:1000 workspace-data chrome-profile || chmod 0777 workspace-data chrome-profile
-fi
-
 # Compose mounts ./secrets/* instead of putting the values in the container
 # environment, so they have to exist before anything is started.
 bash "${ROOT}/scripts/write-secrets.sh"
@@ -224,7 +218,11 @@ echo "==> GET /v1/chrome (host)"
 chrome="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" "${HOST_URL}/v1/chrome")"
 echo "${chrome}"
 echo "${chrome}" | grep -q '"enabled":true'
-echo "${chrome}" | grep -q '"cdp":"127.0.0.1:9222"'
+echo "${chrome}" | grep -q '"running":true'
+if echo "${chrome}" | grep -q '"cdp"'; then
+  echo "the browser must have no DevTools port" >&2
+  exit 1
+fi
 
 echo "==> GET /v1/ready (host)"
 ready="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" "${HOST_URL}/v1/ready")"

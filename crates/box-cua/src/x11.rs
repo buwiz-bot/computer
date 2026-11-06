@@ -24,7 +24,7 @@ use x11rb::protocol::xproto::{
     self, Atom, AtomEnum, ConnectionExt as _, KeyButMask, Keycode, Keysym, Window,
 };
 use x11rb::protocol::xtest::{self, ConnectionExt as _};
-use x11rb::rust_connection::RustConnection;
+use x11rb::rust_connection::{DefaultStream, RustConnection};
 use x11rb::NONE;
 
 use crate::encode;
@@ -352,9 +352,28 @@ pub(crate) fn capture_png(display: &str, width: u32, height: u32) -> Result<Vec<
     }
 }
 
+/// A connection to `display`. In the box the handshake, and so the cookie, goes over the very stream
+/// the kernel vouched for, and to nothing else: `box_desktop::screen_stream`.
+fn x_connect(display: &str) -> Result<(RustConnection, usize), CuaError> {
+    if !crate::verify_servers() {
+        return x11rb::connect(Some(display)).map_err(x_err);
+    }
+    let down = || CuaError::DisplayDown(display.to_string());
+    let stream = box_desktop::screen_stream(display).ok_or_else(down)?;
+    let slot = box_desktop::display_number(display).ok_or_else(down)?;
+    let (stream, (family, address)) = DefaultStream::from_unix_stream(stream).map_err(x_err)?;
+    let (name, data) = x11rb::reexports::x11rb_protocol::xauth::get_auth(family, &address, slot)
+        .ok()
+        .flatten()
+        .ok_or_else(down)?;
+    let conn =
+        RustConnection::connect_to_stream_with_auth_info(stream, 0, name, data).map_err(x_err)?;
+    Ok((conn, 0))
+}
+
 impl ShotConn {
     fn connect(display: &str) -> Result<Self, CuaError> {
-        let (conn, screen) = x11rb::connect(Some(display)).map_err(x_err)?;
+        let (conn, screen) = x_connect(display)?;
         let setup = conn.setup();
         let screen = setup.roots.get(screen).ok_or_else(|| x_err("no screen"))?;
         let root = screen.root;
@@ -433,7 +452,7 @@ impl ShotConn {
 
 impl InputConn {
     fn connect(display: &str) -> Result<Self, CuaError> {
-        let (conn, screen) = x11rb::connect(Some(display)).map_err(x_err)?;
+        let (conn, screen) = x_connect(display)?;
         conn.extension_information(xtest::X11_EXTENSION_NAME)
             .map_err(x_err)?
             .ok_or_else(|| CuaError::Tool("XTEST extension missing on display".into()))?;

@@ -75,6 +75,7 @@ components:
             - type: string
               minLength: 1
         cwd: { type: string, description: Relative or absolute path inside the workspace jail }
+        bot: { type: string, description: "The Bot this runs for, as its own user. Without it, the shared agent user." }
         timeout_ms: { type: integer, minimum: 1 }
         env:
           type: object
@@ -283,7 +284,6 @@ components:
         ready: { type: boolean, description: CDP GET /json/version succeeded }
         running: { type: boolean }
         profile: { type: string }
-        cdp: { type: string, nullable: true }
         display: { type: string }
     EgressStatus:
       type: object
@@ -699,6 +699,31 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
 
+  /v1/screen:
+    post:
+      tags: [exec]
+      summary: Start, stop or forget a Bot's screen, open a page in its browser, or list screens
+      security: [{ bearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action: { type: string, enum: [up, down, forget, open, list] }
+                bot: { type: string }
+                url: { type: string, description: "For open: http or https" }
+      responses:
+        "200":
+          description: What box-screen printed, with an error field when it failed
+          content:
+            application/json:
+              schema: { type: object }
+        "400": { description: Not a screen request }
+        "401": { description: Unauthorized }
+        "502": { description: box-keeper didn't answer }
   /v1/exec:
     post:
       tags: [exec]

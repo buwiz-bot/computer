@@ -297,9 +297,7 @@ struct OnScreen {
 /// nothing has), on the box's own screen or the one named. Read before a saved login is typed;
 /// see [`active_tab`].
 async fn active_tab_now(Query(on): Query<OnScreen>) -> Json<active_tab::ActiveTab> {
-    Json(active_tab::read(&active_tab::file_for(
-        on.display.as_deref(),
-    )))
+    Json(active_tab::read_screen(on.display.as_deref()))
 }
 
 async fn windows(State(state): State<AppState>) -> Json<WindowList> {
@@ -608,7 +606,6 @@ mod tests {
         assert_eq!(body["enabled"], false);
         assert_eq!(body["running"], false);
         assert_eq!(body["ready"], false);
-        assert!(body["cdp"].is_null());
     }
 
     #[tokio::test]

@@ -1,0 +1,19 @@
+# The panel's preferences and the desktop's menus each hold a "run this command". Nobody on a
+# computer's screen, a person or the model driving it, gets to change them.
+[xfce4-panel]
+CustomizePanel=NONE
+
+[xfdesktop]
+UserMenu=NONE
+CustomizeBackdrop=NONE
+CustomizeDesktopMenu=NONE
+CustomizeWindowlist=NONE
+CustomizeDesktopIcons=NONE
+
+[xfce4-session]
+CustomizeSplash=NONE
+CustomizeChooser=NONE
+CustomizeLogout=NONE
+CustomizeCompatibility=NONE
+Shutdown=NONE
+CustomizeSecurity=NONE

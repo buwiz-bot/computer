@@ -1,32 +1,108 @@
 #!/bin/bash
-# A Bot's own screen on a computer several Bots share.
+# A Bot's own screen on a computer, and the users it runs as. Runs as root, from box-keeper alone:
+# box-exec asks it over a socket only its user can open, for a caller holding the box's token.
 #
-# The box's own screen (BOX_DISPLAY, :1) is its main one. Every Bot on a computer several Bots
-# share gets a slot here: its own X display with the same desktop as the main screen (an xfce
-# session: wallpaper, and the dock whose Chromium is this Bot's), a voxl on port 6900+N, and a
-# Chromium of its own, with its own profile (so what it signs in to stays its own) that the
-# server starts on that display when the Bot opens a page (`box-chromium` with this screen's
-# BOX_DISPLAY and BOX_CHROME_PROFILE). box-keeper holds the password and starts the voxl; this
-# script only names the display.
+# The box's own screen (BOX_DISPLAY, :1) is its main one. Every Bot on a computer gets a slot here:
+# its own X display with the same desktop as the main screen, a voxl on port 6900+N, and a Chromium
+# with its own profile. It gets two users of its own, never given to another Bot:
 #
-#   box-screen up <bot>     start the Bot's screen (or find it running); prints its slot as JSON
-#   box-screen down <bot>   stop it; its slot and its profile are kept for the next `up`
-#   box-screen list         every Bot's slot, and whether its screen is running
+#   the agent user    20000 + 2i   what its commands run as; owns /workspace/agents/<bot> and
+#                                  /home/box/agents/<bot>
+#   the desktop user  20001 + 2i   its X server, session, browser and voxl; owns
+#                                  /home/box/desktops/<bot>, and may use the Bot's folder through
+#                                  the agent user's group, so a download lands where the Bot sees it
 #
-# Slots are kept in the home volume, so a Bot keeps its display number and profile across
+# The agent user holds nothing that reaches the desktop user: no X cookie, no way into its home.
+#
+#   box-screen up <bot>          start the Bot's screen (or find it running); prints it as JSON
+#   box-screen down <bot>        stop it; its slot and its profile are kept for the next `up`
+#   box-screen forget <bot>      stop it, end its commands and give its slot back
+#   box-screen open <bot> <url>  open a page in its browser, as its desktop user
+#   box-screen list              every Bot's slot, and whether its screen is running
+#
+# Slots and users are kept in the home volume, where only root writes, so a Bot keeps them across
 # restarts and updates; the screens themselves start again on the next `up`.
 set -euo pipefail
 
+STATE=/home/box/.box
+SVC_AUTH=/run/box/x/svc.auth
+FIRST_USER=20000
+XGROUP=1400
+
+# ---- users ----
+
+# This Bot's user numbers, in AGENT_UID and DESKTOP_UID, made the first time it's seen. A number
+# isn't used twice: a Bot that left keeps it, with its files.
+bot_users() {
+  local bot="$1" file="${STATE}/bots/$1" index
+  if [[ ! -f "${file}" ]]; then
+    index="$(cat "${STATE}/next" 2>/dev/null || echo 0)"
+    [[ "${index}" =~ ^[0-9]+$ ]]
+    echo $((index + 1)) >"${STATE}/next"
+    echo "${index}" >"${file}"
+  fi
+  index="$(cat "${file}")"
+  [[ "${index}" =~ ^[0-9]+$ ]]
+  AGENT_UID=$((FIRST_USER + 2 * index))
+  DESKTOP_UID=$((AGENT_UID + 1))
+  grep -q "^a${AGENT_UID}:" /etc/passwd || {
+    echo "a${AGENT_UID}:x:${AGENT_UID}:${AGENT_UID}::/home/box/agents/${bot}:/bin/bash" >>/etc/passwd
+    echo "d${DESKTOP_UID}:x:${DESKTOP_UID}:${DESKTOP_UID}::/home/box/desktops/${bot}:/bin/bash" >>/etc/passwd
+    echo "a${AGENT_UID}:x:${AGENT_UID}:d${DESKTOP_UID}" >>/etc/group
+    echo "d${DESKTOP_UID}:x:${DESKTOP_UID}:" >>/etc/group
+  }
+}
+
+# A new cookie for display $1, for its X server and the desktop user $2, and for the services. It's
+# only made for a server about to start: one already up keeps the one it read. The screen's folder
+# and its cookie are root's, so the desktop can read the cookie and can't hand it on, and what the
+# desktop writes goes in `run`. Nothing here is ever readable to anybody else, not for a moment.
+screen_cookie() {
+  local slot="$1" owner="$2" dir="/run/box/x/$1" cookie mask
+  mask="$(umask)"
+  umask 077
+  install -d -o root -g root -m 0711 "${dir}"
+  find "${dir}" -xdev -mindepth 1 -delete 2>/dev/null || true
+  install -d -o "${owner}" -g boxsvc -m 0750 "${dir}/run"
+  cookie="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  [[ "${#cookie}" == 32 ]]
+  xauth -q -f "${dir}/auth" add ":${slot}" MIT-MAGIC-COOKIE-1 "${cookie}" 2>/dev/null
+  xauth -q -f "${SVC_AUTH}" remove ":${slot}" 2>/dev/null || true
+  xauth -q -f "${SVC_AUTH}" add ":${slot}" MIT-MAGIC-COOKIE-1 "${cookie}" 2>/dev/null
+  chown "root:${owner}" "${dir}/auth"
+  chmod 0640 "${dir}/auth"
+  chown root:boxsvc "${SVC_AUTH}"
+  chmod 0640 "${SVC_AUTH}"
+  umask "${mask}"
+  # X lets every local client in when this is empty
+  [[ -s "${dir}/auth" && -s "${SVC_AUTH}" ]]
+}
+
+# The services' cookie for a display that's stopped: nothing should offer one to whoever comes next.
+drop_cookie() {
+  local mask
+  mask="$(umask)"
+  umask 077
+  xauth -q -f "${SVC_AUTH}" remove ":$1" 2>/dev/null || true
+  chown root:boxsvc "${SVC_AUTH}"
+  chmod 0640 "${SVC_AUTH}"
+  umask "${mask}"
+}
+
+# box-prepare wants the two above and nothing else.
+if [[ "${1:-}" == "--library" ]]; then
+  return 0
+fi
+
 MAX_SCREENS="${BOX_MAX_OWN_SCREENS:-4}"
 FIRST_SLOT=2
-HOME_DIR="${HOME:-/home/box}"
-SLOTS_DIR="${HOME_DIR}/.box-screens"
-VIEWER_CTL="${BOX_VIEWER_CTL:-/tmp/box-viewer.ctl}"
+SLOTS_DIR="${STATE}/slots"
+VIEWER_CTL="${BOX_VIEWER_CTL:-/run/box/viewer.ctl}"
 VIEWER_PORT_BASE=6900
-PROFILES_DIR="${BOX_CHROME_PROFILE:-${HOME_DIR}/chrome-profile}/bots"
+WORKSPACE="${WORKSPACE_ROOT:-/workspace}"
 # What a Bot makes on its screen goes in a folder of its own, kept across `down` like its profile,
-# so it can be collected per agent. The shared screen's is ${WORKSPACE_ROOT}/shared.
-AGENTS_DIR="${WORKSPACE_ROOT:-/workspace}/agents"
+# so it can be collected per agent. The main screen's is ${WORKSPACE}/shared.
+AGENTS_DIR="${WORKSPACE}/agents"
 GEOM="${BOX_DISPLAY_GEOM:-1280x800x24}"
 
 die() {
@@ -36,32 +112,29 @@ die() {
 
 bot="${2:-}"
 case "${1:-}" in
-  up | down)
+  up | down | forget | open)
     # A Bot id names a directory and a profile: letters, digits, `_` and `-` only.
     [[ "${bot}" =~ ^[A-Za-z0-9_-]{1,80}$ ]] || die "a Bot id is letters, digits, _ and - only"
+    # the box's own folders have these names
+    [[ "${bot}" != main && "${bot}" != shared ]] || die "that name is the box's own"
     ;;
   list) ;;
-  *) die "usage: box-screen up|down <bot> | list" ;;
+  *) die "usage: box-screen up|down|forget <bot> | open <bot> <url> | list" ;;
 esac
 
-mkdir -p "${SLOTS_DIR}" "${PROFILES_DIR}"
 # One box-screen at a time. What it starts must not inherit the lock (`9>&-` below): an X server
 # holding it would make every later box-screen wait for good.
-exec 9>"/tmp/box-screen.lock"
+exec 9>/run/box/screen.lock
 flock 9
 
+# Whose a process is decides here, not its name: anybody can call a process "Xvfb :3".
 running() {
-  [[ -S "/tmp/.X11-unix/X$1" ]] && pgrep -f "^Xvfb :$1 " >/dev/null
+  [[ -S "/tmp/.X11-unix/X$1" ]] && pgrep -u "$2" -f "^Xvfb :$1 " >/dev/null
 }
 
-# The xfce session on display :$1. Every screen's session is the same command, so it is told apart
-# by the DISPLAY it was started with.
-sessions_on() {
-  local p
-  for p in $(pgrep -x xfce4-session); do
-    tr '\0' '\n' <"/proc/${p}/environ" 2>/dev/null | grep -qx "DISPLAY=:$1" && echo "${p}"
-  done
-  return 0
+# The session of the desktop user $1. It has one screen, so there's only ever one.
+session_of() {
+  pgrep -u "$1" -x xfce4-session || true
 }
 
 # Ask box-keeper to start or stop the voxl of display $2. It holds the fifo open, so this write
@@ -88,52 +161,122 @@ allocate() {
   return 1
 }
 
+# Runs a program as this Bot's desktop user, with the screen's environment and nothing else of
+# this script's: no capability, no secret, no root's anything.
+as_desktop() {
+  setpriv --reuid="${DESKTOP_UID}" --regid="${DESKTOP_UID}" --groups="${AGENT_UID},${XGROUP}" \
+    --inh-caps=-all \
+    env -i PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 HOME="${desktop_home}" USER="d${DESKTOP_UID}" \
+    LD_PRELOAD=/usr/lib/box/libbox-shm-private.so \
+    DISPLAY=":${n}" BOX_DISPLAY=":${n}" BOX_SHARED_DISPLAY="${BOX_SHARED_DISPLAY:-:1}" \
+    BOX_DISPLAY_GEOM="${GEOM}" XAUTHORITY="/run/box/x/${n}/auth" BOX_SCREEN_RUN="/run/box/x/${n}/run" \
+    BOX_CHROME_PROFILE="${profile}" BOX_SCREEN_WORKSPACE="${agent_dir}" \
+    XDG_RUNTIME_DIR="/run/box/x/${n}/run/runtime" XDG_CONFIG_HOME="${desktop_home}/.config" "$@"
+}
+
 if [[ "$1" == "list" ]]; then
   printf '{"screens":['
   sep=""
   for f in "${SLOTS_DIR}"/*; do
     [[ -f "${f}" ]] || continue
+    name="$(basename "${f}")"
     n="$(cat "${f}")"
+    bot_users "${name}"
     up=false
-    running "${n}" && up=true
+    running "${n}" "${DESKTOP_UID}" && up=true
     printf '%s{"bot":"%s","slot":%s,"display":":%s","viewer_port":%s,"workspace":"agents/%s","running":%s}' \
-      "${sep}" "$(basename "${f}")" "${n}" "${n}" "$((VIEWER_PORT_BASE + n))" "$(basename "${f}")" "${up}"
+      "${sep}" "${name}" "${n}" "${n}" "$((VIEWER_PORT_BASE + n))" "${name}" "${up}"
     sep=","
   done
   printf ']}\n'
   exit 0
 fi
 
-profile="${PROFILES_DIR}/${bot}"
+desktop_home="/home/box/desktops/${bot}"
+agent_home="/home/box/agents/${bot}"
+agent_dir="${AGENTS_DIR}/${bot}"
+profile="${desktop_home}/chrome-profile"
 
-if [[ "$1" == "down" ]]; then
-  n="$(slot_of "${bot}")" || { printf '{"bot":"%s","running":false}\n' "${bot}"; exit 0; }
-  pkill -f -- "--user-data-dir=${profile}( |$)" 2>/dev/null || true
+if [[ "$1" == "down" || "$1" == "forget" ]]; then
+  if ! n="$(slot_of "${bot}")"; then
+    printf '{"bot":"%s","running":false}\n' "${bot}"
+    exit 0
+  fi
+  bot_users "${bot}"
   viewer down "${n}"
-  for p in $(sessions_on "${n}"); do kill "${p}" 2>/dev/null || true; done
-  pkill -f "^Xvfb :${n} " 2>/dev/null || true
+  pkill -u "${DESKTOP_UID}" 2>/dev/null || true
+  for _ in $(seq 20); do
+    pgrep -u "${DESKTOP_UID}" >/dev/null || break
+    sleep 0.1
+  done
+  pkill -KILL -u "${DESKTOP_UID}" 2>/dev/null || true
+  drop_cookie "${n}"
+  if [[ "$1" == "forget" ]]; then
+    # its commands may be part way through a write: they're asked first
+    pkill -TERM -u "${AGENT_UID}" 2>/dev/null || true
+    for _ in $(seq 20); do
+      pgrep -u "${AGENT_UID}" >/dev/null || break
+      sleep 0.1
+    done
+    pkill -KILL -u "${AGENT_UID}" 2>/dev/null || true
+    unlink "${SLOTS_DIR:?}/${bot:?}"
+  fi
   printf '{"bot":"%s","slot":%s,"display":":%s","viewer_port":%s,"running":false}\n' \
     "${bot}" "${n}" "${n}" "$((VIEWER_PORT_BASE + n))"
   exit 0
 fi
 
+if [[ "$1" == "open" ]]; then
+  url="${3:-}"
+  [[ "${url}" =~ ^https?://[^[:space:][:cntrl:]]+$ ]] || die "a page is an http or https URL"
+  n="$(slot_of "${bot}")" || die "this Bot has no screen here"
+  bot_users "${bot}"
+  running "${n}" "${DESKTOP_UID}" || die "this Bot's screen isn't running"
+  cd "${agent_dir}"
+  # a session of its own: it outlives this script
+  as_desktop setsid -f box-chromium "${url}" >>"/run/box/log/chromium-${n}.log" 2>&1 9>&-
+  printf '{"bot":"%s","opened":true}\n' "${bot}"
+  exit 0
+fi
+
 # up
+bot_users "${bot}"
 n="$(slot_of "${bot}")" || n="$(allocate "${bot}")" ||
   die "this computer already runs ${MAX_SCREENS} Bots' own screens; switch one back to the shared screen first"
-agent_dir="${AGENTS_DIR}/${bot}"
-mkdir -p "${profile}" "${agent_dir}"
 
-if ! running "${n}"; then
-  # A screen stopped by a restart leaves its lock and socket in /tmp; nothing else starts an X
-  # server on this number, so both are stale here.
-  rm -f "/tmp/.X${n}-lock" "/tmp/.X11-unix/X${n}"
-  setsid -f Xvfb ":${n}" -screen 0 "${GEOM}" -ac -shmem +extension GLX +extension XTEST \
-    +extension DAMAGE +render -noreset >"/tmp/xvfb-${n}.log" 2>&1 9>&-
+# Root is about to set an owner, and `install` follows a link. Their parents are root's, so nothing
+# can make one now, and box-prepare moves aside what an older image left.
+for path in "${agent_dir}" "${agent_home}" "${desktop_home}"; do
+  [[ ! -L "${path}" ]] || die "this Bot's folder is a link"
+done
+install -d -o "${AGENT_UID}" -g "${AGENT_UID}" -m 2770 "${agent_dir}"
+install -d -o "${AGENT_UID}" -g "${AGENT_UID}" -m 0700 "${agent_home}"
+if [[ ! -e "${desktop_home}" ]]; then
+  install -d -o "${DESKTOP_UID}" -g "${DESKTOP_UID}" -m 0700 "${desktop_home}"
+  cp -a /opt/box/desktop-home/. "${desktop_home}/"
+  chown -hR "${DESKTOP_UID}:${DESKTOP_UID}" "${desktop_home}"
+  # `cp -a` gave the folder the template's mode
+  chmod 0700 "${desktop_home}"
+fi
+
+if ! running "${n}" "${DESKTOP_UID}"; then
+  # A screen stopped by a restart or a `down`: its lock and socket are stale, and may not be its
+  # user's to remove. Nothing else starts an X server on this number.
+  pkill -KILL -u "${DESKTOP_UID}" 2>/dev/null || true
+  unlink "/tmp/.X${n}-lock" 2>/dev/null || true
+  unlink "/tmp/.X11-unix/X${n}" 2>/dev/null || true
+  screen_cookie "${n}" "${DESKTOP_UID}"
+  as_desktop mkdir -p -m 0700 "/run/box/x/${n}/run/runtime"
+  # As in entrypoint.sh: never -ac or -shmem. If a process holds this display's abstract socket,
+  # this server won't start, and so the screen doesn't: no cookie goes near it.
+  cd /
+  as_desktop setsid -f Xvfb ":${n}" -screen 0 "${GEOM}" -auth "/run/box/x/${n}/auth" +extension GLX \
+    +extension XTEST +extension DAMAGE +render -noreset >"/run/box/log/xvfb-${n}.log" 2>&1 9>&-
   for _ in $(seq 50); do
     [[ -S "/tmp/.X11-unix/X${n}" ]] && break
     sleep 0.1
   done
-  [[ -S "/tmp/.X11-unix/X${n}" ]] || die "the screen's X server did not start"
+  running "${n}" "${DESKTOP_UID}" || die "the screen's X server did not start"
 fi
 
 # The main screen's desktop (entrypoint.sh): xfce4-session brings up xfwm4, xfdesktop (the
@@ -141,15 +284,11 @@ fi
 # plain black until the Bot opens a page, and black again once it closes its browser. The dock's
 # Chromium launcher is box-chromium, which opens on BOX_DISPLAY with BOX_CHROME_PROFILE: this
 # Bot's browser on this screen, from the session's environment.
-if [[ -z "$(sessions_on "${n}")" ]]; then
-  # The session starts in the Bot's folder, so a terminal from its dock opens there.
+if [[ -z "$(session_of "${DESKTOP_UID}")" ]]; then
+  # The session starts in the Bot's folder, so what its dock opens starts there.
   cd "${agent_dir}"
-  runtime="/tmp/runtime-box-${n}"
-  mkdir -p "${runtime}"
-  chmod 700 "${runtime}"
-  DISPLAY=":${n}" BOX_DISPLAY=":${n}" BOX_CHROME_PROFILE="${profile}" XDG_RUNTIME_DIR="${runtime}" \
-    XDG_CONFIG_HOME="${HOME_DIR}/.config" \
-    setsid -f dbus-launch --exit-with-session xfce4-session >"/tmp/xfce4-session-${n}.log" 2>&1 9>&-
+  as_desktop setsid -f dbus-launch --exit-with-session xfce4-session \
+    >"/run/box/log/xfce4-session-${n}.log" 2>&1 9>&-
 fi
 
 viewer up "${n}"
@@ -166,9 +305,10 @@ done
 
 # A profile kept from an older extension runs its old background script (see
 # box-refresh-extension); this Bot's Chromium is not running yet when the screen first comes up.
-if ! pgrep -f -- "--user-data-dir=${profile}( |$)" >/dev/null; then
-  BOX_CHROME_PROFILE="${profile}" BOX_SCREEN_WORKSPACE="${agent_dir}" \
-    /usr/local/bin/box-refresh-extension >/dev/null
+if ! pgrep -u "${DESKTOP_UID}" -f -- "--user-data-dir=${profile}( |$)" >/dev/null; then
+  # as its user: the home is that user's, so a link here isn't root's to follow
+  as_desktop mkdir -p -m 0700 "${profile}"
+  as_desktop /usr/local/bin/box-refresh-extension >/dev/null
 fi
 
 printf '{"bot":"%s","slot":%s,"display":":%s","viewer_port":%s,"workspace":"agents/%s","profile":"%s","running":true}\n' \

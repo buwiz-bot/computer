@@ -6,10 +6,10 @@
 # (BOX_CHROME_PROFILE) last started with, its service workers are cleared once, before its
 # Chromium starts, and every worker (the extension's, and any a site had) registers anew.
 #
-# Run only while no Chromium has this profile open: the entrypoint before the shared screen's,
-# box-screen before a Bot's own.
+# Run only while no Chromium has this profile open, as the desktop's user: the entrypoint before
+# the main screen's, box-screen before a Bot's own.
 set -euo pipefail
-profile="${BOX_CHROME_PROFILE:-${HOME:-/home/box}/chrome-profile}"
+profile="${BOX_CHROME_PROFILE:-${HOME}/chrome-profile}"
 [[ -n "${profile}" && -d "${profile}" ]] || exit 0
 # A new profile downloads into its screen's folder, without asking. Set once: a person who picks
 # another folder in the browser keeps it.

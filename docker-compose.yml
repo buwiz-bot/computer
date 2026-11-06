@@ -4,11 +4,23 @@ services:
       context: .
       dockerfile: docker/Dockerfile
     image: buwiz-computer:local
-    # Hardening is not a kernel sandbox. Unprivileged uid 1000 + Chromium
-    # --no-sandbox. These limits reduce blast radius; they do not isolate the
-    # guest from the host kernel.
+    # Hardening is not a kernel sandbox. box-keeper starts as root and starts everything else as a
+    # user of its own (docs/USERS.md), which is what these are for. Chromium runs --no-sandbox.
+    # These limits reduce blast radius; they do not isolate the guest from the host kernel.
     cap_drop:
       - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - FSETID
+      - KILL
+      - NET_BIND_SERVICE
+      - SETGID
+      - SETUID
+    # Below this a port takes a capability, so a command can't take a service's.
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "6906"
     security_opt:
       - no-new-privileges:true
     # A screen with Chromium runs about 180 processes and threads: the box's own and four Bots'
@@ -34,8 +46,7 @@ services:
       BOX_DISPLAY: ${BOX_DISPLAY:-:1}
       BOX_DISPLAY_GEOM: ${BOX_DISPLAY_GEOM:-1280x800x24}
       BOX_CHROME: ${BOX_CHROME:-1}
-      BOX_CHROME_PROFILE: /home/box/chrome-profile
-      BOX_CDP_PORT: ${BOX_CDP_PORT:-9222}
+      BOX_CHROME_PROFILE: /home/box/desktops/main/chrome-profile
       BOX_CUA: ${BOX_CUA:-1}
       BOX_EXEC_BIND: 0.0.0.0:1337
       BOX_HOST_BIND: 0.0.0.0:1340
@@ -55,7 +66,7 @@ services:
       - "127.0.0.1:8790:8790"
     volumes:
       - ./workspace-data:/workspace
-      - ./chrome-profile:/home/box/chrome-profile
+      - ./chrome-profile:/home/box/desktops/main/chrome-profile
     # The public health routes, on purpose: a check that sent the token would put it in curl's
     # argv, and in a dumpable process's memory, every few seconds. /v1/ready is for callers.
     healthcheck:
@@ -69,11 +80,11 @@ services:
       retries: 12
       start_period: 25s
 
-# Compose mounts these read-only at /run/secrets/<name>, and box-keeper, which runs
-# as uid 1000, has to read them. So they stay readable to anything running as the
-# box user for the life of the box: this hides them from `docker inspect`, not from
-# an exec child. For that, stage them on a writable mount, as the Bot does: box-keeper
-# unlinks what it reads. See README §Auth.
+# This file isn't how the Bot starts a box. Compose mounts these read-only at /run/secrets/<name>, so
+# they stay for the life of the box, and Docker Desktop's share doesn't enforce modes: they're
+# readable to anything running in the box, an exec child included. This hides them from `docker
+# inspect`, not from a command. For that, stage them on a writable mount, as the Bot does:
+# box-keeper unlinks what it reads. See README §Auth.
 secrets:
   box_token:
     file: ./secrets/box_token

@@ -3,6 +3,7 @@
 //! Actuators talk to Xvfb (`DISPLAY=:1`, 1280×800) via in-process XTEST /
 //! GetImage (xdotool / ImageMagick fallback).
 
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Query, State};
@@ -19,7 +20,11 @@ use box_cua::{
 use box_desktop::{screen_workspace, slots_dir};
 use serde::{Deserialize, Serialize};
 
+use crate::users::on_disk;
 use crate::AppState;
+
+/// Where a finished recording waits, for `box-exec` alone, before it goes in the Bot's folder.
+const RECORDINGS: &str = "/run/box/recordings";
 
 #[derive(Debug, Deserialize)]
 pub struct ScreenshotQuery {
@@ -139,12 +144,36 @@ pub async fn record_stop_handler(
     Json(req): Json<RecordStopRequest>,
 ) -> Result<Json<RecordStopResponse>, ApiError> {
     let cua = state.cua.on(on.display.as_deref()).map_err(map_err)?;
-    let path = recording_path(&screen_workspace(&cua.display, &slots_dir()), req.id);
+    let folder = screen_workspace(&cua.display, &slots_dir());
+    let path = recording_path(&folder, req.id);
+    let dest = state.workspace.join(&path);
+    let who = state.users.who(folder.strip_prefix("agents/"))?;
+    if who.is_none() {
+        let bytes = state
+            .viewer
+            .record_stop(&cua, req.id, &dest)
+            .await
+            .map_err(map_err)?;
+        return Ok(Json(RecordStopResponse { path, bytes }));
+    }
+    // The folder is the Bot's and this user can't write there, so the file is handed over open.
+    let held = Path::new(RECORDINGS).join(format!("{}-{}.mp4", std::process::id(), req.id));
     let bytes = state
         .viewer
-        .record_stop(&cua, req.id, &state.workspace.join(&path))
+        .record_stop(&cua, req.id, &held)
         .await
         .map_err(map_err)?;
+    let source = std::fs::File::open(&held).map_err(|err| ApiError::io(err.to_string()));
+    let _ = std::fs::remove_file(&held);
+    let mut source = source?;
+    on_disk(who, move || {
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::io::copy(&mut source, &mut std::fs::File::create(&dest)?).map(|_| ())
+    })
+    .await?
+    .map_err(|err| ApiError::io(format!("recording not saved: {err}")))?;
     Ok(Json(RecordStopResponse { path, bytes }))
 }
 

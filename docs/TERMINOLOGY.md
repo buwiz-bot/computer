@@ -21,5 +21,5 @@ Names used in this repository. The public product name, the workspace crate, and
 | **L4** | Inference gateway. Not this repository. Do not implement it here. |
 | **voxl** | Browser viewer, one per screen on `6900+N`. Password = `BOX_VIEWER_PASSWORD`. Not Bearer-authenticated by the box; host publish is loopback. |
 | **Screen** | One agent's X display, input, viewer, browser profile and folder on a computer. `:1` is the box's own; `box-screen` adds a Bot's. |
-| **CDP** | Chromium DevTools on `127.0.0.1:9222` inside the guest. Never publish. |
+| **CDP** | Chromium DevTools. The box opens no port for it: `docs/USERS.md`. |
 | **egress tunnel** | `box-egress-tunnel`: Chromium CONNECT via a client on the operator laptop. Capability `egress_tunnel`. See [EGRESS.md](EGRESS.md). |
