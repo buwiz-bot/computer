@@ -21,10 +21,20 @@ find /tmp -xdev -mindepth 1 -delete
 install -d -o root -g boxx -m 1775 /tmp/.X11-unix
 
 find /run/box -xdev -mindepth 1 -delete 2>/dev/null || true
-install -d -o root -g root -m 0755 /run/box /run/box/x /run/box/log
+install -d -o root -g root -m 0755 /run/box
+install -d -o root -g root -m 0711 /run/box/x
+install -d -o root -g root -m 0700 /run/box/log
 install -d -o boxsvc -g boxsvc -m 0700 /run/box/svc /run/box/recordings
 install -d -o box -g box -m 0755 /run/box/egress
 install -o root -g boxsvc -m 0640 /dev/null "${SVC_AUTH}"
+
+# Moves what's at $1 aside, as it is. Links stay links, and nothing is deleted.
+aside() {
+  local keep
+  keep="${WORKSPACE}/old-agents-$(date +%s)"
+  install -d -o root -g root -m 0700 "${keep}"
+  mv -- "$1" "${keep}/"
+}
 
 # A volume from an image where commands ran as the box user: its top is that user's, which nothing
 # here ever makes it. Everything in the home was theirs to write, autostart and browser profile
@@ -33,51 +43,58 @@ if [[ "$(stat -c %u /home/box)" != 0 ]]; then
   old="/home/box/old-home-$(date +%s)"
   mkdir -m 0700 "${old}"
   find /home/box -mindepth 1 -maxdepth 1 ! -path "${old}" -exec mv -t "${old}" -- {} +
-  chown -hR agent:agent "${old}"
-  chown root:root /home/box
+  # root's and nobody else's: it holds old sign-ins
+  chown root:root "${old}" /home/box
   echo "box-prepare: this home came from an older image; it's in ${old}"
 fi
 chmod 0711 /home/box
 install -d -o root -g root -m 0755 "${STATE}" "${STATE}/bots" "${STATE}/slots"
 install -d -o root -g root -m 0711 /home/box/agents /home/box/desktops
 install -d -o agent -g agent -m 0700 /home/box/agents/shared
-# Compose may mount a profile in here, so the folder can be there with nothing else.
-if [[ ! -e /home/box/desktops/main/.config ]]; then
-  install -d -m 0700 /home/box/desktops/main
-  cp -a /opt/box/desktop-home/. /home/box/desktops/main/
-  chown -hR box:box /home/box/desktops/main
-  # `cp -a` gave the folder the template's mode
-  chmod 0700 /home/box/desktops/main
+# Compose may mount a profile in here, so the folder can be there with nothing else. What's in it is
+# the desktop's to change, so the desktop does the copying: root follows no link of its.
+install -d -o box -g box -m 0700 /home/box/desktops/main
+if [[ ! -e /home/box/desktops/main/.config && ! -L /home/box/desktops/main/.config ]]; then
+  setpriv --reuid=box --regid=box --clear-groups cp -r /opt/box/desktop-home/. /home/box/desktops/main/
+fi
+if [[ -d /home/box/desktops/main/chrome-profile && ! -L /home/box/desktops/main/chrome-profile ]]; then
+  chown -h box:box /home/box/desktops/main/chrome-profile
+fi
+
+# Under `agents` only a Bot's own real folder may stay. box-screen sets owners there as root, so a
+# link an older image left would hand a Bot whatever it leads to.
+if [[ -L "${WORKSPACE}/agents" || (-e "${WORKSPACE}/agents" && ! -d "${WORKSPACE}/agents") ]]; then
+  aside "${WORKSPACE}/agents"
+fi
+if [[ -d "${WORKSPACE}/agents" ]]; then
+  while IFS= read -r -d '' dir; do
+    bot="$(basename -- "${dir}")"
+    if [[ -L "${dir}" || ! -d "${dir}" || ! "${bot}" =~ ^[A-Za-z0-9_-]{1,80}$ || "${bot}" == main || "${bot}" == shared ]]; then
+      aside "${dir}"
+    fi
+  done < <(find "${WORKSPACE}/agents" -mindepth 1 -maxdepth 1 -print0)
+fi
+if [[ -L "${WORKSPACE}/shared" || (-e "${WORKSPACE}/shared" && ! -d "${WORKSPACE}/shared") ]]; then
+  aside "${WORKSPACE}/shared"
 fi
 
 # The same for the workspace, whose files stay where they are: a Bot's are its own from now on.
 if [[ "$(stat -c %u "${WORKSPACE}")" != 0 ]]; then
-  if [[ -d "${WORKSPACE}/agents" && ! -L "${WORKSPACE}/agents" ]]; then
+  if [[ -d "${WORKSPACE}/agents" ]]; then
     for dir in "${WORKSPACE}"/agents/*; do
-      [[ -e "${dir}" || -L "${dir}" ]] || continue
-      bot="$(basename -- "${dir}")"
-      if [[ -d "${dir}" && ! -L "${dir}" && "${bot}" =~ ^[A-Za-z0-9_-]{1,80}$ && "${bot}" != main && "${bot}" != shared ]]; then
-        bot_users "${bot}"
-        chown -hR "${AGENT_UID}:${AGENT_UID}" "${dir}"
-        chmod 2770 "${dir}"
-      else
-        chown -h agent:agent "${dir}"
-      fi
+      [[ -d "${dir}" && ! -L "${dir}" ]] || continue
+      bot_users "$(basename -- "${dir}")"
+      chown -hR "${AGENT_UID}:${AGENT_UID}" "${dir}"
+      chmod 2770 "${dir}"
     done
   fi
-  find "${WORKSPACE}" -mindepth 1 -maxdepth 1 ! -name agents -exec chown -hR agent:agent {} +
+  find "${WORKSPACE}" -mindepth 1 -maxdepth 1 ! -name agents ! -name 'old-agents-*' -exec chown -hR agent:agent {} +
   chown root:agent "${WORKSPACE}"
 fi
 chmod 1775 "${WORKSPACE}"
-if [[ -L "${WORKSPACE}/agents" || (-e "${WORKSPACE}/agents" && ! -d "${WORKSPACE}/agents") ]]; then
-  mv -- "${WORKSPACE}/agents" "${WORKSPACE}/old-agents-$(date +%s)"
-fi
 install -d -o root -g root -m 0711 "${WORKSPACE}/agents"
-# the shared user could have left a link here, and `install` would change what it leads to
-if [[ -L "${WORKSPACE}/shared" ]]; then
-  mv -- "${WORKSPACE}/shared" "${WORKSPACE}/old-shared-$(date +%s)"
-fi
-install -d -o agent -g agent -m 0755 "${WORKSPACE}/shared"
+# the main screen's downloads land here, so its desktop is in the group
+install -d -o agent -g agent -m 2775 "${WORKSPACE}/shared"
 
 # /etc/passwd lives in the layer and the Bots on the volume: a rebuilt box gets them back.
 for file in "${STATE}"/bots/*; do
@@ -87,4 +104,3 @@ done
 
 # The main screen's cookie, before its X server: one with no cookie lets anybody in.
 screen_cookie "${MAIN_SLOT}" box
-install -d -o box -g box -m 0700 "/run/box/x/${MAIN_SLOT}/runtime"

@@ -184,6 +184,11 @@ impl CuaConfig {
                 "display must be :N, not {display:?}"
             )));
         }
+        // A client gives its cookie to whatever holds the name, and any process can take the name
+        // of a screen that's down. Nothing connects until that's the screen's own server.
+        if self.enabled && verify_servers() && !box_desktop::server_is_the_screens(display) {
+            return Err(CuaError::DisplayDown(display.to_string()));
+        }
         Ok(Self {
             display: display.to_string(),
             ..self.clone()
@@ -586,6 +591,11 @@ pub(crate) fn ensure_ready(config: &CuaConfig) -> Result<(), CuaError> {
         return Err(CuaError::DisplayDown(config.display.clone()));
     }
     Ok(())
+}
+
+/// In the box. Outside it there's no one else's name to take.
+fn verify_servers() -> bool {
+    env::var("BOX_RUN_AS").as_deref() == Ok("agents")
 }
 
 fn display_up(display: &str) -> bool {

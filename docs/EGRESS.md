@@ -27,7 +27,6 @@ tunnel, same as 1337/1340/6901-6905.
 | --- | --- |
 | Chromium (entrypoint + dock `box-chromium`) | **Yes** — `--proxy-server=http://127.0.0.1:8791` |
 | `POST /v1/exec` (`curl`, apt, …) | **No** — still the guest’s own egress |
-| CDP `127.0.0.1:9222` | **No** — bypass list |
 
 v1 wires Chromium only. That is the Facebook / login-in-the-browser problem.
 
@@ -203,7 +202,7 @@ Automated tests are local: server + client + TCP echo, no public net.
 On a real box, after the client is attached:
 
 1. `GET /v1/egress` → `ready: true`.
-2. In guest Chromium (or CDP), open an echo-IP URL, e.g.
+2. In guest Chromium, open an echo-IP URL, e.g.
    `https://api.ipify.org?format=json` (or any “what is my IP” that you trust).
 3. The reported IP should be the **laptop’s** egress, not the VM’s.
 4. Detach the client. The same page should fail or hang (fail-closed), and

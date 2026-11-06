@@ -146,7 +146,6 @@ ENV WORKSPACE_ROOT=/workspace \
     BOX_DISPLAY_GEOM=1280x800x24 \
     BOX_CHROME=1 \
     BOX_CHROME_PROFILE=/home/box/desktops/main/chrome-profile \
-    BOX_CDP_PORT=9222 \
     BOX_CUA=1 \
     BOX_EGRESS_TUNNEL=0 \
     BOX_EGRESS_WS_BIND=0.0.0.0:8790 \

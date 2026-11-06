@@ -4,8 +4,6 @@
 
 use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
 use tokio::process::Command;
 
 use crate::CuaConfig;
@@ -53,40 +51,6 @@ pub(crate) fn parse_wmctrl_lx_line(line: &str) -> Option<WinInfo> {
         return None;
     }
     Some(WinInfo { id, class, title })
-}
-
-pub(crate) fn parse_cdp_page_url(body: &str) -> Option<String> {
-    // Prefer a real http(s) page over the local newtab file.
-    let mut first = None;
-    let mut search = body;
-    while let Some(idx) = search.find("\"url\"") {
-        let rest = &search[idx + 5..];
-        let Some(colon) = rest.find(':') else {
-            break;
-        };
-        let after = rest[colon + 1..].trim_start();
-        let quote = after.strip_prefix('"')?;
-        let end = quote.find('"')?;
-        let url = quote[..end].to_string();
-        if first.is_none() {
-            first = Some(url.clone());
-        }
-        if url.starts_with("http://") || url.starts_with("https://") {
-            return Some(url);
-        }
-        search = &quote[end + 1..];
-    }
-    first
-}
-
-pub(crate) fn parse_cdp_page_title(body: &str) -> Option<String> {
-    let idx = body.find("\"title\"")?;
-    let rest = &body[idx + 7..];
-    let colon = rest.find(':')?;
-    let after = rest[colon + 1..].trim_start();
-    let quote = after.strip_prefix('"')?;
-    let end = quote.find('"')?;
-    Some(quote[..end].to_string())
 }
 
 async fn wmctrl_lx(display: &str) -> Vec<WinInfo> {
@@ -152,42 +116,6 @@ async fn window_viewable(display: &str, id: &str) -> bool {
     }
 }
 
-pub(crate) async fn cdp_json() -> Option<String> {
-    let port: u16 = std::env::var("BOX_CDP_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(9222);
-    let mut stream = tokio::time::timeout(
-        Duration::from_millis(250),
-        TcpStream::connect(("127.0.0.1", port)),
-    )
-    .await
-    .ok()?
-    .ok()?;
-    let req = b"GET /json HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
-    stream.write_all(req).await.ok()?;
-    let mut buf = Vec::new();
-    tokio::time::timeout(Duration::from_millis(400), async {
-        let mut chunk = [0u8; 4096];
-        while !box_common::http_response_complete(&buf) {
-            match stream.read(&mut chunk).await {
-                Ok(0) | Err(_) => break,
-                Ok(n) => buf.extend_from_slice(&chunk[..n]),
-            }
-        }
-    })
-    .await
-    .ok()?;
-    let text = String::from_utf8_lossy(&buf);
-    let split = text.find("\r\n\r\n").or_else(|| text.find("\n\n"))?;
-    let start = if text[split..].starts_with("\r\n\r\n") {
-        split + 4
-    } else {
-        split + 2
-    };
-    Some(text[start..].to_string())
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PageSnap {
     pub title: String,
@@ -202,11 +130,8 @@ pub(crate) async fn page_snap(config: &CuaConfig) -> PageSnap {
             break;
         }
     }
-    let body = cdp_json().await.unwrap_or_default();
-    let url = parse_cdp_page_url(&body).unwrap_or_default();
-    if title.is_empty() {
-        title = parse_cdp_page_title(&body).unwrap_or_default();
-    }
+    // this screen's own browser's report, and not the main screen's
+    let url = box_desktop::page_url(&config.display).unwrap_or_default();
     PageSnap { title, url }
 }
 
@@ -299,15 +224,6 @@ mod tests {
         assert!(win.is_chromium());
         assert!(win.usable());
         assert_eq!(win.title, "New Tab - Chromium");
-    }
-
-    #[test]
-    fn prefers_https_cdp_url() {
-        let body = r#"[{"url":"file:///usr/share/buwiz-computer/newtab.html","title":"New Tab"},{"url":"https://www.facebook.com/login/","title":"Facebook"}]"#;
-        assert_eq!(
-            parse_cdp_page_url(body).as_deref(),
-            Some("https://www.facebook.com/login/")
-        );
     }
 
     #[test]

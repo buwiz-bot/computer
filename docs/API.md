@@ -475,12 +475,11 @@ Answer: `{"changed": true, "timed_out": false, "seq": 813, "waited_ms": 340}`. T
   "ready": true,
   "running": true,
   "profile": "/home/box/desktops/main/chrome-profile",
-  "cdp": "127.0.0.1:9222",
   "display": ":1"
 }
 ```
 
-CDP is loopback-only. `ready` means Chromium answered `GET /json/version` on that port (not a `/proc` scrape). Agents inside the box may attach; do not publish 9222.
+`ready` and `running` mean the process the entrypoint started is alive. There is no DevTools port: [`USERS.md`](USERS.md).
 
 ### `GET /v1/egress` (bearer)
 

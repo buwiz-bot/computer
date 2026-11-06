@@ -284,7 +284,6 @@ components:
         ready: { type: boolean, description: CDP GET /json/version succeeded }
         running: { type: boolean }
         profile: { type: string }
-        cdp: { type: string, nullable: true }
         display: { type: string }
     EgressStatus:
       type: object

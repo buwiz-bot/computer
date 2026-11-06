@@ -103,7 +103,7 @@ Native mode sets `BOX_DESKTOP=0`. CUA screenshot needs the container (or a local
 
 ## How an orchestrator should plug in
 
-1. Start a container from this image. Inject `BOX_TOKEN`, `BOX_VIEWER_PASSWORD`, and `BOX_ID`. Publish **1337 / 1340 / 6901-6905** on loopback (or behind a tunnel). Do **not** publish 9222. Optional laptop egress: [EGRESS.md](docs/EGRESS.md) (`BOX_EGRESS_TUNNEL=1`, publish **8790** only, never 8791).
+1. Start a container from this image. Inject `BOX_TOKEN`, `BOX_VIEWER_PASSWORD`, and `BOX_ID`. Publish **1337 / 1340 / 6901-6905** on loopback (or behind a tunnel). Optional laptop egress: [EGRESS.md](docs/EGRESS.md) (`BOX_EGRESS_TUNNEL=1`, publish **8790** only, never 8791).
 2. Wait until `GET <hostUrl>/v1/ready` returns 200 **with Bearer**.
 3. Call `connect(execUrl, hostUrl, token)` in the CLI or an SDK. Do not parse `/v1/info.endpoints` as the public URLs.
 4. Drive `POST /v1/exec`, files, `/v1/cua/*`, and `POST /v1/cua/recipe` yourself.
@@ -119,7 +119,6 @@ Native mode sets `BOX_DESKTOP=0`. CUA screenshot needs the container (or a local
 | **8790** | host `127.0.0.1` | `box-egress-tunnel` WS | Laptop client. Off unless `BOX_EGRESS_TUNNEL=1`. See [EGRESS.md](docs/EGRESS.md). |
 | 8791 | **no** | CONNECT proxy | Chromium only, `127.0.0.1` inside the image. Never publish. |
 | 8792 | **no** | tunnel admin | Status for box-host. Loopback. Never publish. |
-| 9222 | **no** | Chromium CDP | `127.0.0.1` only (`BOX_CDP_PORT`). Do not publish. |
 
 Compose also sets `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, `pids_limit: 1024`, and `mem_limit: 4g`. That is **not** a kernel sandbox. The guest is an unprivileged uid-1000 container; Chromium still uses `--no-sandbox`.
 
@@ -146,7 +145,6 @@ Compose also sets `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, `
 | `BOX_VIEWER_PASSWORD_FILE` | unset | Path to a file holding `BOX_VIEWER_PASSWORD`. Preferred, same reason. |
 | `BOX_CHROME` | `1` | Launch Chromium on `:1` |
 | `BOX_CHROME_PROFILE` | `/home/box/desktops/main/chrome-profile` | Persistent profile (compose volume) |
-| `BOX_CDP_PORT` | `9222` | CDP on `127.0.0.1` only |
 | `BOX_CUA` | `1` | Enable `/v1/cua/*` |
 | `BOX_EGRESS_TUNNEL` | `0` | `1` starts `box-egress-tunnel` before Chromium and sets `--proxy-server`. See [EGRESS.md](docs/EGRESS.md). |
 | `BOX_EGRESS_WS_BIND` | `0.0.0.0:8790` in image; `127.0.0.1:8790` native | WebSocket for the laptop client |
@@ -191,7 +189,7 @@ crates/box-common    path jail, bearer compare, error envelope, config, CORS
 crates/box-exec      exec + files + CUA HTTP daemon
 crates/box-host      identity / ready / capabilities / desktop + chrome status
 crates/box-desktop   Xvfb probe, 1280×800 geometry, viewer ports, screen list
-crates/box-chrome    Chromium profile + localhost CDP probe
+crates/box-chrome    Chromium profile and process probe
 crates/box-cua       screenshot / click / type / key / scroll / double-click / drag / move / recipe / voxl wait + record
 crates/box-egress-tunnel  guest WS mux + Chromium CONNECT proxy (laptop client is the same binary)
 crates/buwiz-computer      typed client + CLI (workspace only, not published)

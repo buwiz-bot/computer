@@ -19,7 +19,6 @@ export BOX_CHROME_PROFILE="${BOX_CHROME_PROFILE:-${HOME}/chrome-profile}"
 export BOX_SCREEN_RUN="${BOX_SCREEN_RUN:?box-keeper names the run folder}"
 # Everything on a desktop: see docker/shm-private.c.
 export LD_PRELOAD=/usr/lib/box/libbox-shm-private.so
-export BOX_CDP_PORT="${BOX_CDP_PORT:-9222}"
 export BOX_CUA="${BOX_CUA:-1}"
 # Listen on all interfaces *inside* the container netns so Compose port-map
 # works. Host publish is 127.0.0.1 (see docker-compose.yml).
@@ -138,15 +137,16 @@ start_chrome() {
     exit 1
   fi
   # See box-refresh-extension: a profile kept from an older extension runs its old worker.
-  /usr/local/bin/box-refresh-extension
+  BOX_SCREEN_WORKSPACE="${WORKSPACE_ROOT}/shared" /usr/local/bin/box-refresh-extension
   read -r w h < <(geom_wh)
   export DISPLAY="${BOX_DISPLAY}"
 
-  echo "starting ${bin} on ${DISPLAY} profile=${BOX_CHROME_PROFILE} cdp=127.0.0.1:${BOX_CDP_PORT}"
+  echo "starting ${bin} on ${DISPLAY} profile=${BOX_CHROME_PROFILE}"
   # The box user cannot use Chrome's setuid sandbox in this image. --no-sandbox stays.
   # Do not pass --disable-setuid-sandbox: Chromium names that flag on the yellow
   # infobar. managed policy + --test-type hide the remaining --no-sandbox warning
   # so CUA screenshots are a usable desktop, not a banner.
+  # No DevTools port: it has no login, and every user in the box shares this loopback.
   # Closing/crashing the browser must not take the box down — restart it.
   local proxy_args=()
   if flag_on "${BOX_EGRESS_TUNNEL}"; then
@@ -183,8 +183,6 @@ start_chrome() {
         --load-extension=/opt/box/active-tab \
         --window-size="${w},${h}" \
         --window-position=0,0 \
-        --remote-debugging-address=127.0.0.1 \
-        --remote-debugging-port="${BOX_CDP_PORT}" \
         "${proxy_args[@]}" \
         about:blank \
         >"${BOX_SCREEN_RUN}/box-chrome.log" 2>&1 &

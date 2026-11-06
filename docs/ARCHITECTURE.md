@@ -15,7 +15,7 @@ buwiz-computer guest (this image)
     ├── box-exec :1337   exec + files + /v1/cua/*
     ├── box-egress-tunnel :8790  optional laptop CONNECT mux (proxy 127.0.0.1:8791)
     ├── Xvfb :1 1280×800 + xfce + voxl :6901 (a Bot's own screen: :N and 6900+N)
-    └── Chromium (profile volume; CDP on localhost only; optional --proxy-server)
+    └── Chromium (profile volume; no DevTools port; optional --proxy-server)
 ```
 
 The TypeScript / Python / Rust SDKs never call `docker run` and never treat `/v1/info.endpoints` as the URLs to dial. Those endpoints are **container-local listen addresses** so operators can see what the processes bound.
@@ -42,7 +42,6 @@ Full list: [TERMINOLOGY.md](TERMINOLOGY.md).
 | **8790** | `box-egress-tunnel` WS | Laptop client when `BOX_EGRESS_TUNNEL=1`. Compose publishes loopback. |
 | 8791 | CONNECT proxy | Chromium only, localhost. **Not published.** |
 | 8792 | tunnel admin | Status probe for box-host. Localhost. **Not published.** |
-| 9222 | Chromium CDP | **localhost only**. Not published. |
 
 Bind addresses: inside the guest image, `BOX_EXEC_BIND` / `BOX_HOST_BIND` default to `0.0.0.0` so Compose port-map works. Native/cargo defaults are `127.0.0.1`. Compose **host** publish is `127.0.0.1:1337` (etc.).
 
@@ -84,7 +83,7 @@ tini
       ├── entrypoint.sh                    the desktop; holds no secret
       │    ├── Xvfb :1  (1280x800x24)      if BOX_DESKTOP=1
       │    ├── xfce4-session
-      │    ├── chromium (profile volume; CDP 127.0.0.1:9222)
+      │    ├── chromium (profile volume; no DevTools port)
       │    │     optional --proxy-server=http://127.0.0.1:8791 when BOX_EGRESS_TUNNEL=1
       │    │     not in the death-watch — closing the browser must not kill the box
       │    └── box-egress-tunnel  (WS 8790, CONNECT 127.0.0.1:8791, admin 127.0.0.1:8792)
@@ -109,7 +108,7 @@ If `box-exec`, `box-host` or the X stack dies, `box-keeper` stops the rest and t
 | `exec` | always (this binary) |
 | `files` | always |
 | `desktop` | X socket (and `xdpyinfo` when present) on `BOX_DISPLAY` |
-| `chrome` | Chromium process and/or localhost CDP is up |
+| `chrome` | The Chromium process is up |
 | `cua` | `BOX_CUA` enabled and the display socket exists |
 | `egress_tunnel` | `BOX_EGRESS_TUNNEL`; `ready` only while a laptop client is attached |
 

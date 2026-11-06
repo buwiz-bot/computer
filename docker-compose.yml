@@ -47,7 +47,6 @@ services:
       BOX_DISPLAY_GEOM: ${BOX_DISPLAY_GEOM:-1280x800x24}
       BOX_CHROME: ${BOX_CHROME:-1}
       BOX_CHROME_PROFILE: /home/box/desktops/main/chrome-profile
-      BOX_CDP_PORT: ${BOX_CDP_PORT:-9222}
       BOX_CUA: ${BOX_CUA:-1}
       BOX_EXEC_BIND: 0.0.0.0:1337
       BOX_HOST_BIND: 0.0.0.0:1340

@@ -36,7 +36,7 @@ Inside (see [`docs/ARCHITECTURE.md`](ARCHITECTURE.md)):
 - `box-exec` on **1337** (exec, files, CUA)
 - `box-host` on **1340** (health, ready, info, desktop/chrome)
 - Xvfb **1280×800**, xfce, voxl **6901** (and **6902–6905** for the Bots' own screens)
-- Chromium; CDP on **127.0.0.1:9222** only — **never publish 9222**
+- Chromium, with no DevTools port
 
 Compose publishes **1337, 1340, 6901–6905** as `127.0.0.1:1337:1337` (loopback on the VM). Reach them with an SSH tunnel, Tailscale, or similar. Healthcheck: `curl -H "Authorization: Bearer $BOX_TOKEN" http://127.0.0.1:1340/v1/ready` (start period 25s, 5s interval, 12 retries). `shm_size` is **256mb**. Bind mounts: `./workspace-data:/workspace`, `./chrome-profile:/home/box/chrome-profile`.
 
@@ -115,7 +115,6 @@ This guest is **RAM-heavy**: Debian + Xvfb + xfce + voxl + Chromium + two Rust d
 | **8790** | Compose yes (`127.0.0.1`) | `box-egress-tunnel` WS (off unless `BOX_EGRESS_TUNNEL=1`). See [EGRESS.md](EGRESS.md). |
 | 8791 | **no** | Chromium CONNECT proxy |
 | 8792 | **no** | tunnel admin (box-host probe) |
-| 9222 | **no** | Chromium CDP, `127.0.0.1` only |
 
 `BOX_TOKEN` is bearer auth. It is **not** a substitute for TLS. Do **not** expose exec/host as raw HTTP on a public IP. Compose reads the token and the viewer password from `./secrets/box_token` and `./secrets/box_viewer_password`; run `bash scripts/write-secrets.sh` (it reads `BOX_TOKEN` / `BOX_VIEWER_PASSWORD` from the environment or `.env`) before `docker compose up`, or Compose fails on the missing secret file.
 
@@ -128,7 +127,7 @@ voxl is a **full desktop session** (keyboard/mouse on 1280×800). Treat **6901�
 **1. Private (first test — do this)**
 
 - One VM. Cloud Firewall **default-deny** inbound. Allow **TCP 22** only (optionally from your home IP `/32`). IPv6: same policy (`DROP` unless you allow SSH on v6).
-- Do **not** allow 1337, 1340, 6901–6905, 9222 on the public firewall.
+- Do **not** allow 1337, 1340, 6901–6905 on the public firewall.
 - Reach the guest from the laptop by **either**:
   - **SSH tunnel** (simplest, no extra accounts):
 
@@ -368,7 +367,7 @@ The guest is a **long-running** container with X11, voxl, and Chromium — not a
 | Cloud Run / App Service “scale to zero” | Poor. Need min instances, RAM, and **three** HTTP ports (or a sidecar proxy). WebSockets for voxl are awkward. |
 | ACI / ECS Fargate / Cloud Run **always-on** | Possible in theory: it is **one** container, not a Compose mesh. You still need ~8 GB, `shm`, persistent disks for `/workspace` + chrome profile, and TLS in front. More glue than a VM. |
 | **VM + Compose** | **Do this first.** |
-| Kubernetes | Later, if you already have a cluster: one Deployment, Service, two PVCs, `emptyDir` `medium: Memory` ~256Mi for `/dev/shm`, `runAsUser: 1000`, do not Service-expose 9222. Not the first test. |
+| Kubernetes | Later, if you already have a cluster: one Deployment, Service, two PVCs, `emptyDir` `medium: Memory` ~256Mi for `/dev/shm`, `runAsUser: 1000`. Not the first test. |
 
 
 ### 5. Prebuilt image to a registry (second iteration)
@@ -432,7 +431,6 @@ After the Akamai VM is up and Compose is healthy:
 - **Disk:** `workspace-data` is **your** files. `chrome-profile` is cookies/session for uid **1000**. Bind mounts created as root are not writable by `box` until `chown 1000:1000`. Back up the workspace volume if you care; the image is rebuildable.
 - **Cost:** an idle VM still bills. Power off or `tofu destroy` / Cloud Manager delete when done. Hourly on 8 GB Shared is on the order of **seven cents**. A forgotten month is **~$48**.
 - **CORS:** default is no browser origins. Do not point a random website at 1337.
-- **CDP unpublished.** Do not add `9222:9222` to Compose.
 - **Egress CONNECT unpublished.** Do not add `8791:8791`. WS `8790` is loopback + SSH `-L` only. Prod must not rely on Docker host-network for Facebook/IP geo; see [EGRESS.md](EGRESS.md).
 
 ---

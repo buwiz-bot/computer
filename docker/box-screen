@@ -54,23 +54,39 @@ bot_users() {
 }
 
 # A new cookie for display $1, for its X server and the desktop user $2, and for the services. It's
-# only made for a server about to start: one already up keeps the one it read.
+# only made for a server about to start: one already up keeps the one it read. The screen's folder
+# and its cookie are root's, so the desktop can read the cookie and can't hand it on, and what the
+# desktop writes goes in `run`. Nothing here is ever readable to anybody else, not for a moment.
 screen_cookie() {
-  local slot="$1" owner="$2" dir="/run/box/x/$1" cookie
+  local slot="$1" owner="$2" dir="/run/box/x/$1" cookie mask
+  mask="$(umask)"
+  umask 077
+  install -d -o root -g root -m 0711 "${dir}"
   find "${dir}" -xdev -mindepth 1 -delete 2>/dev/null || true
-  install -d -o "${owner}" -g boxsvc -m 0750 "${dir}"
-  install -o "${owner}" -g boxsvc -m 0640 /dev/null "${dir}/auth"
+  install -d -o "${owner}" -g boxsvc -m 0750 "${dir}/run"
   cookie="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
   [[ "${#cookie}" == 32 ]]
   xauth -q -f "${dir}/auth" add ":${slot}" MIT-MAGIC-COOKIE-1 "${cookie}" 2>/dev/null
   xauth -q -f "${SVC_AUTH}" remove ":${slot}" 2>/dev/null || true
   xauth -q -f "${SVC_AUTH}" add ":${slot}" MIT-MAGIC-COOKIE-1 "${cookie}" 2>/dev/null
-  chown "${owner}:boxsvc" "${dir}/auth"
+  chown "root:${owner}" "${dir}/auth"
   chmod 0640 "${dir}/auth"
   chown root:boxsvc "${SVC_AUTH}"
   chmod 0640 "${SVC_AUTH}"
+  umask "${mask}"
   # X lets every local client in when this is empty
   [[ -s "${dir}/auth" && -s "${SVC_AUTH}" ]]
+}
+
+# The services' cookie for a display that's stopped: nothing should offer one to whoever comes next.
+drop_cookie() {
+  local mask
+  mask="$(umask)"
+  umask 077
+  xauth -q -f "${SVC_AUTH}" remove ":$1" 2>/dev/null || true
+  chown root:boxsvc "${SVC_AUTH}"
+  chmod 0640 "${SVC_AUTH}"
+  umask "${mask}"
 }
 
 # box-prepare wants the two above and nothing else.
@@ -153,9 +169,9 @@ as_desktop() {
     env -i PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 HOME="${desktop_home}" USER="d${DESKTOP_UID}" \
     LD_PRELOAD=/usr/lib/box/libbox-shm-private.so \
     DISPLAY=":${n}" BOX_DISPLAY=":${n}" BOX_SHARED_DISPLAY="${BOX_SHARED_DISPLAY:-:1}" \
-    BOX_DISPLAY_GEOM="${GEOM}" XAUTHORITY="/run/box/x/${n}/auth" BOX_SCREEN_RUN="/run/box/x/${n}" \
+    BOX_DISPLAY_GEOM="${GEOM}" XAUTHORITY="/run/box/x/${n}/auth" BOX_SCREEN_RUN="/run/box/x/${n}/run" \
     BOX_CHROME_PROFILE="${profile}" BOX_SCREEN_WORKSPACE="${agent_dir}" \
-    XDG_RUNTIME_DIR="/run/box/x/${n}/runtime" XDG_CONFIG_HOME="${desktop_home}/.config" "$@"
+    XDG_RUNTIME_DIR="/run/box/x/${n}/run/runtime" XDG_CONFIG_HOME="${desktop_home}/.config" "$@"
 }
 
 if [[ "$1" == "list" ]]; then
@@ -194,7 +210,14 @@ if [[ "$1" == "down" || "$1" == "forget" ]]; then
     sleep 0.1
   done
   pkill -KILL -u "${DESKTOP_UID}" 2>/dev/null || true
+  drop_cookie "${n}"
   if [[ "$1" == "forget" ]]; then
+    # its commands may be part way through a write: they're asked first
+    pkill -TERM -u "${AGENT_UID}" 2>/dev/null || true
+    for _ in $(seq 20); do
+      pgrep -u "${AGENT_UID}" >/dev/null || break
+      sleep 0.1
+    done
     pkill -KILL -u "${AGENT_UID}" 2>/dev/null || true
     unlink "${SLOTS_DIR:?}/${bot:?}"
   fi
@@ -221,6 +244,11 @@ bot_users "${bot}"
 n="$(slot_of "${bot}")" || n="$(allocate "${bot}")" ||
   die "this computer already runs ${MAX_SCREENS} Bots' own screens; switch one back to the shared screen first"
 
+# Root is about to set an owner, and `install` follows a link. Their parents are root's, so nothing
+# can make one now, and box-prepare moves aside what an older image left.
+for path in "${agent_dir}" "${agent_home}" "${desktop_home}"; do
+  [[ ! -L "${path}" ]] || die "this Bot's folder is a link"
+done
 install -d -o "${AGENT_UID}" -g "${AGENT_UID}" -m 2770 "${agent_dir}"
 install -d -o "${AGENT_UID}" -g "${AGENT_UID}" -m 0700 "${agent_home}"
 if [[ ! -e "${desktop_home}" ]]; then
@@ -238,7 +266,7 @@ if ! running "${n}" "${DESKTOP_UID}"; then
   unlink "/tmp/.X${n}-lock" 2>/dev/null || true
   unlink "/tmp/.X11-unix/X${n}" 2>/dev/null || true
   screen_cookie "${n}" "${DESKTOP_UID}"
-  install -d -o "${DESKTOP_UID}" -g "${DESKTOP_UID}" -m 0700 "/run/box/x/${n}/runtime"
+  as_desktop mkdir -p -m 0700 "/run/box/x/${n}/run/runtime"
   # As in entrypoint.sh: never -ac or -shmem. If a process holds this display's abstract socket,
   # this server won't start, and so the screen doesn't: no cookie goes near it.
   cd /
@@ -278,7 +306,8 @@ done
 # A profile kept from an older extension runs its old background script (see
 # box-refresh-extension); this Bot's Chromium is not running yet when the screen first comes up.
 if ! pgrep -u "${DESKTOP_UID}" -f -- "--user-data-dir=${profile}( |$)" >/dev/null; then
-  install -d -o "${DESKTOP_UID}" -g "${DESKTOP_UID}" -m 0700 "${profile}"
+  # as its user: the home is that user's, so a link here isn't root's to follow
+  as_desktop mkdir -p -m 0700 "${profile}"
   as_desktop /usr/local/bin/box-refresh-extension >/dev/null
 fi
 

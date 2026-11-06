@@ -14,7 +14,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use box_common::{env_bool, env_nonempty};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Capability flag name advertised by `box-host`.
 pub const CAPABILITY: &str = "desktop";
@@ -239,6 +239,110 @@ pub fn screen_workspace(display: &str, slots_dir: &Path) -> String {
             .map(|(bot, _)| bot)
     });
     workspace_of(bot.as_deref())
+}
+
+/// A Bot's desktop user is this plus twice its number (`box-screen`).
+const FIRST_DESKTOP_USER: u32 = 20001;
+const MAIN_DESKTOP_USER: u32 = 1000;
+
+/// The desktop user of `slot`: the box's own on its own display, else that of the Bot holding it,
+/// from what `box-screen` keeps. Both folders are root's.
+pub fn desktop_uid(slot: u16, main: u16, slots_dir: &Path, bots_dir: &Path) -> Option<u32> {
+    if slot == main {
+        return Some(MAIN_DESKTOP_USER);
+    }
+    let bot = slot_holder(slots_dir, slot)?;
+    let index: u32 = std::fs::read_to_string(bots_dir.join(bot))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    index.checked_mul(2)?.checked_add(FIRST_DESKTOP_USER)
+}
+
+/// Where `box-screen` keeps each Bot's number. Root's.
+pub fn bots_dir() -> PathBuf {
+    PathBuf::from("/home/box/.box/bots")
+}
+
+/// Whether what's listening as `display` is that screen's own X server. Clients try the abstract
+/// socket first, and that name is anybody's for a screen that's down, so a client that connects
+/// there on faith hands its cookie to whoever took it. So this connects to that name itself, sends
+/// nothing, and asks the kernel whose it is. A real server holds the name for as long as it runs.
+#[cfg(target_os = "linux")]
+pub fn server_is_the_screens(display: &str) -> bool {
+    let main = std::env::var("BOX_SHARED_DISPLAY").unwrap_or_else(|_| ":1".to_string());
+    let (Some(slot), Some(main)) = (display_number(display), display_number(&main)) else {
+        return false;
+    };
+    let Some(expected) = desktop_uid(slot, main, &slots_dir(), &bots_dir()) else {
+        return false;
+    };
+    listener_uid(slot) == Some(expected)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn server_is_the_screens(_display: &str) -> bool {
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn listener_uid(slot: u16) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    use std::os::linux::net::SocketAddrExt;
+    use std::os::unix::net::{SocketAddr, UnixStream};
+
+    let name = format!("/tmp/.X11-unix/X{slot}");
+    let stream = UnixStream::connect_addr(&SocketAddr::from_abstract_name(name).ok()?).ok()?;
+    let mut peer = libc::ucred {
+        pid: 0,
+        uid: 0,
+        gid: 0,
+    };
+    let mut size = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
+    // SAFETY: `peer` and `size` are live, and `size` is what `peer` holds.
+    let got = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            std::ptr::addr_of_mut!(peer).cast(),
+            &mut size,
+        )
+    };
+    (got == 0).then_some(peer.uid)
+}
+
+/// Where a screen's report of the page in front is kept: in that screen's run folder, which its
+/// desktop user owns and the services may read, and a command can't reach. Each of the box's screens
+/// has its own Chromium, and each starts its own `box-active-tab`, which inherits that Chromium's
+/// `DISPLAY`. Anything that is not a display name is the main screen (`BOX_SHARED_DISPLAY`, `:1` by
+/// default).
+///
+/// Not `BOX_DISPLAY`: a Bot's own Chromium is started with `BOX_DISPLAY` set to its own screen,
+/// and its host would take that screen for the main one.
+pub fn active_tab_file(display: Option<&str>) -> PathBuf {
+    let own = std::env::var("BOX_SHARED_DISPLAY").unwrap_or_else(|_| ":1".to_string());
+    let number = |d: &str| {
+        let n = d.trim().strip_prefix(':')?.split('.').next()?.to_string();
+        (!n.is_empty() && n.len() <= 3 && n.bytes().all(|b| b.is_ascii_digit())).then_some(n)
+    };
+    let screen = display
+        .and_then(number)
+        .or_else(|| number(&own))
+        .unwrap_or_else(|| "1".to_string());
+    PathBuf::from(format!("/run/box/x/{screen}/run/active-tab.json"))
+}
+
+/// The page in front of `display`'s own browser, as its extension last said.
+pub fn page_url(display: &str) -> Option<String> {
+    #[derive(Deserialize)]
+    struct Report {
+        url: Option<String>,
+    }
+    let text = std::fs::read(active_tab_file(Some(display))).ok()?;
+    let report: Report = serde_json::from_slice(&text).ok()?;
+    report.url.filter(|url| !url.is_empty())
 }
 
 /// The Bot holding this slot.
@@ -523,5 +627,20 @@ mod tests {
         assert_eq!(win.desktop, 0);
         assert_eq!(win.class, "chromium.Chromium");
         assert_eq!(win.title, "New Tab - Chromium");
+    }
+
+    #[test]
+    fn a_screen_is_its_desktops_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let (slots, bots) = (dir.path().join("slots"), dir.path().join("bots"));
+        std::fs::create_dir_all(&slots).unwrap();
+        std::fs::create_dir_all(&bots).unwrap();
+        std::fs::write(slots.join("amy"), "3\n").unwrap();
+        std::fs::write(bots.join("amy"), "2\n").unwrap();
+        std::fs::write(slots.join("lost"), "4\n").unwrap();
+        assert_eq!(desktop_uid(1, 1, &slots, &bots), Some(1000));
+        assert_eq!(desktop_uid(3, 1, &slots, &bots), Some(20005));
+        assert_eq!(desktop_uid(4, 1, &slots, &bots), None, "no number, no user");
+        assert_eq!(desktop_uid(5, 1, &slots, &bots), None);
     }
 }

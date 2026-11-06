@@ -17,10 +17,15 @@ The container starts as root with `--cap-drop ALL` and only `CHOWN DAC_OVERRIDE 
 
 ## How it fits together
 
+- **Who says which Bot.** `bot` is the caller's word. That's a wall against commands, which have no token. The broker is the only holder of one, and it names the Bot from its own records. Anyone with the token could name any Bot.
 - **Commands.** `POST /v1/exec` takes `bot`. `box-exec` looks the Bot up and runs the command as its agent user, with a clean environment: no `DISPLAY`, no `XAUTHORITY`, nothing of its own. With no `bot`, it's `agent`. A Bot this computer hasn't got is refused. Nothing a caller asks for runs as a service.
 - **Files.** `/v1/files*` take `bot` too, and do their work under that user's file identity (`setfsuid`), so a link in a Bot's folder gets what that Bot's user can reach and no more.
 - **Screens.** `POST /v1/screen` is `box-screen`: `up`, `down`, `forget`, `open` and `list`. It takes root, so `box-exec` passes a checked request over a socket only `boxsvc` can open, and `box-keeper` runs `box-screen` with those words as arguments. A page opens as the desktop user.
-- **X.** Each server runs with `-auth`, a fresh cookie and no `-ac`. The cookie is in `/run/box/x/<slot>/auth`, for its desktop user and `boxsvc`'s group, and in `/run/box/x/svc.auth` for the services. **An empty cookie file opens X to every local client**, so both scripts refuse to start a server on one.
+- **X.** Each server runs with `-auth`, a fresh cookie and no `-ac`. The cookie is in `/run/box/x/<slot>/auth`, root's, for its desktop's group alone, so the desktop can read it and can't hand it on, and in `/run/box/x/svc.auth` for the services, gone when the screen stops. `/run/box/x` can't be listed, and cookies are written under `umask 077`, so neither is readable for a moment. What a desktop writes goes in `/run/box/x/<slot>/run`. **An empty cookie file opens X to every local client**, so both scripts refuse to start a server on one.
+- **A cookie goes only to the real server.** Clients try the abstract socket first, and anybody can hold that name for a screen that's down. Before any `?display=:N` call connects, `box-exec` connects to that name itself, sends nothing, and asks the kernel whose it is. If it isn't that screen's desktop user, the call is refused.
+- **No DevTools port.** It has no login, and every user shares the box's loopback, so a command could read cookies and drive the browser. Nothing here needs one: a page's address comes from that screen's own extension report, and Chromium's readiness from its process.
+- **Root and links.** Root sets an owner only on a path whose parent is root's, and checks for a link first. `box-prepare` moves aside anything under `agents/` that isn't a Bot's real folder, to `/workspace/old-agents-<time>`, root's. In a desktop's home the desktop's own user does the work.
+- **Logs** in `/run/box/log` are root's alone.
 - **No `-shmem`.** Xvfb makes that framebuffer mode 0777, which any user can attach and read without asking X anything. voxl falls back to MIT-SHM into a segment of its own. X will only share memory with a client it can attach as itself, which is why voxl runs as the screen's desktop user.
 - **Chromium's windows.** It makes their shared memory mode 0606, readable and writable by every user. `docker/shm-private.c`, preloaded across every desktop, makes it owner-only, which is enough when X is the same user. The Bot's check from outside refuses a desktop with any segment left open.
 - **Sockets.** `/tmp/.X11-unix` is `root:boxx`, mode 1775, so a command can't plant a socket. It can bind the abstract name of a screen that isn't up yet, and then that screen's Xvfb refuses to start: the screen fails, and no cookie goes near the squatter.
@@ -44,6 +49,7 @@ An `LD_PRELOAD` into an allowed program is just that user running that program w
 
 - **The screen itself.** The model drives a desktop by design, so it can do what clicking can do there, as that Bot's desktop user. That user has the cookie and the browser profile. The dock has no terminal and the panel and menus are locked (`docker/xfce/kioskrc`), but a chain of clicks through Files or a download can still run something. It stays on that Bot's screen and its files, and `clear_strays` ends what it finds before a hand-over. It isn't a wall.
 - **The browser.** A page the model opened is a page: it sees what's typed into it. The model can use whatever a person signed in to. Chromium runs with `--no-sandbox`, so a renderer exploit is the desktop user.
+- **The check is of a moment.** `users_apart` reads the box when a command starts, and before a hand-over's card: not during either.
 - **The start.** The secrets staged by the Bot are on a Docker Desktop file share that doesn't enforce modes, so any user could read them until `/v1/ready` answers. No command runs that early, and nothing of an agent user starts by itself. Something left on a desktop's own home by the path above would.
 - **What every user can see.** `ps` shows every process's arguments, including the first address `box-chromium` opened. `/tmp` and `/dev/shm` are shared: a Bot's world-readable file there is readable by another. A command can use up the box's memory, processes and disk. These are shared by Bots on one computer.
 - **The kernel.** Everything shares one. This is a user boundary inside a container, not a VM.
@@ -52,8 +58,8 @@ An `LD_PRELOAD` into an allowed program is just that user running that program w
 
 A computer made before this ran commands as the desktop's user, so everything in its home was theirs to write: autostart, `.bashrc`, the browser profile. The Bot makes such a computer again at its next wake, on the same volumes, with no `-v`. `box-prepare` tells by the top of the volume, which only an older image leaves to a non-root user:
 
-- The home's contents move, whole, to `/home/box/old-home-<time>`, mode 0700, owned by `agent`. A desktop starts on a fresh home, so a person signs in again. Nothing is deleted.
-- `/workspace/agents/<bot>` goes to that Bot's agent user, and everything else in the workspace to `agent`. Links are changed, never followed.
+- The home's contents move, whole, to `/home/box/old-home-<time>`, `root:root` 0700: it holds old sign-ins, and is nobody's in the box. A desktop starts on a fresh home, so a person signs in again. Nothing is deleted.
+- A real folder at `/workspace/agents/<bot>` goes to that Bot's agent user, and everything else in the workspace to `agent`. Anything else under `agents/`, a link above all, is moved aside. Links are changed, never followed.
 
 Nothing of a box's own runs until this is done, and if it fails the box doesn't start.
 

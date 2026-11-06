@@ -5,15 +5,12 @@ use std::io::{self, BufRead, Read};
 use std::path::Path;
 use std::time::Duration;
 
-use box_desktop::{slot_holder, slot_is_allocated};
+use box_desktop::slot_is_allocated;
 
 /// A voxl that lasted this long is not crash-looping, so its next restart starts the delays over.
 pub const STABLE: Duration = Duration::from_secs(30);
 
 const MAX_RESTART_DELAY: Duration = Duration::from_secs(30);
-
-/// A Bot's desktop user is this plus twice its number (`box-screen`).
-const FIRST_DESKTOP_USER: u32 = 20001;
 
 /// Longer than any request. A longer line is dropped whole.
 const MAX_LINE: u64 = 64;
@@ -83,27 +80,6 @@ pub fn may_have_viewer(slot: u16, main: u16, slots_dir: &Path) -> bool {
     slot == main || slot_is_allocated(slots_dir, slot)
 }
 
-/// The desktop user of `slot`: `main_user` on the box's own display, else that of the Bot holding
-/// it, from what `box-screen` keeps. Both folders are root's.
-pub fn desktop_uid(
-    slot: u16,
-    main: u16,
-    slots_dir: &Path,
-    bots_dir: &Path,
-    main_user: u32,
-) -> Option<u32> {
-    if slot == main {
-        return Some(main_user);
-    }
-    let bot = slot_holder(slots_dir, slot)?;
-    let index: u32 = std::fs::read_to_string(bots_dir.join(bot))
-        .ok()?
-        .trim()
-        .parse()
-        .ok()?;
-    index.checked_mul(2)?.checked_add(FIRST_DESKTOP_USER)
-}
-
 /// 1 s after the first failure, doubling to 30 s.
 pub fn restart_delay(failures: u32) -> Duration {
     Duration::from_secs(1u64 << failures.min(5)).min(MAX_RESTART_DELAY)
@@ -152,25 +128,6 @@ mod tests {
         assert!(may_have_viewer(1, 1, dir.path()));
         assert!(may_have_viewer(3, 1, dir.path()));
         assert!(!may_have_viewer(4, 1, dir.path()));
-    }
-
-    #[test]
-    fn a_screen_is_its_desktops_user() {
-        let dir = tempfile::tempdir().unwrap();
-        let (slots, bots) = (dir.path().join("slots"), dir.path().join("bots"));
-        std::fs::create_dir_all(&slots).unwrap();
-        std::fs::create_dir_all(&bots).unwrap();
-        std::fs::write(slots.join("amy"), "3\n").unwrap();
-        std::fs::write(bots.join("amy"), "2\n").unwrap();
-        std::fs::write(slots.join("lost"), "4\n").unwrap();
-        assert_eq!(desktop_uid(1, 1, &slots, &bots, 1000), Some(1000));
-        assert_eq!(desktop_uid(3, 1, &slots, &bots, 1000), Some(20005));
-        assert_eq!(
-            desktop_uid(4, 1, &slots, &bots, 1000),
-            None,
-            "a Bot with no number gets no viewer"
-        );
-        assert_eq!(desktop_uid(5, 1, &slots, &bots, 1000), None);
     }
 
     #[test]

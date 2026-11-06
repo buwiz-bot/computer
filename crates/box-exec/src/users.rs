@@ -2,6 +2,10 @@
 //! a command, or a file touched for a Bot, runs as that Bot's own user, and a request that names no
 //! Bot as the shared `agent` user. A Bot this computer hasn't got is refused.
 //!
+//! `bot` is the caller's word. That's a wall against commands, which can't call this: they have no
+//! token, and the broker, the only holder of one, names the Bot from its own records. Anyone with
+//! the token could name any Bot.
+//!
 //! Only root writes `bots` (`box-screen`), so a Bot's number here is the one it was given. In the
 //! box `box-exec` holds `CAP_SETUID`, `CAP_SETGID`, `CAP_KILL` and `CAP_NET_BIND_SERVICE`, kept
 //! here and passed to nothing ([`keep_capabilities_here`]).

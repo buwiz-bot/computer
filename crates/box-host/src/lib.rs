@@ -608,7 +608,6 @@ mod tests {
         assert_eq!(body["enabled"], false);
         assert_eq!(body["running"], false);
         assert_eq!(body["ready"], false);
-        assert!(body["cdp"].is_null());
     }
 
     #[tokio::test]

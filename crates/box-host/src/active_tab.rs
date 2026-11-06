@@ -18,25 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-/// Where a screen's report is kept: in that screen's run folder, which its desktop user owns and
-/// `box-host`'s user may read, and a command can't reach. Each of the box's screens has its own
-/// Chromium, and each starts its own `box-active-tab`, which inherits that Chromium's `DISPLAY`.
-/// Anything that is not a display name is the main screen (`BOX_SHARED_DISPLAY`, `:1` by default).
-///
-/// Not `BOX_DISPLAY`: a Bot's own Chromium is started with `BOX_DISPLAY` set to its own screen,
-/// and its host would take that screen for the main one.
-pub fn file_for(display: Option<&str>) -> std::path::PathBuf {
-    let own = std::env::var("BOX_SHARED_DISPLAY").unwrap_or_else(|_| ":1".to_string());
-    let number = |d: &str| {
-        let n = d.trim().strip_prefix(':')?.split('.').next()?.to_string();
-        (!n.is_empty() && n.len() <= 3 && n.bytes().all(|b| b.is_ascii_digit())).then_some(n)
-    };
-    let screen = display
-        .and_then(number)
-        .or_else(|| number(&own))
-        .unwrap_or_else(|| "1".to_string());
-    std::path::PathBuf::from(format!("/run/box/x/{screen}/active-tab.json"))
-}
+pub use box_desktop::active_tab_file as file_for;
 
 /// Native messaging caps a message to the host at 64 MiB; a URL is far smaller, and anything
 /// past this is not the extension speaking.
@@ -206,13 +188,13 @@ mod tests {
     /// Each screen's Chromium reports to its own file.
     #[test]
     fn each_screen_has_its_own_report() {
-        let main = Path::new("/run/box/x/1/active-tab.json");
+        let main = Path::new("/run/box/x/1/run/active-tab.json");
         assert_eq!(file_for(None), main);
         assert_eq!(file_for(Some(":1")), main);
         assert_eq!(file_for(Some(":1.0")), main);
         assert_eq!(
             file_for(Some(":3")),
-            Path::new("/run/box/x/3/active-tab.json")
+            Path::new("/run/box/x/3/run/active-tab.json")
         );
         assert_eq!(file_for(Some("../../etc")), main);
         assert_eq!(file_for(Some(":3/../x")), main);

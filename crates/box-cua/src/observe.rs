@@ -24,22 +24,12 @@
 //! None of it is on by default. `observe: "off"` produces the receipt this
 //! endpoint produced before the field existed, byte for byte.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
 use crate::recipe::RecipeStep;
 use crate::{x11, CuaConfig};
-
-/// How long one DevTools read may take before the receipt gives up on it.
-///
-/// `cdp_json` already bounds its connect and its read separately, which adds
-/// to 650ms for a Chromium that accepts the connection and then says nothing.
-/// Twice per step and 256 steps, that is minutes of a recipe spent waiting on
-/// a browser that is not answering — so observation caps the whole exchange
-/// instead. A Chromium that needs longer than this to list its own tabs over
-/// loopback is not one the receipt should hold a recipe up for.
-const OBSERVE_CDP_BUDGET: Duration = Duration::from_millis(250);
 
 /// How much of the desktop the receipt reports back.
 ///
@@ -225,7 +215,7 @@ impl StepWatch {
             obs.focus = x11::observe_focus(config).await;
         }
         if self.page {
-            obs.url_before = page_url().await;
+            obs.url_before = page_url(config);
         }
         obs.observe_ms = started.elapsed().as_millis() as u64;
         obs
@@ -233,29 +223,22 @@ impl StepWatch {
 
     /// Read the page again once the step, and any `settle` wait after it,
     /// are done.
-    pub(crate) async fn after(&self, obs: &mut StepObservation) {
+    pub(crate) async fn after(&self, config: &CuaConfig, obs: &mut StepObservation) {
         if !self.page {
             return;
         }
         let started = Instant::now();
-        obs.url_after = page_url().await;
+        obs.url_after = page_url(config);
         obs.observe_ms = obs
             .observe_ms
             .saturating_add(started.elapsed().as_millis() as u64);
     }
 }
 
-/// The page Chromium is showing, straight off the DevTools HTTP endpoint.
-///
-/// `None` means no page was visible at all — Chromium is not running, or is
-/// not listening on the CDP port. That is not the same as a page with a
-/// blank address, so the field is omitted rather than reported as an empty
-/// string.
-async fn page_url() -> Option<String> {
-    let body = tokio::time::timeout(OBSERVE_CDP_BUDGET, crate::settle::cdp_json())
-        .await
-        .ok()??;
-    crate::settle::parse_cdp_page_url(&body).filter(|url| !url.is_empty())
+/// The page in front of this screen's own browser, as its extension last said. `None` means nothing
+/// has reported: that's not a page with a blank address, so the field is left out.
+fn page_url(config: &CuaConfig) -> Option<String> {
+    box_desktop::page_url(&config.display)
 }
 
 #[cfg(test)]

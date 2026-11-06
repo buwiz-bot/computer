@@ -35,8 +35,10 @@ use box_common::{
     ensure_viewer_password_strength, env_bool, env_nonempty, make_undumpable, read_secret_from_env,
     ScreenCall, KEEPER_SOCKET,
 };
-use box_desktop::{display_number, slots_dir, DesktopConfig, VIEWER_PORT_BASE};
-use box_host::keeper::{desktop_uid, may_have_viewer, next_line, restart_delay, Request, STABLE};
+use box_desktop::{
+    bots_dir, desktop_uid, display_number, slots_dir, DesktopConfig, VIEWER_PORT_BASE,
+};
+use box_host::keeper::{may_have_viewer, next_line, restart_delay, Request, STABLE};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener;
 use tokio::signal::unix::{signal, SignalKind};
@@ -52,8 +54,10 @@ const SVC_HOME: &str = "/run/box/svc";
 const SVC_AUTH: &str = "/run/box/x/svc.auth";
 const DESKTOP_UID: u32 = 1000;
 const DESKTOP_HOME: &str = "/home/box/desktops/main";
-const DESKTOP_GROUPS: &str = "--groups=1400";
-const BOTS_DIR: &str = "/home/box/.box/bots";
+/// `boxx` for its X socket, and `agent` for the folder its downloads land in.
+const DESKTOP_GROUPS: &str = "--groups=1400,1500";
+/// Screen requests at once: more than a computer has Bots, and each waits for one lock.
+const SCREEN_REQUESTS: usize = 8;
 /// The capabilities each keeps past its exec, which is why they're ambient. `box-exec` takes them
 /// out of the ambient set as it starts, and holds them for itself.
 const VOXL_CAPS: &str = "net_bind_service";
@@ -250,16 +254,10 @@ impl Viewers {
             .create(true)
             .append(true)
             .open(format!("/run/box/log/voxl-{slot}.log"))?;
-        let uid = desktop_uid(
-            slot,
-            self.main,
-            &self.slots,
-            Path::new(BOTS_DIR),
-            DESKTOP_UID,
-        )
-        .ok_or_else(|| std::io::Error::other("this screen has no user"))?;
+        let uid = desktop_uid(slot, self.main, &self.slots, &bots_dir())
+            .ok_or_else(|| std::io::Error::other("this screen has no user"))?;
         as_user(uid, "voxl", VOXL_CAPS)
-            .env("HOME", format!("/run/box/x/{slot}"))
+            .env("HOME", format!("/run/box/x/{slot}/run"))
             .env("XAUTHORITY", format!("/run/box/x/{slot}/auth"))
             .env("DISPLAY", format!(":{slot}"))
             .env("VOXL_PASSWORD", password)
@@ -404,6 +402,13 @@ async fn serve_screen_request(stream: tokio::net::UnixStream) {
         _ => br#"{"error":"that isn't a screen request"}"#.to_vec(),
     };
     let _ = writer.write_all(&answer).await;
+}
+
+/// More are waiting than the box should run. Told so, and at no cost: nothing is started for it.
+async fn refuse_screen_request(mut stream: tokio::net::UnixStream) {
+    let _ = stream
+        .write_all(br#"{"error":"too many screen requests at once"}"#)
+        .await;
 }
 
 async fn run_box_screen(call: &ScreenCall) -> Vec<u8> {
@@ -582,6 +587,7 @@ async fn run() -> Result<i32, String> {
     make_fifo(&ctl)?;
     let mut requests = listen(ctl);
     let screen_requests = screen_socket()?;
+    let screen_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(SCREEN_REQUESTS));
 
     let display_config = DesktopConfig::from_env();
     let display = display_config.display.clone();
@@ -600,7 +606,7 @@ async fn run() -> Result<i32, String> {
         .current_dir(DESKTOP_HOME)
         .env("HOME", DESKTOP_HOME)
         .env("XAUTHORITY", format!("/run/box/x/{main_slot}/auth"))
-        .env("BOX_SCREEN_RUN", format!("/run/box/x/{main_slot}"))
+        .env("BOX_SCREEN_RUN", format!("/run/box/x/{main_slot}/run"))
         .env("BOX_DESKTOP", flag(features.desktop))
         .env("BOX_EGRESS_TUNNEL", flag(features.egress));
     let egress_staging = match egress_bearer.as_deref().filter(|_| features.egress) {
@@ -648,7 +654,17 @@ async fn run() -> Result<i32, String> {
                 None => {}
             },
             Ok((stream, _)) = screen_requests.accept() => {
-                tokio::spawn(serve_screen_request(stream));
+                match screen_slots.clone().try_acquire_owned() {
+                    Ok(slot) => {
+                        tokio::spawn(async move {
+                            serve_screen_request(stream).await;
+                            drop(slot);
+                        });
+                    }
+                    Err(_) => {
+                        tokio::spawn(refuse_screen_request(stream));
+                    }
+                }
             },
             _ = tokio::time::sleep(START_POLL), if waiting.is_some() => {
                 if desktop_is_up(features, &display_config, egress_file.as_deref()) {

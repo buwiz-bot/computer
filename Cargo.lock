@@ -244,6 +244,7 @@ name = "box-desktop"
 version = "0.1.0"
 dependencies = [
  "box-common",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",
