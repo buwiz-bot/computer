@@ -173,9 +173,10 @@ impl CuaConfig {
     /// Bots share is its own X display (`box-screen`), with the same size as the shared one.
     /// `None` is the box's own display. Only a display name (`:N`) is taken.
     pub fn on(&self, display: Option<&str>) -> Result<Self, CuaError> {
-        let Some(display) = display.map(str::trim).filter(|d| !d.is_empty()) else {
-            return Ok(self.clone());
-        };
+        let display = display
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .unwrap_or(&self.display);
         let number = display.strip_prefix(':').unwrap_or("");
         let named =
             !number.is_empty() && number.len() <= 3 && number.bytes().all(|b| b.is_ascii_digit());
@@ -594,7 +595,7 @@ pub(crate) fn ensure_ready(config: &CuaConfig) -> Result<(), CuaError> {
 }
 
 /// In the box. Outside it there's no one else's name to take.
-fn verify_servers() -> bool {
+pub(crate) fn verify_servers() -> bool {
     env::var("BOX_RUN_AS").as_deref() == Ok("agents")
 }
 

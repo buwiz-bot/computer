@@ -244,6 +244,8 @@ pub fn screen_workspace(display: &str, slots_dir: &Path) -> String {
 /// A Bot's desktop user is this plus twice its number (`box-screen`).
 const FIRST_DESKTOP_USER: u32 = 20001;
 const MAIN_DESKTOP_USER: u32 = 1000;
+/// A report is a URL and a few words.
+const MAX_REPORT: u64 = 256 * 1024;
 
 /// The desktop user of `slot`: the box's own on its own display, else that of the Bot holding it,
 /// from what `box-screen` keeps. Both folders are root's.
@@ -265,33 +267,23 @@ pub fn bots_dir() -> PathBuf {
     PathBuf::from("/home/box/.box/bots")
 }
 
-/// Whether what's listening as `display` is that screen's own X server. Clients try the abstract
-/// socket first, and that name is anybody's for a screen that's down, so a client that connects
-/// there on faith hands its cookie to whoever took it. So this connects to that name itself, sends
-/// nothing, and asks the kernel whose it is. A real server holds the name for as long as it runs.
-#[cfg(target_os = "linux")]
-pub fn server_is_the_screens(display: &str) -> bool {
-    let main = std::env::var("BOX_SHARED_DISPLAY").unwrap_or_else(|_| ":1".to_string());
-    let (Some(slot), Some(main)) = (display_number(display), display_number(&main)) else {
-        return false;
-    };
-    let Some(expected) = desktop_uid(slot, main, &slots_dir(), &bots_dir()) else {
-        return false;
-    };
-    listener_uid(slot) == Some(expected)
+/// The main screen's number.
+fn main_slot() -> Option<u16> {
+    display_number(&std::env::var("BOX_SHARED_DISPLAY").unwrap_or_else(|_| ":1".to_string()))
 }
 
-#[cfg(not(target_os = "linux"))]
-pub fn server_is_the_screens(_display: &str) -> bool {
-    false
-}
-
+/// A connection to `display`, once the kernel says it's that screen's own X server, on which nothing
+/// has been sent. Clients try the abstract socket first, and that name is anybody's for a screen
+/// that's down, so a client connecting there on faith hands its cookie to whoever took it. Do the X
+/// handshake on this stream, and what's checked is what's spoken to.
 #[cfg(target_os = "linux")]
-fn listener_uid(slot: u16) -> Option<u32> {
+pub fn screen_stream(display: &str) -> Option<std::os::unix::net::UnixStream> {
     use std::os::fd::AsRawFd;
     use std::os::linux::net::SocketAddrExt;
     use std::os::unix::net::{SocketAddr, UnixStream};
 
+    let slot = display_number(display)?;
+    let expected = desktop_uid(slot, main_slot()?, &slots_dir(), &bots_dir())?;
     let name = format!("/tmp/.X11-unix/X{slot}");
     let stream = UnixStream::connect_addr(&SocketAddr::from_abstract_name(name).ok()?).ok()?;
     let mut peer = libc::ucred {
@@ -310,7 +302,18 @@ fn listener_uid(slot: u16) -> Option<u32> {
             &mut size,
         )
     };
-    (got == 0).then_some(peer.uid)
+    (got == 0 && peer.uid == expected).then_some(stream)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn screen_stream(_display: &str) -> Option<std::os::unix::net::UnixStream> {
+    None
+}
+
+/// Whether what's listening as `display` is that screen's own X server. For what can't be handed a
+/// stream: a helper program connects again by itself. A real server holds the name while it runs.
+pub fn server_is_the_screens(display: &str) -> bool {
+    screen_stream(display).is_some()
 }
 
 /// Where a screen's report of the page in front is kept: in that screen's run folder, which its
@@ -334,14 +337,42 @@ pub fn active_tab_file(display: Option<&str>) -> PathBuf {
     PathBuf::from(format!("/run/box/x/{screen}/run/active-tab.json"))
 }
 
+/// The bytes of a screen's report. Its folder is its desktop user's, so a link or a fifo can be there,
+/// and neither is followed or waited on. In the box the file must be that user's own. Outside it
+/// nobody else writes there.
+pub fn read_report(display: Option<&str>) -> Option<Vec<u8>> {
+    use std::io::Read;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    let path = active_tab_file(display);
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(&path)
+        .ok()?;
+    let info = file.metadata().ok()?;
+    if !info.is_file() {
+        return None;
+    }
+    if std::env::var("BOX_RUN_AS").as_deref() == Ok("agents") {
+        let main = main_slot()?;
+        let slot = display.and_then(display_number).unwrap_or(main);
+        if Some(info.uid()) != desktop_uid(slot, main, &slots_dir(), &bots_dir()) {
+            return None;
+        }
+    }
+    let mut text = Vec::new();
+    file.by_ref().take(MAX_REPORT).read_to_end(&mut text).ok()?;
+    Some(text)
+}
+
 /// The page in front of `display`'s own browser, as its extension last said.
 pub fn page_url(display: &str) -> Option<String> {
     #[derive(Deserialize)]
     struct Report {
         url: Option<String>,
     }
-    let text = std::fs::read(active_tab_file(Some(display))).ok()?;
-    let report: Report = serde_json::from_slice(&text).ok()?;
+    let report: Report = serde_json::from_slice(&read_report(Some(display))?).ok()?;
     report.url.filter(|url| !url.is_empty())
 }
 

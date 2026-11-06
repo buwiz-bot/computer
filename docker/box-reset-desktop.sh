@@ -104,7 +104,11 @@ kill_stray_jobs() {
   done < <(ps -u "${uid}" -o pid=,ppid=,comm=,args= 2>/dev/null || true)
 }
 
-echo "box-reset-desktop: closing windows on ${DISPLAY}" >> /tmp/box-reset-desktop.log
+# This runs as the services' user, and its folder is that user's alone, where a command can't leave
+# a link.
+log=/run/box/svc/box-reset-desktop.log
+[[ ! -L "${log}" ]] || log=/dev/null
+echo "box-reset-desktop: closing windows on ${DISPLAY}" >> "${log}"
 close_windows
 sleep 0.35
 kill_gui
@@ -113,14 +117,11 @@ kill_stray_jobs
 sleep 0.15
 kill_gui
 
-# Dock launchers refuse a second spawn while a lock dir exists.
-rm -rf /tmp/box-toggle-*.lock >/dev/null 2>&1 || true
-
 if [[ -f /usr/share/pixmaps/buwiz-computer-wallpaper.png ]] && command -v feh >/dev/null 2>&1; then
-  feh --no-fehbg --bg-fill /usr/share/pixmaps/buwiz-computer-wallpaper.png >/tmp/wallpaper.log 2>&1 || true
+  feh --no-fehbg --bg-fill /usr/share/pixmaps/buwiz-computer-wallpaper.png >/dev/null 2>&1 || true
 elif command -v xsetroot >/dev/null 2>&1; then
   xsetroot -solid "#3d6d99" >/dev/null 2>&1 || true
 fi
 
-echo "box-reset-desktop: done" >> /tmp/box-reset-desktop.log
+echo "box-reset-desktop: done" >> "${log}"
 exit 0

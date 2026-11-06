@@ -110,7 +110,6 @@ COPY docker/chromium-policies.json /etc/opt/chrome/policies/managed/buwiz-comput
 # The dock's Chromium launcher: same profile as the entrypoint's Chromium, so a
 # click opens a window in the running instance instead of a second browser.
 COPY docker/box-chromium /usr/local/bin/box-chromium
-COPY docker/box-chromium-pipe /usr/local/bin/box-chromium-pipe
 # A Bot's own screen on a computer several Bots share, and the once-per-change clearing of a
 # profile's old extension worker that the shared screen and every own screen run.
 COPY docker/box-screen /usr/local/bin/box-screen
@@ -130,7 +129,7 @@ COPY docker/xfce/wallpaper.png /usr/share/backgrounds/buwiz-computer.png
 # chromium-launch.sh is intentionally not installed. Entrypoint owns Chromium.
 RUN chmod 755 /usr/local/bin/entrypoint.sh /usr/local/bin/box-prepare \
         /usr/local/bin/box-reset-desktop /usr/local/bin/box-chromium \
-        /usr/local/bin/box-chromium-pipe /usr/local/bin/box-active-tab \
+        /usr/local/bin/box-active-tab \
         /usr/local/bin/box-screen /usr/local/bin/box-refresh-extension \
     # COPY keeps the mode each file has on the machine building, and git keeps only the exec bit,
     # so a checkout under umask 077 would leave these unreadable to the box user.

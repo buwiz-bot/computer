@@ -102,6 +102,19 @@ pub fn read(path: &Path) -> ActiveTab {
         })
 }
 
+/// What a screen's report says, read so that nothing its folder holds can mislead this:
+/// [`box_desktop::read_report`].
+pub fn read_screen(display: Option<&str>) -> ActiveTab {
+    box_desktop::read_report(display)
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or(ActiveTab {
+            url: None,
+            at_ms: None,
+            focus: None,
+            seq: None,
+        })
+}
+
 /// The host's whole life: record every report until Chromium closes the port, then forget,
 /// so a browser that is gone is never taken for one showing its last page.
 pub fn serve(input: &mut impl Read, path: &Path) -> io::Result<()> {

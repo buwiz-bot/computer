@@ -52,6 +52,10 @@ An `LD_PRELOAD` into an allowed program is just that user running that program w
 - **The check is of a moment.** `users_apart` reads the box when a command starts, and before a hand-over's card: not during either.
 - **The start.** The secrets staged by the Bot are on a Docker Desktop file share that doesn't enforce modes, so any user could read them until `/v1/ready` answers. No command runs that early, and nothing of an agent user starts by itself. Something left on a desktop's own home by the path above would.
 - **What every user can see.** `ps` shows every process's arguments, including the first address `box-chromium` opened. `/tmp` and `/dev/shm` are shared: a Bot's world-readable file there is readable by another. A command can use up the box's memory, processes and disk. These are shared by Bots on one computer.
+- **Compose.** It isn't how the Bot starts a box. Its secrets stay on a read-only mount for the life of the box, readable in the box, a command included, wherever modes aren't enforced.
+- **Links the desktop might follow.** A Bot's folder is writable by both its users, so a command can leave a link where the browser saves a download. It's only that Bot's desktop, and this isn't verified against Chromium.
+- **The egress tunnel.** Off by default. When it's on, 8790 and 8791 are above the port floor, so a command could take them while they're free, and it can use the proxy on 8791.
+- **Helper programs and the cookie.** `box-exec`'s own X connections do the handshake on the stream the kernel vouched for. Helpers it runs (`xdotool`, `wmctrl`, `ffmpeg`) connect again by themselves after that check, so a server dying in that moment could leave the name to a squatter, who'd hear a dead server's cookie.
 - **The kernel.** Everything shares one. This is a user boundary inside a container, not a VM.
 
 ## Volumes from an older image

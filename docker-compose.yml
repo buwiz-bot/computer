@@ -80,9 +80,11 @@ services:
       retries: 12
       start_period: 25s
 
-# Compose mounts these read-only at /run/secrets/<name>, so they stay for the life of the box: this
-# hides them from `docker inspect`. box-keeper unlinks what it reads where it can, so stage them on
-# a writable mount if you can, as the Bot does. See README §Auth.
+# This file isn't how the Bot starts a box. Compose mounts these read-only at /run/secrets/<name>, so
+# they stay for the life of the box, and Docker Desktop's share doesn't enforce modes: they're
+# readable to anything running in the box, an exec child included. This hides them from `docker
+# inspect`, not from a command. For that, stage them on a writable mount, as the Bot does:
+# box-keeper unlinks what it reads. See README §Auth.
 secrets:
   box_token:
     file: ./secrets/box_token
