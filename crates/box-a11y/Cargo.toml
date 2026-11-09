@@ -1,0 +1,25 @@
+[package]
+name = "box-a11y"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Accessibility tree (AT-SPI) of a box screen, for computer use"
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+box-desktop = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+futures-util = { workspace = true }
+libc = { workspace = true }
+# Only the D-Bus proxies, over a connection made here: no `connection` (it finds the bus by
+# itself) and no `p2p` (zbus would then skip the Hello a bus needs).
+atspi = { version = "0.30", default-features = false, features = ["proxies", "zbus", "tokio"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
