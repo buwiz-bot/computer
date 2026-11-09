@@ -7,6 +7,10 @@
 //! long as Chromium, passes on the signals it gets, and exits as Chromium did, so the restart loop
 //! and `chrome.pid` see what they always saw.
 //!
+//! Chromium runs in a process group of its own. A signal to stop goes to that group; if Chromium
+//! hasn't gone [`GRACE`] later, the group is killed. When Chromium exits, for whatever reason,
+//! what's left of its group is killed too.
+//!
 //! It fails closed: if this screen's pipe is already offered by another launcher (Chromium then
 //! hands the new window to the running instance), if the folder the socket would be in is open to
 //! others, or if there is no `boxsvc` user, Chromium starts as it did before, with no pipe.
@@ -20,7 +24,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::Duration;
 
 use box_chrome::pipe::{peer_uid, send_fd};
@@ -28,16 +32,33 @@ use box_chrome::pipe::{peer_uid, send_fd};
 /// The only user the pipe is handed to.
 const SERVICE_USER: &str = "boxsvc";
 
-/// Chromium's pid, for the signal handler.
+/// Chromium's pid, which is also its process group's id, for the signal handler.
 static CHILD: AtomicI32 = AtomicI32::new(0);
+/// Set once a signal to stop has been passed on.
+static STOPPING: AtomicBool = AtomicBool::new(false);
+
+/// How long Chromium has to go after it's told to, before its whole group is killed.
+const GRACE: Duration = Duration::from_secs(3);
+/// How often the launcher looks whether Chromium is gone.
+const LOOK: Duration = Duration::from_millis(100);
 
 extern "C" fn pass_on(signal: libc::c_int) {
     let child = CHILD.load(Ordering::SeqCst);
     if child > 0 {
-        // SAFETY: kill is async-signal-safe.
+        // SAFETY: kill is async-signal-safe. The group is Chromium's own (setpgid below), so this
+        // reaches its helpers too.
         unsafe {
-            libc::kill(child, signal);
+            libc::kill(-child, signal);
         }
+        STOPPING.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Kills Chromium's group, whatever of it is left. A group that's gone already is no error.
+fn kill_group(child: i32) {
+    // SAFETY: kill with a negative pid signals that process group; nothing else is touched.
+    unsafe {
+        libc::kill(-child, libc::SIGKILL);
     }
 }
 
@@ -172,6 +193,10 @@ fn run(offer: Offer, program: &OsString, rest: &[OsString]) -> ExitCode {
                 return Err(io::Error::last_os_error());
             }
             libc::close(high);
+            // A process group of its own, so the launcher can end all of it, helpers included.
+            if libc::setpgid(0, 0) < 0 {
+                return Err(io::Error::last_os_error());
+            }
             Ok(())
         });
     }
@@ -195,7 +220,25 @@ fn run(offer: Offer, program: &OsString, rest: &[OsString]) -> ExitCode {
     let offered = socket.clone();
     std::thread::spawn(move || hand_over(listener, exec_end, service_uid, &offered));
 
-    let status = child.wait();
+    let pid = child.id() as i32;
+    let mut told: Option<std::time::Instant> = None;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => {}
+            Err(err) => break Err(err),
+        }
+        if STOPPING.load(Ordering::SeqCst) {
+            let since = *told.get_or_insert_with(std::time::Instant::now);
+            if since.elapsed() >= GRACE {
+                // Told to go and still here: it goes now.
+                kill_group(pid);
+            }
+        }
+        std::thread::sleep(LOOK);
+    };
+    // Chromium is gone; nothing of its group outlives it.
+    kill_group(pid);
     // The lock is still this process's, so the socket, if it's there, is too.
     let _ = std::fs::remove_file(&socket);
     match status {
