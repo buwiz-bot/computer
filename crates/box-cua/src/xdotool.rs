@@ -1,6 +1,6 @@
 //! Fork/exec fallback when in-process XTEST / GetImage is unavailable.
 
-use std::process::Stdio;
+use std::process::{Output, Stdio};
 use std::time::{Duration, Instant};
 
 use smallvec::SmallVec;
@@ -10,6 +10,35 @@ use crate::{CuaConfig, CuaError};
 
 /// Bound so a wedged xdotool cannot fall through to the 15s `--sync` poll.
 const XDOTOOL_TIMEOUT: Duration = Duration::from_millis(2500);
+/// A whole-screen `import` or `scrot` takes well under a second; a wedged X server takes forever.
+const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
+/// `wmctrl`, `xwininfo` and the window `xdotool` calls answer at once or not at all.
+pub(crate) const WINDOW_TOOL_TIMEOUT: Duration = Duration::from_millis(2500);
+
+/// Run an X tool to completion with its output captured, and kill it once `timeout` has passed.
+/// A timeout, or a tool that cannot be started, is an error. The exit status is the caller's to
+/// read: a non-zero one is a failure, never data.
+pub(crate) async fn run_tool(cmd: &mut Command, timeout: Duration) -> Result<Output, CuaError> {
+    let program = cmd.as_std().get_program().to_string_lossy().into_owned();
+    let child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|err| CuaError::Tool(format!("{program}: {err}")))?;
+    match tokio::time::timeout(timeout, child.wait_with_output()).await {
+        Ok(Ok(out)) => Ok(out),
+        Ok(Err(err)) => Err(CuaError::Tool(format!("{program}: {err}"))),
+        Err(_) => {
+            tracing::warn!(program, ms = timeout.as_millis() as u64, "X tool timed out");
+            Err(CuaError::Tool(format!(
+                "{program} timed out after {}ms",
+                timeout.as_millis()
+            )))
+        }
+    }
+}
 
 pub(crate) async fn capture_png(display: &str) -> Result<Vec<u8>, CuaError> {
     if let Ok(png) = run_capture(
@@ -26,15 +55,20 @@ pub(crate) async fn capture_png(display: &str) -> Result<Vec<u8>, CuaError> {
     }
     // TMPDIR is this service's own: in /tmp a command could leave a link at this name
     let tmp = std::env::temp_dir().join(format!("box-cua-{}.png", std::process::id()));
-    let status = Command::new("scrot")
-        .env("DISPLAY", display)
-        .arg("-o")
-        .arg(&tmp)
-        .status()
-        .await
-        .map_err(|err| CuaError::Tool(format!("scrot: {err}")))?;
-    if !status.success() {
-        return Err(CuaError::Tool("scrot failed".into()));
+    let out = run_tool(
+        Command::new("scrot")
+            .env("DISPLAY", display)
+            .arg("-o")
+            .arg(&tmp),
+        CAPTURE_TIMEOUT,
+    )
+    .await;
+    if !matches!(&out, Ok(out) if out.status.success()) {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(match out {
+            Err(err) => err,
+            Ok(_) => CuaError::Tool("scrot failed".into()),
+        });
     }
     let png = tokio::fs::read(&tmp)
         .await
@@ -44,12 +78,7 @@ pub(crate) async fn capture_png(display: &str) -> Result<Vec<u8>, CuaError> {
 }
 
 async fn run_capture(cmd: &mut Command) -> Result<Vec<u8>, CuaError> {
-    let out = cmd
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .map_err(|err| CuaError::Tool(err.to_string()))?;
+    let out = run_tool(cmd, CAPTURE_TIMEOUT).await?;
     if !out.status.success() || out.stdout.is_empty() {
         return Err(CuaError::Tool(String::from_utf8_lossy(&out.stderr).into()));
     }
@@ -103,4 +132,38 @@ pub(crate) async fn xdotool(config: &CuaConfig, args: &[&str]) -> Result<(), Cua
 pub(crate) async fn xdotool_owned(config: &CuaConfig, args: &[String]) -> Result<(), CuaError> {
     let refs: SmallVec<[&str; 16]> = args.iter().map(String::as_str).collect();
     xdotool(config, &refs).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_tool_that_hangs_is_killed_at_its_timeout() {
+        let started = Instant::now();
+        let err = run_tool(Command::new("sleep").arg("10"), Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("timed out"), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn a_tool_that_cannot_start_is_an_error() {
+        let err = run_tool(
+            &mut Command::new("/nonexistent/wmctrl"),
+            WINDOW_TOOL_TIMEOUT,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("/nonexistent/wmctrl"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_capture_is_an_error_not_a_picture() {
+        let err = run_capture(Command::new("sh").args(["-c", "printf junk; exit 1"]))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CuaError::Tool(_)));
+    }
 }

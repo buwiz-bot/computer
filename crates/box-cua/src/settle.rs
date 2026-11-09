@@ -4,65 +4,62 @@
 
 use std::time::{Duration, Instant};
 
+use box_desktop::{parse_wmctrl_lx, DesktopWindow};
 use tokio::process::Command;
 
+use crate::xdotool::{run_tool, WINDOW_TOOL_TIMEOUT};
 use crate::CuaConfig;
 
 const POLL_MS: u64 = 120;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WinInfo {
-    pub id: String,
-    pub class: String,
-    pub title: String,
+fn is_app(win: &DesktopWindow) -> bool {
+    let class = win.class.to_ascii_lowercase();
+    class.contains("chromium")
+        || class.contains("chrome")
+        || class.contains("xfce4-terminal")
+        || class.contains("thunar")
 }
 
-impl WinInfo {
-    pub fn is_app(&self) -> bool {
-        let class = self.class.to_ascii_lowercase();
-        class.contains("chromium")
-            || class.contains("chrome")
-            || class.contains("xfce4-terminal")
-            || class.contains("thunar")
-    }
-
-    pub fn is_chromium(&self) -> bool {
-        let class = self.class.to_ascii_lowercase();
-        class.contains("chromium") || class.contains("chrome")
-    }
-
-    pub fn usable(&self) -> bool {
-        self.is_app() && !self.title.trim().is_empty()
-    }
+fn is_chromium(win: &DesktopWindow) -> bool {
+    let class = win.class.to_ascii_lowercase();
+    class.contains("chromium") || class.contains("chrome")
 }
 
-pub(crate) fn parse_wmctrl_lx(stdout: &str) -> Vec<WinInfo> {
-    stdout.lines().filter_map(parse_wmctrl_lx_line).collect()
+fn usable(win: &DesktopWindow) -> bool {
+    is_app(win) && !win.title.trim().is_empty()
 }
 
-pub(crate) fn parse_wmctrl_lx_line(line: &str) -> Option<WinInfo> {
-    let mut parts = line.split_whitespace();
-    let id = parts.next()?.to_string();
-    let _desktop = parts.next()?;
-    let class = parts.next()?.to_string();
-    let _host = parts.next()?;
-    let title = parts.collect::<Vec<_>>().join(" ");
-    if id.is_empty() {
-        return None;
-    }
-    Some(WinInfo { id, class, title })
-}
-
-async fn wmctrl_lx(display: &str) -> Vec<WinInfo> {
-    let out = Command::new("wmctrl")
-        .env("DISPLAY", display)
-        .arg("-lx")
-        .output()
-        .await;
+/// Run a window tool on `display`. `None` when it could not run, ran out of time, or exited
+/// non-zero: in each case it said nothing.
+async fn window_tool(display: &str, program: &str, args: &[&str]) -> Option<Vec<u8>> {
+    let out = run_tool(
+        Command::new(program).env("DISPLAY", display).args(args),
+        WINDOW_TOOL_TIMEOUT,
+    )
+    .await;
     match out {
-        Ok(o) if o.status.success() => parse_wmctrl_lx(&String::from_utf8_lossy(&o.stdout)),
-        _ => Vec::new(),
+        Ok(out) if out.status.success() => Some(out.stdout),
+        Ok(out) => {
+            tracing::debug!(
+                program,
+                args = args.join(" "),
+                status = %out.status,
+                "window tool failed"
+            );
+            None
+        }
+        Err(err) => {
+            tracing::debug!(program, args = args.join(" "), error = %err, "window tool failed");
+            None
+        }
     }
+}
+
+async fn wmctrl_lx(display: &str) -> Vec<DesktopWindow> {
+    window_tool(display, "wmctrl", &["-lx"])
+        .await
+        .map(|stdout| parse_wmctrl_lx(&String::from_utf8_lossy(&stdout)))
+        .unwrap_or_default()
 }
 
 /// `wmctrl -ia` does not map an Iconic / `_NET_WM_STATE_HIDDEN` window.
@@ -76,44 +73,20 @@ pub(crate) fn unhide_wmctrl_args(id: &str) -> [&str; 4] {
     ["-i", "-b", "remove,hidden", id]
 }
 
+/// Best effort, step by step: a step that fails is logged and the next one still runs, and
+/// whether it worked is read back by [`window_viewable`].
 async fn show_window(display: &str, id: &str) {
-    let _ = Command::new("xdotool")
-        .env("DISPLAY", display)
-        .args(["windowmap", id])
-        .status()
-        .await;
-    let _ = Command::new("wmctrl")
-        .env("DISPLAY", display)
-        .args(unhide_wmctrl_args(id))
-        .status()
-        .await;
-    let _ = Command::new("wmctrl")
-        .env("DISPLAY", display)
-        .args(["-ia", id])
-        .status()
-        .await;
-    let _ = Command::new("xdotool")
-        .env("DISPLAY", display)
-        .args(["windowactivate", id])
-        .status()
-        .await;
-    let _ = Command::new("xdotool")
-        .env("DISPLAY", display)
-        .args(["windowraise", id])
-        .status()
-        .await;
+    window_tool(display, "xdotool", &["windowmap", id]).await;
+    window_tool(display, "wmctrl", &unhide_wmctrl_args(id)).await;
+    window_tool(display, "wmctrl", &["-ia", id]).await;
+    window_tool(display, "xdotool", &["windowactivate", id]).await;
+    window_tool(display, "xdotool", &["windowraise", id]).await;
 }
 
 async fn window_viewable(display: &str, id: &str) -> bool {
-    let out = Command::new("xwininfo")
-        .env("DISPLAY", display)
-        .args(["-id", id])
-        .output()
-        .await;
-    match out {
-        Ok(o) if o.status.success() => window_is_mapped(&String::from_utf8_lossy(&o.stdout)),
-        _ => false,
-    }
+    window_tool(display, "xwininfo", &["-id", id])
+        .await
+        .is_some_and(|stdout| window_is_mapped(&String::from_utf8_lossy(&stdout)))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,7 +98,7 @@ pub(crate) struct PageSnap {
 pub(crate) async fn page_snap(config: &CuaConfig) -> PageSnap {
     let mut title = String::new();
     for win in wmctrl_lx(&config.display).await {
-        if win.is_chromium() && !win.title.is_empty() {
+        if is_chromium(&win) && !win.title.is_empty() {
             title = win.title;
             break;
         }
@@ -163,11 +136,11 @@ pub(crate) async fn wait_chromium_usable(config: &CuaConfig, timeout_ms: u64) ->
     let deadline = started + Duration::from_millis(timeout_ms);
     loop {
         let wins = wmctrl_lx(&config.display).await;
-        let chromes: Vec<&WinInfo> = wins.iter().filter(|w| w.is_chromium()).collect();
+        let chromes: Vec<&DesktopWindow> = wins.iter().filter(|w| is_chromium(w)).collect();
         let mut visible_usable = false;
         for win in &chromes {
             if window_viewable(&config.display, &win.id).await {
-                if win.usable() {
+                if usable(win) {
                     visible_usable = true;
                 }
             } else {
@@ -179,7 +152,7 @@ pub(crate) async fn wait_chromium_usable(config: &CuaConfig, timeout_ms: u64) ->
             return true;
         }
         if Instant::now() >= deadline {
-            if let Some(win) = wins.iter().find(|w| w.is_app()) {
+            if let Some(win) = wins.iter().find(|w| is_app(w)) {
                 show_window(&config.display, &win.id).await;
             }
             return false;
@@ -218,11 +191,13 @@ mod tests {
 
     #[test]
     fn parses_wmctrl_chromium_line() {
-        let win = parse_wmctrl_lx_line("0x02a00003  0 chromium.Chromium  box  New Tab - Chromium")
-            .unwrap();
+        let win = box_desktop::parse_wmctrl_lx_line(
+            "0x02a00003  0 chromium.Chromium  box  New Tab - Chromium",
+        )
+        .unwrap();
         assert_eq!(win.id, "0x02a00003");
-        assert!(win.is_chromium());
-        assert!(win.usable());
+        assert!(is_chromium(&win));
+        assert!(usable(&win));
         assert_eq!(win.title, "New Tab - Chromium");
     }
 
