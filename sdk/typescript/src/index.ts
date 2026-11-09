@@ -87,6 +87,18 @@ export type ScreenshotResponse = {
 
 export type CuaOk = { ok: boolean };
 
+/** The page in front of Chromium, as the box's extension last reported it. */
+export type ActiveTab = {
+  /** `null` when nothing has reported (no Chromium, or one without the extension). */
+  url: string | null;
+  /** When the extension last reported, in ms since the epoch. */
+  atMs?: number;
+  /** The kind of box focused on the page: `password`, `text`, `other` or `none`. */
+  focus?: string;
+  /** How many reports this browser has made. */
+  seq?: number;
+};
+
 export type RecipeScreenshot = "none" | "end" | "each";
 
 export type RecipeStep =
@@ -364,6 +376,15 @@ export class BuwizComputer {
 
   async chrome(): Promise<unknown> {
     return this.authJson("GET", `${this.hostUrl}/v1/chrome`);
+  }
+
+  /**
+   * The page in front of Chromium, as the box's extension last reported it. `url` is null when
+   * nothing has. `display` (`":2"`) asks for a Bot's own screen instead of the box's own.
+   */
+  async activeTab(display?: string): Promise<ActiveTab> {
+    const query = display ? `?display=${encodeURIComponent(display)}` : "";
+    return this.authJson("GET", `${this.hostUrl}/v1/chrome/active-tab${query}`);
   }
 
   async egress(): Promise<unknown> {

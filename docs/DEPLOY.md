@@ -38,7 +38,7 @@ Inside (see [`docs/ARCHITECTURE.md`](ARCHITECTURE.md)):
 - Xvfb **1280×800**, xfce, voxl **6901** (and **6902–6905** for the Bots' own screens)
 - Chromium, with no DevTools port
 
-Compose publishes **1337, 1340, 6901–6905** as `127.0.0.1:1337:1337` (loopback on the VM). Reach them with an SSH tunnel, Tailscale, or similar. Healthcheck: `curl -H "Authorization: Bearer $BOX_TOKEN" http://127.0.0.1:1340/v1/ready` (start period 25s, 5s interval, 12 retries). `shm_size` is **256mb**. Bind mounts: `./workspace-data:/workspace`, `./chrome-profile:/home/box/chrome-profile`.
+Compose publishes **1337, 1340, 6901–6905** as `127.0.0.1:1337:1337` (loopback on the VM). Reach them with an SSH tunnel, Tailscale, or similar. Healthcheck: `curl -fsS` on the public `/v1/health` of 1340 and 1337, with no token, so it never puts one in argv (start period 25s, 5s interval, 12 retries). `/v1/ready` is for callers. `shm_size` is **256mb**. Bind mounts: `./workspace-data:/workspace`, `./chrome-profile:/home/box/desktops/main/chrome-profile`.
 
 `BOX_CORS_ORIGINS` is an explicit allowlist (`*` is ignored). Compose does **not** currently pass that env into the container; laptop CLI/SDK does not need CORS. Leave it unset unless a **browser** will call the guest directly (unusual).
 
@@ -221,7 +221,7 @@ Akamai Cloud Compute **is** Linode. The OpenTofu/Terraform provider for **VMs** 
 
    ```bash
    git clone https://github.com/buwiz-bot/computer.git
-   cd box
+   cd computer
    umask 077
    openssl rand -base64 32 > /tmp/box-token
    BOX_VIEWER_PASSWORD=$(openssl rand -base64 24)
@@ -240,8 +240,10 @@ Akamai Cloud Compute **is** Linode. The OpenTofu/Terraform provider for **VMs** 
    bash scripts/write-secrets.sh   # ./secrets/* — Compose mounts these, see §Secrets
    docker compose up --build -d
    docker compose ps
-   curl -fsS -H "Authorization: Bearer $(grep ^BOX_TOKEN= .env | cut -d= -f2-)" http://127.0.0.1:1340/v1/ready
+   curl -fsS http://127.0.0.1:1340/v1/health
    ```
+
+   `/v1/ready` takes the token. Check it with the CLI from your laptop ([§F](#f-day-1-use-it-flow)), where it goes in `BUWIZ_COMPUTER_TOKEN`, not in a command line.
 
    If the GitHub repo is private, use a deploy key or `scp` the tree instead of a plaintext PAT in `git clone`.
 
@@ -367,14 +369,14 @@ The guest is a **long-running** container with X11, voxl, and Chromium — not a
 | Cloud Run / App Service “scale to zero” | Poor. Need min instances, RAM, and **three** HTTP ports (or a sidecar proxy). WebSockets for voxl are awkward. |
 | ACI / ECS Fargate / Cloud Run **always-on** | Possible in theory: it is **one** container, not a Compose mesh. You still need ~8 GB, `shm`, persistent disks for `/workspace` + chrome profile, and TLS in front. More glue than a VM. |
 | **VM + Compose** | **Do this first.** |
-| Kubernetes | Later, if you already have a cluster: one Deployment, Service, two PVCs, `emptyDir` `medium: Memory` ~256Mi for `/dev/shm`, `runAsUser: 1000`. Not the first test. |
+| Kubernetes | Later, if you already have a cluster: one Deployment, Service, two PVCs, `emptyDir` `medium: Memory` ~256Mi for `/dev/shm`. The container starts as root and needs Compose's capability set ([USERS.md](USERS.md)), so no `runAsUser`. Not the first test. |
 
 
 ### 5. Prebuilt image to a registry (second iteration)
 
 Build on a beefy machine or CI, push to **GHCR** (Akamai has **no** first-class managed container registry like ECR — use GHCR, or ECR/GCR/ACR on those clouds). VM only `docker compose pull` / `docker run`.
 
-Until a tag has been pushed, `git clone && docker compose up --build` is the path. The publish workflow is [`.github/workflows/publish-image.yml`](../.github/workflows/publish-image.yml): on `v*` tags it builds `docker/Dockerfile` and pushes `ghcr.io/<owner>/box`. First publish may need the package set to public in GitHub Packages settings.
+Until a tag has been pushed, `git clone && docker compose up --build` is the path. The publish workflow is [`.github/workflows/publish-image.yml`](../.github/workflows/publish-image.yml): on `v*` tags it builds `docker/Dockerfile` and pushes `ghcr.io/buwiz-bot/computer`. First publish may need the package set to public in GitHub Packages settings.
 
 ---
 
@@ -387,7 +389,7 @@ After the Akamai VM is up and Compose is healthy:
    ```bash
    curl -fsS http://127.0.0.1:1337/v1/health
    curl -fsS http://127.0.0.1:1340/v1/health
-   curl -fsS -H "Authorization: Bearer $BUWIZ_COMPUTER_TOKEN" http://127.0.0.1:1340/v1/ready
+   cargo run -p buwiz-computer -- ready     # token from BUWIZ_COMPUTER_TOKEN, see step 3
    ```
 
    Ready is **200** when exec is up and (with `BOX_DESKTOP_REQUIRED=1`) Xvfb is up. Chrome is **not** on the ready path — give Chromium a few more seconds before screenshots look interesting.
@@ -425,10 +427,10 @@ After the Akamai VM is up and Compose is healthy:
 
 ## G. Security and ops
 
-- **Rotate `BOX_TOKEN`:** recreate the container with a new env value (`docker compose up -d --force-recreate`). Update the laptop env. Rotate `BOX_VIEWER_PASSWORD` the same way; it is independent of the bearer.
-- **Do not log tokens.** Do not put them in Compose `docker compose config` pastebins, or CI logs. Compose mounts `./secrets/*` rather than putting values in the container environment, so the token is not in `docker inspect` or in any `/proc/<pid>/environ`. It **is** readable at `/run/secrets/box_token` by anything running as the box user, because the mount is read-only and `box-keeper` runs as that user; see README §Auth for what that does and does not protect, and for staging on a writable mount instead. Exec children never get any of these variables.
+- **Rotate `BOX_TOKEN`:** the token is read only from `./secrets/box_token`, not from the container environment. Put the new value in `.env`, run `bash scripts/write-secrets.sh`, then `docker compose up -d --force-recreate`. Update the laptop env. Rotate `BOX_VIEWER_PASSWORD` the same way; it is independent of the bearer. If your shell exports the old `BOX_TOKEN`, unset it first; `.env` is read by the script.
+- **Do not log tokens.** Do not put them in Compose `docker compose config` pastebins, or CI logs. Compose mounts `./secrets/*` rather than putting values in the container environment, so the token is not in `docker inspect` or in any `/proc/<pid>/environ`. It **is** left at `/run/secrets/box_token` for the life of the box, because the mount is read-only and `box-keeper` cannot unlink it; where the mount does not enforce modes (Docker Desktop's file share) anything in the box, an exec child included, can read it. See README §Auth for what that does and does not protect, and for staging on a writable mount instead. Exec children never get any of these variables.
 - SSH **keys**, not passwords. `PermitRootLogin prohibit-password`. `unattended-upgrades`.
-- **Disk:** `workspace-data` is **your** files. `chrome-profile` is cookies/session for uid **1000**. Bind mounts created as root are not writable by `box` until `chown 1000:1000`. Back up the workspace volume if you care; the image is rebuildable.
+- **Disk:** `workspace-data` is **your** files. `chrome-profile` is the main screen's cookies/session. `box-prepare` gives the mounts their owners at start ([USERS.md](USERS.md)); the `chown 1000:1000` above does no harm. Back up the workspace volume if you care; the image is rebuildable.
 - **Cost:** an idle VM still bills. Power off or `tofu destroy` / Cloud Manager delete when done. Hourly on 8 GB Shared is on the order of **seven cents**. A forgotten month is **~$48**.
 - **CORS:** default is no browser origins. Do not point a random website at 1337.
 - **Egress CONNECT unpublished.** Do not add `8791:8791`. WS `8790` is loopback + SSH `-L` only. Prod must not rely on Docker host-network for Facebook/IP geo; see [EGRESS.md](EGRESS.md).
@@ -448,13 +450,13 @@ After the Akamai VM is up and Compose is healthy:
 
 ## I. Open questions / risks
 
-- **Image build time on the VM.** First `docker compose up --build` compiles Rust in `rust:1.85-bookworm` and `rust:1.93-bookworm` (voxl) and apt-installs Chromium. Expect a long first boot. A small VM makes this worse; 8 GB / 4 vCPU is the mitigation. Tagged releases can push `ghcr.io/hexuria/box` via `.github/workflows/publish-image.yml` (`GITHUB_TOKEN` + `packages: write`). Until you have pulled that image, `git clone && docker compose up --build` is the path.
+- **Image build time on the VM.** First `docker compose up --build` compiles Rust in `rust:1.85-bookworm` and `rust:1.93-bookworm` (voxl) and apt-installs Chromium. Expect a long first boot. A small VM makes this worse; 8 GB / 4 vCPU is the mitigation. Tagged releases can push `ghcr.io/buwiz-bot/computer` via `.github/workflows/publish-image.yml` (`GITHUB_TOKEN` + `packages: write`). Until you have pulled that image, `git clone && docker compose up --build` is the path.
 - **Rust / TS / Python clients speak HTTPS.** Guest daemons still bind HTTP. Put Caddy/nginx in front for TLS. The Rust crate uses hyper-rustls (webpki roots).
 - **Chromium RAM.** One desktop guest is the design point. Two guests on one 8 GB VM will hurt.
 - **IPv6.** Akamai assigns it. Cloud Firewall must DROP v6 too, or you published the box on v6 while locking v4.
 - **Compose publishes loopback.** `127.0.0.1:1337:1337` (and 1340/6901-6905). Tailscale-to-public-NIC still will not hit those ports; use an SSH tunnel (including over Tailscale SSH). Health is open but minimal; voxl is a desktop on loopback.
 - **Desktop vs `BOX_DESKTOP=0`.** If you only need exec/files, turn desktop off (`BOX_DESKTOP=0`, `BOX_DESKTOP_REQUIRED=0`). Ready no longer waits on X. No screenshots, no voxl. Less RAM. Compose still lists 6901–6905 unless you override ports.
-- **Volume ownership.** uid **1000** must own bind mounts.
+- **Volume ownership.** `box-prepare` sets owners on the bind mounts at start; a volume from an older image is moved aside, not deleted ([USERS.md](USERS.md)).
 - **No registry by default.** First test builds from git. Tag `v*` to run the GHCR workflow before you scale to many VMs.
 - **Provider confusion.** Compute = `linode/linode` + `LINODE_TOKEN`. Not Vultr. Not `akamai/akamai`.
 

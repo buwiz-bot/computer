@@ -37,7 +37,7 @@ Full list: [TERMINOLOGY.md](TERMINOLOGY.md).
 | Port | Process | Routes / role |
 | --- | --- | --- |
 | **1337** | `box-exec` | `GET /v1/health`, `POST /v1/exec`, `POST /v1/exec/stream`, files (JSON + raw), CUA, busy/metrics/shutdown |
-| **1340** | `box-host` | `GET /v1/health`, `GET /v1/ready`, `GET /v1/info`, `GET /v1/desktop`, `GET /v1/desktop/windows`, `GET /v1/screens`, `GET /v1/chrome`, `GET /v1/egress`, busy/metrics/shutdown |
+| **1340** | `box-host` | `GET /v1/health`, `GET /v1/ready`, `GET /v1/info`, `GET /v1/desktop`, `GET /v1/desktop/windows`, `GET /v1/screens`, `GET /v1/chrome`, `GET /v1/chrome/active-tab`, `GET /v1/egress`, busy/metrics/shutdown |
 | **6901–6905** | `voxl` | One per screen, `6900+N` for display `:N`: the live view, and `/wait`, `/screenshot`, `/record`. Published by Compose on loopback. |
 | **8790** | `box-egress-tunnel` WS | Laptop client when `BOX_EGRESS_TUNNEL=1`. Compose publishes loopback. |
 | 8791 | CONNECT proxy | Chromium only, localhost. **Not published.** |
@@ -48,17 +48,17 @@ Bind addresses: inside the guest image, `BOX_EXEC_BIND` / `BOX_HOST_BIND` defaul
 ## Auth model
 
 - **Shared secret:** `BOX_TOKEN`. Whoever starts the guest injects it. Required; no silent default.
-- **Optional split:** `BOX_HOST_TOKEN` for `box-host` `/v1/info`, `/v1/desktop`, `/v1/chrome`, `/v1/ready`. If unset or empty, `box-host` uses `BOX_TOKEN`.
+- **Optional split:** `BOX_HOST_TOKEN` for every `box-host` route but `/v1/health`, `/v1/ready` included: one check guards them all. When set it replaces `BOX_TOKEN` there, and `box-exec` keeps `BOX_TOKEN`. If unset or empty, `box-host` uses `BOX_TOKEN`.
 - **Header:** `Authorization: Bearer <token>`. Comparison is constant-time on equal-length tokens.
 - **Unauthenticated:** `GET /v1/health` on both daemons (`{"status":"ok"}` only).
 - **Authenticated:** everything else, including `/v1/ready`, file I/O, CUA, and `/v1/info`.
-- **Insecure tokens:** `dev-box-token`, empty, or shorter than 16 characters are rejected unless `BOX_ALLOW_INSECURE_DEV=1` **and** both daemon binds are loopback.
+- **Insecure tokens:** `dev-box-token`, empty, or shorter than 16 characters are rejected unless `BOX_ALLOW_INSECURE_DEV=1` **and** both daemon binds are loopback. A `BOX_TOKEN` or `BOX_VIEWER_PASSWORD` containing `replace-with` (the `.env.example` placeholders) is refused even then. The viewer password has no insecure-dev exemption at all.
 - **Delivery:** as a file (`BOX_TOKEN_FILE`, `BOX_HOST_TOKEN_FILE`, `BOX_VIEWER_PASSWORD_FILE`, `BOX_EGRESS_TUNNEL_BEARER_FILE`) or as a value. The file form wins and is what Compose uses. A value passed through the container environment lands in pid 1's environ block, which `/proc/1/environ` serves to every process in the box; `unsetenv` cannot take it back out, because it edits the pointer array and not the block. See README §Auth.
 - **Docker:** `box-keeper` exits if neither `BOX_TOKEN` nor `BOX_TOKEN_FILE` is set. It is the only process that reads the secrets, and it unlinks each file it reads. It hands each daemon a path, never a value, so no daemon has a secret in its own environ, and each daemon reads its staged file and unlinks it. `box-exec` starts last, once `box-host` has unlinked its copies, so no exec child can exist while a staged copy does.
 - **Memory:** every process holding a secret is undumpable: execute-only binaries, and `PR_SET_DUMPABLE` 0 in our own. `entrypoint.sh` holds none. Exec children run as another user, and could not read them through `/proc/<pid>/mem` or ptrace. `scripts/memory-probe.py` checks it on every smoke.
 - **Residual exposure:** a file on a read-only mount stays until whoever staged it removes it, because `box-keeper` cannot unlink it. A value passed through the environment stays in `/proc/1/environ`. With files on a writable mount, unlinked at start, neither applies. Code execution in the box still reaches every screen, every folder, and Chromium.
 - **Exec children:** `BOX_TOKEN`, `BOX_HOST_TOKEN`, `BOX_VIEWER_PASSWORD`, and their `_FILE` forms are stripped from the child environment.
-- **Viewer:** voxl has its own login, with `BOX_VIEWER_PASSWORD`, independent of `BOX_TOKEN`; only `/healthz` and its page's scripts load without it. Host publish is loopback. `box-exec` holds the password to reach `/wait` and `/record`; `box-host` does not have it. See README §Auth.
+- **Viewer:** voxl has its own login, with `BOX_VIEWER_PASSWORD`, independent of `BOX_TOKEN`; only `/healthz` and the viewer page's static assets load without it, and a session needs the password. Host publish is loopback. `box-exec` holds the password to reach `/wait` and `/record`; `box-host` does not have it. See README §Auth.
 - **CORS:** default is no browser origins. Set `BOX_CORS_ORIGINS` to an explicit comma-separated list if a browser must call the guest. `*` is ignored.
 
 WebSocket streaming for exec is **not** in this tree. Use `POST /v1/exec` (bounded output, timeout; stdout/stderr are kept on timeout) or `POST /v1/exec/stream` (NDJSON/SSE). PTY is deferred.
@@ -99,7 +99,17 @@ If `box-exec`, `box-host` or the X stack dies, `box-keeper` stops the rest and t
 
 `box-keeper` is root, and the only thing that stays root. Everything else runs as a user of its own: [`USERS.md`](USERS.md). Ports below 6906 take a capability only the services have.
 
-`GET /v1/ready` is 200 when exec health succeeds, and when `BOX_DESKTOP_REQUIRED=1` the X display probe must also succeed. Chrome is **not** on the ready path. Compose healthcheck hits `/v1/ready` with `Authorization: Bearer`.
+`GET /v1/ready` is 200 when exec health succeeds, and when `BOX_DESKTOP_REQUIRED=1` the X display probe must also succeed. Chrome is **not** on the ready path. The Compose healthcheck does not use it: it checks the public `/v1/health` on both daemons with no token, so the token is never in `curl`'s argv. The X probe has a time limit, and a missing `xdpyinfo` means the display is not ready.
+
+## Helpers
+
+Small programs in the image that the daemons and the entrypoint start. None listens on a port.
+
+| Helper | Run by | Does |
+| --- | --- | --- |
+| `box-active-tab` | Chromium, as its native-messaging host (`docker/active-tab` extension) | Keeps the front tab's URL, the kind of box focused and a report count in `/run/box/x/<slot>/run/active-tab.json`, and removes the file when Chromium closes the port. `GET /v1/chrome/active-tab` reads it back. |
+| `box-refresh-extension` | the entrypoint before the main screen's Chromium, `box-screen` before a Bot's | Clears the profile's service workers once when the extension's files changed, so Chromium does not keep running the old worker. On a new profile it also sets the download folder to the screen's own (`BOX_SCREEN_WORKSPACE`). |
+| `box-screen` | `box-keeper`, as root, for `POST /v1/screen` | `up`, `down`, `forget`, `open` and `list` for a Bot's own screen: its users, X server, session, voxl and Chromium. See [USERS.md](USERS.md). |
 
 `GET /v1/info` `capabilities`:
 
@@ -107,7 +117,7 @@ If `box-exec`, `box-host` or the X stack dies, `box-keeper` stops the rest and t
 | --- | --- |
 | `exec` | always (this binary) |
 | `files` | always |
-| `desktop` | X socket (and `xdpyinfo` when present) on `BOX_DISPLAY` |
+| `desktop` | X socket and an `xdpyinfo` answer on `BOX_DISPLAY`. The probe has a time limit, and a missing `xdpyinfo` means not ready |
 | `chrome` | The Chromium process is up |
 | `cua` | `BOX_CUA` enabled and the display socket exists |
 | `egress_tunnel` | `BOX_EGRESS_TUNNEL`; `ready` only while a laptop client is attached |
@@ -130,11 +140,11 @@ Files v1: `GET` / `PUT` / `DELETE` `/v1/files`, and `POST /v1/files/mkdir`.
 
 CUA is first-party in this image:
 
-- Screenshot: ImageMagick `import -window root` (fallback: `scrot`). JSON (base64) **or** raw `image/png` (`Accept: image/png` or `?format=png`)
-- Pointer/keyboard: `xdotool` on `DISPLAY=:1`
+- Screenshot: a native X `GetImage` on a held connection, encoded to PNG. ImageMagick `import -window root` (then `scrot`) only if that fails. JSON (base64) **or** raw `image/png` (`Accept: image/png` or `?format=png`)
+- Pointer/keyboard: native XTEST on a persistent X connection. `xdotool` is the fallback when that fails
 - Coordinate space = X framebuffer **1280×800** (see `BOX_DISPLAY_GEOM`), origin top-left
 - Verbs: screenshot, click, double-click, move (hover), drag, type, key, scroll, **recipe** (many of those in one HTTP call — [RECIPES.md](RECIPES.md))
-- Endpoints live on `box-exec` and share `BOX_TOKEN`
+- Endpoints live on `box-exec` and share `BOX_TOKEN`. `?display=:N` puts a call on a Bot's own screen
 
 **trycua** is not vendored and is not on the guest path. Windows/macOS remain clients or Docker hosts, not a native buwiz-computer OS.
 
@@ -142,7 +152,7 @@ CUA is first-party in this image:
 
 Workspace-only (do not publish):
 
-1. **Rust** `buwiz-computer` — `BuwizComputer::connect(exec_url, host_url, token)` plus CLI
+1. **Rust** `buwiz-computer` — `BuwizComputer::connect(exec_url, host_url, token)?` (it returns a `Result`) plus CLI. A request that gets no answer fails after a default per-request timeout of 120 s, which is configurable. CLI: [CLI.md](CLI.md)
 2. **TypeScript** `sdk/typescript` — same connect
 3. **Python** `sdk/python` — same connect
 

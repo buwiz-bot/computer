@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Mapping
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -172,6 +172,14 @@ class BuwizComputer:
 
     def chrome(self) -> Any:
         return self._auth("GET", f"{self.host_url}/v1/chrome")
+
+    def active_tab(self, display: str | None = None) -> Any:
+        """The page in front of Chromium, as the box's extension last reported it.
+
+        `url` is None when nothing has. `display` (":2") asks for a Bot's own screen.
+        """
+        query = f"?display={quote(display, safe='')}" if display else ""
+        return self._auth("GET", f"{self.host_url}/v1/chrome/active-tab{query}")
 
     def egress(self) -> Any:
         return self._auth("GET", f"{self.host_url}/v1/egress")

@@ -29,6 +29,7 @@ need=(
   "/v1/desktop/windows:"
   "/v1/screens:"
   "/v1/chrome:"
+  "/v1/chrome/active-tab:"
   "/v1/egress:"
   "/v1/cua/screenshot:"
   "/v1/cua/click:"

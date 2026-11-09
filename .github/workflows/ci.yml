@@ -28,5 +28,7 @@ jobs:
         run: cargo test --workspace
       - name: OpenAPI presence
         run: bash scripts/check-openapi.sh
+      - name: CLI docs
+        run: bash scripts/check-cli-docs.sh
       - name: native smoke
         run: bash scripts/smoke-native.sh
