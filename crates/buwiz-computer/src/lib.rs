@@ -488,6 +488,32 @@ impl BuwizComputer {
             .await
     }
 
+    /// `POST /v1/cua/tree`: the screen's accessibility tree (AT-SPI), each node with a `ref`,
+    /// role, name, states, bounds in screen pixels and actions. `body` takes `scope`
+    /// (`focused_window`, the default, or `desktop`), `max_depth`, `max_nodes`, `timeout_ms` and
+    /// `include_hidden`; `{}` for the defaults.
+    pub async fn cua_tree(&self, body: Value) -> Result<Value, Error> {
+        self.send_json("POST", &self.cua("tree"), Some(body), true)
+            .await
+    }
+
+    /// `POST /v1/cua/element`: `action` (`press`, `click`, `focus` or `set_text`, with `text`) on
+    /// the node `reference` names in the screen's latest tree. A ref from an older tree is
+    /// refused with `stale_ref`.
+    pub async fn cua_element(
+        &self,
+        reference: &str,
+        action: &str,
+        text: Option<&str>,
+    ) -> Result<Value, Error> {
+        let mut body = json!({ "ref": reference, "action": action });
+        if let Some(text) = text {
+            body["text"] = json!(text);
+        }
+        self.send_json("POST", &self.cua("element"), Some(body), true)
+            .await
+    }
+
     async fn send_json<T: for<'de> Deserialize<'de>>(
         &self,
         method: &str,
