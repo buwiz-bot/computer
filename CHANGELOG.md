@@ -73,7 +73,7 @@ Guest honesty and wire parity against BOX-REVIEW P0 → P1 (selective P2). Basel
 | Chrome probe via CDP `/json/version` (no `/proc` scrape) | `crates/box-chrome` |
 | Unified `env_bool` | `crates/box-common/src/env.rs` |
 | Recipe `settle` default **off**; no Chromium launch/close side effects | `crates/box-cua` recipe/settle |
-| One Chromium model (entrypoint). `chromium-launch.sh` not in the image. `reset_desktop` does not kill Chromium | `docker/entrypoint.sh`, `docker/Dockerfile`, `docker/box-reset-desktop.sh` |
+| One Chromium model (entrypoint); the standalone launch script is not in the image. `reset_desktop` does not kill Chromium | `docker/entrypoint.sh`, `docker/Dockerfile`, `docker/box-reset-desktop.sh` |
 | Compose `cap_drop ALL`, `no-new-privileges`, `pids_limit`, `mem_limit` — not a kernel sandbox | `docker-compose.yml`, README |
 | `BOX_MAX_CONCURRENT_EXECS` (default 8), 429 `busy`, SIGTERM then SIGKILL, `exec_id` | `crates/box-exec` |
 | CI: test, clippy `-D warnings`, smoke-native, OpenAPI presence | `.github/workflows/ci.yml`, `scripts/check-openapi.sh` |

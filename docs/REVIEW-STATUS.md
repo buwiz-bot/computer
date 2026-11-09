@@ -4,7 +4,7 @@
 **Baseline:** the slices below came from the original BOX-REVIEW P0 → P1 pass (selective P2), merged 2026-09-14 as `hexuria/box` PR #7. The review text itself was a conversation artifact and is not in this repo.  
 **Since then:** [CHANGELOG.md](../CHANGELOG.md) at the repo root lists what changed, with the files; the egress review's findings, fixed and open, are in [review/findings-box30.md](review/findings-box30.md).
 
-## Completed (original baseline)## Completed on `main`
+## Completed (original baseline)
 
 ### Slice A — contract freeze
 - OpenAPI / README / API.md aligned with live routes
@@ -12,7 +12,7 @@
 - Recipe `settle` defaults **off**; recipes do not launch/kill Chromium as side effects
 
 ### Slice B — honest image
-- Single Chromium model via entrypoint (no fighting `chromium-launch.sh` in image)
+- Single Chromium model via the entrypoint; the old standalone launch script was never run and is now deleted
 - `reset_desktop` does not fight Chromium respawn
 
 ### Slice C — hardness + CI
