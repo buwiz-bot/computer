@@ -16,9 +16,9 @@ pub mod request_id;
 pub use alloc::GLOBAL_ALLOCATOR;
 pub use auth::{bearer_token, parse_bearer, tokens_equal};
 pub use config::{
-    ensure_token_strength, ensure_viewer_password_strength, read_secret_from_env,
-    token_is_insecure, wipe_secret_environ, BoxConfig, ConfigError, MIN_TOKEN_LEN, SECRET_ENV_KEYS,
-    SECRET_FILE_ENV_KEYS,
+    ensure_not_placeholder, ensure_token_strength, ensure_viewer_password_strength,
+    read_secret_from_env, token_is_insecure, wipe_secret_environ, BoxConfig, ConfigError,
+    MIN_TOKEN_LEN, PLACEHOLDER_MARKER, SECRET_ENV_KEYS, SECRET_FILE_ENV_KEYS,
 };
 pub use cors::layer as cors_layer;
 pub use env::{env_bool, env_nonempty};

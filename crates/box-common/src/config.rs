@@ -193,13 +193,28 @@ fn validate_token(
     ensure_token_strength(name, token, binds_are_loopback(exec_bind, host_bind))
 }
 
-/// Reject empty, short, or well-known tokens unless `BOX_ALLOW_INSECURE_DEV=1`
-/// and every relevant bind is loopback.
+/// What `.env.example` puts in every secret it ships. A value still holding it is the sample.
+pub const PLACEHOLDER_MARKER: &str = "replace-with";
+
+/// Refuse a secret still holding the sample value from `.env.example`. Nothing exempts it:
+/// not `BOX_ALLOW_INSECURE_DEV`, and not a loopback bind.
+pub fn ensure_not_placeholder(name: &str, value: &str) -> Result<(), ConfigError> {
+    if value.to_ascii_lowercase().contains(PLACEHOLDER_MARKER) {
+        return Err(ConfigError(format!(
+            "{name} is still the sample value from .env.example ({PLACEHOLDER_MARKER}...). Generate one: openssl rand -base64 32"
+        )));
+    }
+    Ok(())
+}
+
+/// Reject the `.env.example` sample always, and empty, short, or well-known tokens unless
+/// `BOX_ALLOW_INSECURE_DEV=1` and every relevant bind is loopback.
 pub fn ensure_token_strength(
     name: &str,
     token: &str,
     binds_are_loopback: bool,
 ) -> Result<(), ConfigError> {
+    ensure_not_placeholder(name, token)?;
     if !token_is_insecure(token) {
         return Ok(());
     }
@@ -218,6 +233,7 @@ pub fn ensure_token_strength(
 /// loopback, and voxl always listens on every interface inside the box, so the port map, not the
 /// bind, is all that keeps it off the network.
 pub fn ensure_viewer_password_strength(password: &str) -> Result<(), ConfigError> {
+    ensure_not_placeholder("BOX_VIEWER_PASSWORD", password)?;
     if token_is_insecure(password) {
         return Err(ConfigError(format!(
             "BOX_VIEWER_PASSWORD is shorter than {MIN_TOKEN_LEN} characters or a well-known value. Set a long random one; BOX_ALLOW_INSECURE_DEV does not cover it."
@@ -339,6 +355,73 @@ mod tests {
         ]);
         let err = BoxConfig::from_env().unwrap_err();
         assert!(err.0.contains("BOX_VIEWER_PASSWORD"), "{err}");
+    }
+
+    #[test]
+    fn the_sample_token_is_refused_even_with_insecure_dev() {
+        let (_lock, _guard) = isolate(&[
+            ("BOX_TOKEN", Some("replace-with-a-long-random-token")),
+            ("BOX_TOKEN_FILE", None),
+            ("BOX_HOST_TOKEN", None),
+            ("BOX_HOST_TOKEN_FILE", None),
+            ("BOX_VIEWER_PASSWORD", None),
+            ("BOX_VIEWER_PASSWORD_FILE", None),
+            ("BOX_EXEC_BIND", Some("127.0.0.1:1337")),
+            ("BOX_HOST_BIND", Some("127.0.0.1:1340")),
+            ("BOX_ALLOW_INSECURE_DEV", Some("1")),
+        ]);
+        let err = BoxConfig::from_env().unwrap_err();
+        assert!(
+            err.0.contains("BOX_TOKEN is still the sample value"),
+            "{err}"
+        );
+        assert!(err.0.contains("openssl rand"), "{err}");
+    }
+
+    #[test]
+    fn the_sample_host_token_is_refused() {
+        let (_lock, _guard) = isolate(&[
+            ("BOX_TOKEN", Some("long-enough-box-token")),
+            ("BOX_TOKEN_FILE", None),
+            ("BOX_HOST_TOKEN", Some("Replace-With-a-host-token")),
+            ("BOX_HOST_TOKEN_FILE", None),
+            ("BOX_VIEWER_PASSWORD", None),
+            ("BOX_VIEWER_PASSWORD_FILE", None),
+            ("BOX_ALLOW_INSECURE_DEV", None),
+        ]);
+        let err = BoxConfig::from_env().unwrap_err();
+        assert!(
+            err.0.contains("BOX_HOST_TOKEN is still the sample"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn the_sample_viewer_password_is_refused() {
+        let (_lock, _guard) = isolate(&[
+            ("BOX_TOKEN", Some("long-enough-box-token")),
+            ("BOX_TOKEN_FILE", None),
+            ("BOX_HOST_TOKEN", None),
+            ("BOX_HOST_TOKEN_FILE", None),
+            (
+                "BOX_VIEWER_PASSWORD",
+                Some("replace-with-a-long-random-password"),
+            ),
+            ("BOX_VIEWER_PASSWORD_FILE", None),
+            ("BOX_ALLOW_INSECURE_DEV", Some("1")),
+        ]);
+        let err = BoxConfig::from_env().unwrap_err();
+        assert!(
+            err.0.contains("BOX_VIEWER_PASSWORD is still the sample"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_placeholder_is_refused_wherever_a_token_is_checked() {
+        let err = ensure_token_strength("X", "replace-with-something-long", true).unwrap_err();
+        assert!(err.0.contains("X is still the sample"), "{err}");
+        assert!(ensure_not_placeholder("X", "a-real-random-token-value").is_ok());
     }
 
     #[test]

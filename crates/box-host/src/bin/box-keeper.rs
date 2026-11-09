@@ -32,8 +32,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use box_common::{
-    ensure_viewer_password_strength, env_bool, env_nonempty, make_undumpable, read_secret_from_env,
-    ScreenCall, KEEPER_SOCKET,
+    ensure_not_placeholder, ensure_viewer_password_strength, env_bool, env_nonempty,
+    make_undumpable, read_secret_from_env, ScreenCall, KEEPER_SOCKET,
 };
 use box_desktop::{
     bots_dir, desktop_uid, display_number, slots_dir, DesktopConfig, VIEWER_PORT_BASE,
@@ -126,6 +126,9 @@ impl Secrets {
     fn load(features: Features) -> Result<Self, String> {
         let token = secret("BOX_TOKEN")?.ok_or("BOX_TOKEN or BOX_TOKEN_FILE must be set")?;
         let host_token = secret("BOX_HOST_TOKEN")?.unwrap_or_else(|| token.clone());
+        // The sample from .env.example has no exemption: refuse it before anything starts.
+        ensure_not_placeholder("BOX_TOKEN", &token).map_err(|err| err.to_string())?;
+        ensure_not_placeholder("BOX_HOST_TOKEN", &host_token).map_err(|err| err.to_string())?;
         let viewer_password = secret("BOX_VIEWER_PASSWORD")?;
         if features.desktop && viewer_password.is_none() {
             return Err(
@@ -139,6 +142,10 @@ impl Secrets {
             ensure_viewer_password_strength(password).map_err(|err| err.to_string())?;
         }
         let egress_bearer = secret("BOX_EGRESS_TUNNEL_BEARER")?;
+        if let Some(bearer) = &egress_bearer {
+            ensure_not_placeholder("BOX_EGRESS_TUNNEL_BEARER", bearer)
+                .map_err(|err| err.to_string())?;
+        }
         if features.egress && egress_bearer.is_none() {
             return Err("BOX_EGRESS_TUNNEL=1 requires BOX_EGRESS_TUNNEL_BEARER or \
                  BOX_EGRESS_TUNNEL_BEARER_FILE"
