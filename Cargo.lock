@@ -210,6 +210,7 @@ dependencies = [
  "subtle",
  "tempfile",
  "thiserror",
+ "tokio",
  "tower-http",
  "tracing",
 ]

@@ -23,6 +23,7 @@ axum = { workspace = true }
 http = { workspace = true }
 subtle = { workspace = true }
 tower-http = { workspace = true }
+tokio = { workspace = true }
 tracing = { workspace = true }
 smallvec = { workspace = true }
 

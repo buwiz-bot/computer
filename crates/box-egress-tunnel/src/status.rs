@@ -4,11 +4,10 @@
 //! client is `enabled: true, ready: false`. The CONNECT proxy fail-closes in
 //! that state.
 
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpStream};
+use std::net::SocketAddr;
 use std::time::Duration;
 
-use box_common::{container_local_host, env_bool};
+use box_common::{container_local_host, env_bool, local_get};
 use serde::{Deserialize, Serialize};
 
 use crate::config::parse_addr;
@@ -17,6 +16,10 @@ use crate::protocol::PROTOCOL_NAME;
 const DEFAULT_WS: &str = "127.0.0.1:8790";
 const DEFAULT_PROXY: &str = "127.0.0.1:8791";
 const DEFAULT_ADMIN: &str = "127.0.0.1:8792";
+/// Longest the admin status probe may take, connect to last byte.
+const ADMIN_DEADLINE: Duration = Duration::from_millis(600);
+/// A status answer is a few hundred bytes.
+const ADMIN_CAP: usize = 16 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EgressConfig {
@@ -82,11 +85,11 @@ pub fn format_bind(bind: SocketAddr) -> String {
 
 /// Honest probe: when disabled, do not touch the admin port. When enabled,
 /// `GET /v1/status` on the admin loopback. Process down → enabled, not ready.
-pub fn probe_egress(cfg: &EgressConfig) -> EgressStatus {
+pub async fn probe_egress(cfg: &EgressConfig) -> EgressStatus {
     if !cfg.enabled {
         return EgressStatus::from_config(cfg, false);
     }
-    match fetch_admin(cfg.admin_bind) {
+    match fetch_admin(cfg.admin_bind).await {
         Some(mut st) => {
             st.enabled = true;
             st.ready = st.client_attached;
@@ -99,57 +102,38 @@ pub fn probe_egress(cfg: &EgressConfig) -> EgressStatus {
     }
 }
 
-fn fetch_admin(addr: SocketAddr) -> Option<EgressStatus> {
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(200)).ok()?;
-    stream
-        .set_read_timeout(Some(Duration::from_millis(400)))
+async fn fetch_admin(addr: SocketAddr) -> Option<EgressStatus> {
+    let answer = local_get(&addr.to_string(), "/v1/status", ADMIN_DEADLINE, ADMIN_CAP)
+        .await
         .ok()?;
-    stream
-        .set_write_timeout(Some(Duration::from_millis(200)))
-        .ok()?;
-    let host = addr.ip();
-    let req = format!(
-        "GET /v1/status HTTP/1.0\r\nHost: {host}:{}\r\nConnection: close\r\n\r\n",
-        addr.port()
-    );
-    stream.write_all(req.as_bytes()).ok()?;
-    let mut buf = Vec::new();
-    stream.read_to_end(&mut buf).ok()?;
-    let text = String::from_utf8_lossy(&buf);
-    if !(text.starts_with("HTTP/1.1 200") || text.starts_with("HTTP/1.0 200")) {
+    if answer.status != 200 {
         return None;
     }
-    let split = text.find("\r\n\r\n").or_else(|| text.find("\n\n"))?;
-    let start = if text[split..].starts_with("\r\n\r\n") {
-        split + 4
-    } else {
-        split + 2
-    };
-    serde_json::from_str(text[start..].trim()).ok()
+    serde_json::from_slice(&answer.body).ok()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn disabled_is_not_ready() {
-        let st = probe_egress(&EgressConfig::disabled());
+    #[tokio::test]
+    async fn disabled_is_not_ready() {
+        let st = probe_egress(&EgressConfig::disabled()).await;
         assert!(!st.enabled);
         assert!(!st.ready);
         assert!(!st.client_attached);
         assert_eq!(st.protocol, PROTOCOL_NAME);
     }
 
-    #[test]
-    fn closed_admin_is_enabled_not_ready() {
+    #[tokio::test]
+    async fn closed_admin_is_enabled_not_ready() {
         let cfg = EgressConfig {
             enabled: true,
             ws_bind: "127.0.0.1:8790".parse().unwrap(),
             proxy_bind: "127.0.0.1:8791".parse().unwrap(),
             admin_bind: "127.0.0.1:1".parse().unwrap(),
         };
-        let st = probe_egress(&cfg);
+        let st = probe_egress(&cfg).await;
         assert!(st.enabled);
         assert!(!st.ready);
         assert_eq!(st.proxy, "127.0.0.1:8791");

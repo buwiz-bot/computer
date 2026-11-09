@@ -27,8 +27,7 @@ use box_cua::CuaConfig;
 use box_desktop::{slots_dir, DesktopConfig, DesktopStatus, ScreenList, WindowList, VIEWER_KIND};
 use box_egress_tunnel::{probe_egress, EgressConfig, EgressStatus};
 use serde::Serialize;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tower_http::trace::TraceLayer;
 
@@ -275,7 +274,7 @@ async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
                 ready: state.cua.capability_ready(),
             },
             egress_tunnel: {
-                let st = probe_egress(&state.egress);
+                let st = probe_egress(&state.egress).await;
                 Capability {
                     enabled: st.enabled,
                     ready: st.ready,
@@ -306,7 +305,7 @@ async fn chrome(State(state): State<AppState>) -> Json<ChromeStatus> {
 }
 
 async fn egress(State(state): State<AppState>) -> Json<EgressStatus> {
-    Json(probe_egress(&state.egress))
+    Json(probe_egress(&state.egress).await)
 }
 
 /// `?display=:N`: one of the box's other screens (a Bot's own, `box-screen`).
@@ -398,26 +397,19 @@ async fn require_token(
     Ok(next.run(request).await)
 }
 
-/// Tiny HTTP/1.1 probe so box-host does not need an HTTP client crate.
+/// Longest the exec health probe may take, connect to last byte.
+const EXEC_PROBE_DEADLINE: Duration = Duration::from_secs(2);
+/// A health answer is a few bytes.
+const EXEC_PROBE_CAP: usize = 16 * 1024;
+
+/// `GET /v1/health` on box-exec, bounded in time and size so box-host needs no HTTP client crate.
 async fn probe_exec_health(exec_url: &str) -> bool {
     let Some(addr) = host_port_from_url(exec_url) else {
         return false;
     };
-    let Ok(Ok(mut stream)) =
-        tokio::time::timeout(Duration::from_secs(1), TcpStream::connect(&addr)).await
-    else {
-        return false;
-    };
-    let req = format!("GET /v1/health HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
-    if stream.write_all(req.as_bytes()).await.is_err() {
-        return false;
-    }
-    let mut buf = vec![0u8; 256];
-    let Ok(n) = stream.read(&mut buf).await else {
-        return false;
-    };
-    let text = String::from_utf8_lossy(&buf[..n]);
-    text.starts_with("HTTP/1.1 200") || text.starts_with("HTTP/1.0 200")
+    box_common::local_get(&addr, "/v1/health", EXEC_PROBE_DEADLINE, EXEC_PROBE_CAP)
+        .await
+        .is_ok_and(|answer| answer.status == 200)
 }
 
 fn host_port_from_url(url: &str) -> Option<String> {
