@@ -521,6 +521,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "box-a11y",
+ "box-browser",
  "box-common",
  "box-cua",
  "box-desktop",
