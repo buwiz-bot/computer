@@ -308,11 +308,21 @@ impl Screen {
             .ok_or_else(|| {
                 BrowserError::Stale(format!("@e{n} is gone from the page: snap again"))
             })?;
+        // The same node may now be another control: a list that re-rendered reuses its rows.
+        // The caller chose by the label it saw, so a press on another label is no press of its.
+        if here.label != snapped_label {
+            self.latest = None;
+            return Err(BrowserError::Stale(format!(
+                "@e{n} was {:?} and is now {:?}: snap again",
+                shape::clip(&snapped_label, shape::MAX_LABEL_CHARS),
+                shape::clip(&here.label, shape::MAX_LABEL_CHARS)
+            )));
+        }
 
         let mut confirmed = Vec::new();
         let token = req.confirm.as_deref();
         let redeemed = token.and_then(|token| self.confirms.peek(token, Some(&region)));
-        match (self.gate(req, &here.label, &snapped_label, &now), redeemed) {
+        match (self.gate(req, &here.label, &now), redeemed) {
             // A token confirms the label it was given for, and nothing it has turned into.
             (Some(label), Some(approved)) if approved == label => confirmed.push(approved),
             // a token for another label stays as it was: it confirms only that label, here
@@ -404,16 +414,10 @@ impl Screen {
     /// Space on any other element is ultra-instinct's guard's to stop: it knows the form the key
     /// would send, and asks for the confirm of that form's submit button (through
     /// [`Self::failed`]).
-    fn gate(
-        &self,
-        req: &ActRequest,
-        label: &str,
-        snapped_label: &str,
-        page: &shape::Page,
-    ) -> Option<String> {
+    fn gate(&self, req: &ActRequest, label: &str, page: &shape::Page) -> Option<String> {
         let named = |l: &str| self.rules.needs_confirm(l);
         let presses = matches!(req.action, ActAction::Click | ActAction::Key);
-        if presses && (named(label) || named(snapped_label)) {
+        if presses && named(label) {
             return Some(label.to_string());
         }
         let text = req.text.as_deref().unwrap_or_default();

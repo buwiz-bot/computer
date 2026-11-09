@@ -23,15 +23,6 @@ pub struct PipeOpener;
 
 impl Opener for PipeOpener {
     fn open(&self, display: &str) -> Result<Box<dyn Tools>, BrowserError> {
-        // A pipe end taken and then dropped would close the screen's Chromium: don't take one that
-        // can't be used.
-        if !seam::LINKED {
-            return Err(BrowserError::Unavailable(
-                "this box-exec has no DevTools pipe transport yet; the browser routes answer once \
-                 it does"
-                    .into(),
-            ));
-        }
         let pipe = take(display)?;
         seam::open(pipe).map_err(|err| BrowserError::Unavailable(err.to_string()))
     }

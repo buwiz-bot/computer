@@ -179,7 +179,11 @@ pub async fn state_handler(
     Json(req): Json<StateRequest>,
 ) -> Result<Json<StateResponse>, ApiError> {
     let display = screen(&state, &on)?;
-    let folder = state_owner(&display)?;
+    // it reads the slots folder: off the async threads
+    let owner = display.clone();
+    let folder = tokio::task::spawn_blocking(move || state_owner(&owner))
+        .await
+        .map_err(|err| ApiError::internal(format!("the screen's owner wasn't found: {err}")))??;
     state
         .browser
         .state(&display, &folder, req)

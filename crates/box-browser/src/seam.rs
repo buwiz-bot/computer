@@ -20,10 +20,6 @@ use ultra_instinct_mcp::{
     BlockKind, Downloads, RunLimits, RunOutcome, Server, ToolError, ToolLimits, Uploads,
 };
 
-/// Whether [`open`] can speak over a pipe in this build. While it can't, box-browser never takes
-/// a pipe: one taken and dropped would close the screen's Chromium.
-pub const LINKED: bool = true;
-
 /// The largest frame the pipe takes. A frame over it costs only the call it answers
 /// (`frame_too_large`): the pipe and the screen's other tabs go on. It sits well above the
 /// screenshot cap, since a shot comes back base64, a third larger than the picture.

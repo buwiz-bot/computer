@@ -1214,3 +1214,24 @@ async fn a_long_label_is_confirmed_whole() {
     h.browsers.act(":1", approved).await.unwrap();
     assert_eq!(calls_of(&h, "browser_click")[0]["confirm"], json!(long));
 }
+
+#[tokio::test]
+async fn a_node_that_now_shows_another_label_is_not_pressed() {
+    let h = harness();
+    h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    // the list re-rendered, and the node @e1 named holds another row's control
+    h.world.lock().unwrap().elements[0] = button(1, "n10", "Edit row 2");
+    assert!(matches!(
+        h.browsers
+            .act(":1", act("@e1", ActAction::Click, None))
+            .await,
+        Err(BrowserError::Stale(_))
+    ));
+    assert!(calls_of(&h, "browser_click").is_empty());
+    // a fresh snap names it as it is
+    h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    h.browsers
+        .act(":1", act("@e1", ActAction::Click, None))
+        .await
+        .unwrap();
+}

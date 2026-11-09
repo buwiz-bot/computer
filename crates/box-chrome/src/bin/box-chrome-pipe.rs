@@ -43,6 +43,8 @@ const GRACE: Duration = Duration::from_secs(3);
 const LOOK: Duration = Duration::from_millis(100);
 
 extern "C" fn pass_on(signal: libc::c_int) {
+    // Told to go before Chromium is up, too: then it isn't started, or is told as soon as it is.
+    STOPPING.store(true, Ordering::SeqCst);
     let child = CHILD.load(Ordering::SeqCst);
     if child > 0 {
         // SAFETY: kill is async-signal-safe. The group is Chromium's own (setpgid below), so this
@@ -50,7 +52,6 @@ extern "C" fn pass_on(signal: libc::c_int) {
         unsafe {
             libc::kill(-child, signal);
         }
-        STOPPING.store(true, Ordering::SeqCst);
     }
 }
 
@@ -177,12 +178,32 @@ fn run(offer: Offer, program: &OsString, rest: &[OsString]) -> ExitCode {
         exec_end,
         service_uid,
     } = offer;
+    // Before Chromium starts, so a signal never finds the launcher with the default action and
+    // leaves Chromium behind.
+    for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP, libc::SIGQUIT] {
+        // SAFETY: the handler only stores and loads atomics and calls kill.
+        unsafe {
+            libc::signal(signal, pass_on as *const () as libc::sighandler_t);
+        }
+    }
     let raw = browser_end.as_raw_fd();
+    // SAFETY: getpid takes nothing and can't fail.
+    let launcher = unsafe { libc::getpid() };
     let mut command = Command::new(program);
     command.arg("--remote-debugging-pipe").args(rest);
-    // SAFETY: only async-signal-safe calls (fcntl, dup2, close) run between fork and exec.
+    // SAFETY: only async-signal-safe calls (prctl, getppid, fcntl, dup2, close, setpgid) run
+    // between fork and exec.
     unsafe {
         command.pre_exec(move || {
+            // The kernel kills Chromium when the launcher dies, even by SIGKILL or the OOM
+            // killer, which no handler sees; one already gone by now is no parent to outlive.
+            #[cfg(target_os = "linux")]
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if libc::getppid() != launcher {
+                return Err(io::Error::other("the launcher is gone"));
+            }
             // Copied up out of the way first: the end may itself be fd 3 or 4, and dup2 onto
             // itself would leave it close-on-exec.
             let high = libc::fcntl(raw, libc::F_DUPFD, 10);
@@ -200,6 +221,10 @@ fn run(offer: Offer, program: &OsString, rest: &[OsString]) -> ExitCode {
             Ok(())
         });
     }
+    if STOPPING.load(Ordering::SeqCst) {
+        let _ = std::fs::remove_file(&socket);
+        return ExitCode::from(143);
+    }
     let mut child = match command.spawn() {
         Ok(child) => child,
         Err(err) => {
@@ -210,10 +235,11 @@ fn run(offer: Offer, program: &OsString, rest: &[OsString]) -> ExitCode {
     };
     drop(browser_end);
     CHILD.store(child.id() as i32, Ordering::SeqCst);
-    for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP, libc::SIGQUIT] {
-        // SAFETY: the handler only loads an atomic and calls kill.
+    if STOPPING.load(Ordering::SeqCst) {
+        // told to go while it started: it hears it now (twice is no harm)
+        // SAFETY: kill with a negative pid signals Chromium's own group alone.
         unsafe {
-            libc::signal(signal, pass_on as *const () as libc::sighandler_t);
+            libc::kill(-(child.id() as i32), libc::SIGTERM);
         }
     }
 

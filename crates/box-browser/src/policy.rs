@@ -109,8 +109,9 @@ impl AllowList {
         &self.raw
     }
 
-    /// May the browser go to `url`, or give input on a page there? A URL with no host
-    /// (`about:blank`) may; an unknown one may not while there's a list.
+    /// May the browser go to `url`, or give input on a page there? While there's a list, only a
+    /// listed host, or `about:blank`, may: an address with no host to check (`file:`, `data:`) or
+    /// none at all may not.
     pub fn check(&self, url: Option<&str>) -> Result<(), BrowserError> {
         if self.hosts.is_empty() {
             return Ok(());
@@ -121,11 +122,25 @@ impl AllowList {
             ));
         };
         match host_of(url) {
-            None => Ok(()),
+            None if is_blank(url) => Ok(()),
+            None => Err(BrowserError::DomainNotAllowed(format!(
+                "{}: (no host)",
+                url.split(':').next().unwrap_or_default().trim()
+            ))),
             Some(host) if self.hosts.iter().any(|p| p.matches(&host)) => Ok(()),
             Some(host) => Err(BrowserError::DomainNotAllowed(host)),
         }
     }
+}
+
+/// `about:blank`, with or without a fragment or a query: the one hostless page a list lets in.
+fn is_blank(url: &str) -> bool {
+    let url = url.trim();
+    let rest = url
+        .get(..11)
+        .filter(|head| head.eq_ignore_ascii_case("about:blank"))
+        .map(|_| &url[11..]);
+    matches!(rest, Some(r) if r.is_empty() || r.starts_with(['#', '?']))
 }
 
 /// A click waiting for a person's confirm.
@@ -179,13 +194,6 @@ impl Confirms {
     pub fn spend(&mut self, token: &str) {
         self.pending.retain(|p| p.token != token.trim());
     }
-
-    /// [`Self::peek`], then [`Self::spend`].
-    pub fn redeem(&mut self, token: &str, target: Option<&str>) -> Option<String> {
-        let label = self.peek(token, target)?;
-        self.spend(token);
-        Some(label)
-    }
 }
 
 /// A token nobody can guess, or none at all: no randomness is no confirm.
@@ -214,12 +222,27 @@ mod tests {
     }
 
     #[test]
-    fn an_allow_list_lets_its_hosts_and_hostless_pages_through() {
+    fn an_allow_list_lets_its_hosts_and_about_blank_through() {
         let list =
             AllowList::parse(Some(&["shop.example".into(), "*.bank.example".into()])).unwrap();
         assert!(list.check(Some("https://shop.example/cart")).is_ok());
         assert!(list.check(Some("https://www.bank.example/")).is_ok());
         assert!(list.check(Some("about:blank")).is_ok());
+        assert!(list.check(Some("about:blank#top")).is_ok());
+        // a page with no host to check is off a list
+        for hostless in [
+            "file:///etc/passwd",
+            "data:text/html,<b>hi</b>",
+            "about:blankety",
+        ] {
+            assert!(
+                matches!(
+                    list.check(Some(hostless)),
+                    Err(BrowserError::DomainNotAllowed(_))
+                ),
+                "{hostless}"
+            );
+        }
         assert!(matches!(
             list.check(Some("https://evil.example/")),
             Err(BrowserError::DomainNotAllowed(host)) if host == "evil.example"
@@ -234,12 +257,16 @@ mod tests {
         let mut confirms = Confirms::default();
         let token = confirms.issue("Pay $18", Some("n100")).unwrap();
         assert_eq!(token.len(), 32);
-        assert_eq!(confirms.redeem(&token, Some("n200")), None);
-        assert_eq!(
-            confirms.redeem(&token, Some("n100")).as_deref(),
-            Some("Pay $18")
-        );
-        assert_eq!(confirms.redeem(&token, Some("n100")), None);
-        assert_eq!(confirms.redeem("guess", Some("n100")), None);
+        assert_eq!(confirms.peek(&token, Some("n200")), None);
+        // a look leaves it good
+        for _ in 0..2 {
+            assert_eq!(
+                confirms.peek(&token, Some("n100")).as_deref(),
+                Some("Pay $18")
+            );
+        }
+        confirms.spend(&token);
+        assert_eq!(confirms.peek(&token, Some("n100")), None);
+        assert_eq!(confirms.peek("guess", Some("n100")), None);
     }
 }
