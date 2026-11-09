@@ -20,16 +20,12 @@ pub(crate) const WINDOW_TOOL_TIMEOUT: Duration = Duration::from_millis(2500);
 /// read: a non-zero one is a failure, never data.
 pub(crate) async fn run_tool(cmd: &mut Command, timeout: Duration) -> Result<Output, CuaError> {
     let program = cmd.as_std().get_program().to_string_lossy().into_owned();
-    let child = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|err| CuaError::Tool(format!("{program}: {err}")))?;
-    match tokio::time::timeout(timeout, child.wait_with_output()).await {
-        Ok(Ok(out)) => Ok(out),
-        Ok(Err(err)) => Err(CuaError::Tool(format!("{program}: {err}"))),
+    // No cap on what it prints: a capture's PNG is all of it.
+    match box_common::process::run_bounded(cmd, timeout, u64::MAX).await {
+        Ok(out) => Ok(out),
+        Err(err) if err.kind() != std::io::ErrorKind::TimedOut => {
+            Err(CuaError::Tool(format!("{program}: {err}")))
+        }
         Err(_) => {
             tracing::warn!(program, ms = timeout.as_millis() as u64, "X tool timed out");
             Err(CuaError::Tool(format!(

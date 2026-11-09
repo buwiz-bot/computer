@@ -7,15 +7,15 @@
 //!
 //! Computer Use coordinates follow `BOX_DISPLAY_GEOM` (default 1280×800).
 
-use std::io::Read;
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
+use box_common::process::run_bounded;
 use box_common::{env_bool, env_nonempty};
 use serde::{Deserialize, Serialize};
+use tokio::process::Command;
 
 /// Capability flag name advertised by `box-host`.
 pub const CAPABILITY: &str = "desktop";
@@ -90,8 +90,8 @@ impl DesktopConfig {
     }
 
     /// True when desktop is enabled and the X display is accepting clients.
-    pub fn probe_display(&self) -> bool {
-        probe_display(self)
+    pub async fn probe_display(&self) -> bool {
+        probe_display(self).await
     }
 
     /// The port of this screen's viewer.
@@ -164,8 +164,8 @@ pub struct ViewerInfo {
 }
 
 impl DesktopStatus {
-    pub fn from_config(config: &DesktopConfig, advertised_host: &str) -> Self {
-        let ready = config.probe_display();
+    pub async fn from_config(config: &DesktopConfig, advertised_host: &str) -> Self {
+        let ready = config.probe_display().await;
         Self {
             enabled: config.enabled,
             ready,
@@ -459,8 +459,8 @@ pub struct WindowList {
 }
 
 impl WindowList {
-    pub fn from_config(config: &DesktopConfig) -> Self {
-        if !config.enabled || !config.probe_display() {
+    pub async fn from_config(config: &DesktopConfig) -> Self {
+        if !config.enabled || !config.probe_display().await {
             return Self {
                 display: config.display.clone(),
                 available: false,
@@ -470,72 +470,26 @@ impl WindowList {
         Self {
             display: config.display.clone(),
             available: true,
-            windows: list_windows(&config.display),
+            windows: list_windows(&config.display).await,
         }
     }
 }
 
 /// `wmctrl -lx` on `DISPLAY`. Empty if wmctrl is missing, fails, or takes longer than
-/// [`TOOL_TIMEOUT`]. Blocks for up to that long: call it off the async workers.
-pub fn list_windows(display: &str) -> Vec<DesktopWindow> {
+/// [`TOOL_TIMEOUT`].
+pub async fn list_windows(screen: &str) -> Vec<DesktopWindow> {
     let mut command = Command::new("wmctrl");
-    command.env("DISPLAY", display).arg("-lx");
-    match run_bounded(&mut command, TOOL_TIMEOUT) {
+    command.env("DISPLAY", screen).arg("-lx");
+    match run_bounded(&mut command, TOOL_TIMEOUT, MAX_TOOL_OUTPUT).await {
         Ok(o) if o.status.success() => parse_wmctrl_lx(&String::from_utf8_lossy(&o.stdout)),
         Ok(_) => Vec::new(),
         Err(err) => {
             if err.kind() == std::io::ErrorKind::TimedOut {
-                let screen = display;
                 tracing::warn!("wmctrl on {screen} timed out; no windows listed");
             }
             Vec::new()
         }
     }
-}
-
-/// Run `command` with its stdout captured (to [`MAX_TOOL_OUTPUT`]) and stdin and stderr closed,
-/// and kill it once `timeout` has passed. A timeout is an [`std::io::ErrorKind::TimedOut`] error.
-/// This blocks the calling thread for up to `timeout`.
-pub fn run_bounded(command: &mut Command, timeout: Duration) -> std::io::Result<Output> {
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
-    let stdout = child.stdout.take();
-    // Read on another thread, so a tool that fills the pipe still gets to exit.
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(stdout) = stdout {
-            let _ = stdout.take(MAX_TOOL_OUTPUT).read_to_end(&mut buf);
-        }
-        let _ = tx.send(buf);
-    });
-    let deadline = Instant::now() + timeout;
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("did not finish within {timeout:?}"),
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    };
-    // The tool has exited; what it printed is all in the pipe or on its way.
-    let stdout = rx
-        .recv_timeout(Duration::from_millis(500))
-        .unwrap_or_default();
-    Ok(Output {
-        status,
-        stdout,
-        stderr: Vec::new(),
-    })
 }
 
 pub fn parse_wmctrl_lx(stdout: &str) -> Vec<DesktopWindow> {
@@ -562,8 +516,8 @@ pub fn parse_wmctrl_lx_line(line: &str) -> Option<DesktopWindow> {
 
 /// True when the display's socket is there and `xdpyinfo` can talk to it within
 /// [`TOOL_TIMEOUT`]. A missing or unspawnable `xdpyinfo` is not ready: nothing then said the
-/// display answers. Blocks for up to [`TOOL_TIMEOUT`]: call it off the async workers.
-pub fn probe_display(config: &DesktopConfig) -> bool {
+/// display answers.
+pub async fn probe_display(config: &DesktopConfig) -> bool {
     if !config.enabled {
         return false;
     }
@@ -571,13 +525,13 @@ pub fn probe_display(config: &DesktopConfig) -> bool {
     if !socket.exists() {
         return false;
     }
-    xdpyinfo_answers(&config.display, "xdpyinfo", TOOL_TIMEOUT)
+    xdpyinfo_answers(&config.display, "xdpyinfo", TOOL_TIMEOUT).await
 }
 
-fn xdpyinfo_answers(screen: &str, program: &str, timeout: Duration) -> bool {
+async fn xdpyinfo_answers(screen: &str, program: &str, timeout: Duration) -> bool {
     let mut command = Command::new(program);
     command.arg("-display").arg(screen);
-    match run_bounded(&mut command, timeout) {
+    match run_bounded(&mut command, timeout, MAX_TOOL_OUTPUT).await {
         Ok(out) => out.status.success(),
         Err(err) if err.kind() == std::io::ErrorKind::TimedOut => {
             tracing::warn!("xdpyinfo on {screen} timed out after {timeout:?}; display not ready");
@@ -611,12 +565,12 @@ mod tests {
         assert_eq!(x11_socket_path("2"), PathBuf::from("/tmp/.X11-unix/X2"));
     }
 
-    #[test]
-    fn disabled_never_available() {
+    #[tokio::test]
+    async fn disabled_never_available() {
         let cfg = DesktopConfig::disabled();
         assert!(!cfg.enabled);
-        assert!(!cfg.probe_display());
-        let status = DesktopStatus::from_config(&cfg, "127.0.0.1:1340");
+        assert!(!cfg.probe_display().await);
+        let status = DesktopStatus::from_config(&cfg, "127.0.0.1:1340").await;
         assert!(!status.available);
         assert!(!status.enabled);
         assert!(!status.ready);
@@ -731,48 +685,20 @@ mod tests {
         assert_eq!(win.title, "New Tab - Chromium");
     }
 
-    #[test]
-    fn a_tool_that_hangs_is_killed_at_its_timeout() {
-        let started = Instant::now();
-        let err =
-            run_bounded(Command::new("sleep").arg("10"), Duration::from_millis(100)).unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
-        assert!(started.elapsed() < Duration::from_secs(2));
+    #[tokio::test]
+    async fn no_xdpyinfo_means_not_ready() {
+        assert!(!xdpyinfo_answers(":1", "/nonexistent/xdpyinfo", TOOL_TIMEOUT).await);
     }
 
-    #[test]
-    fn a_tool_that_finishes_gives_its_output() {
-        let out = run_bounded(
-            Command::new("sh").args(["-c", "echo hi; exit 3"]),
-            TOOL_TIMEOUT,
-        )
-        .unwrap();
-        assert_eq!(out.stdout, b"hi\n");
-        assert_eq!(out.status.code(), Some(3));
-    }
-
-    #[test]
-    fn no_xdpyinfo_means_not_ready() {
-        assert!(!xdpyinfo_answers(
-            ":1",
-            "/nonexistent/xdpyinfo",
-            TOOL_TIMEOUT
-        ));
-    }
-
-    #[test]
-    fn a_hung_xdpyinfo_means_not_ready() {
+    #[tokio::test]
+    async fn a_hung_xdpyinfo_means_not_ready() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("xdpyinfo");
         std::fs::write(&fake, "#!/bin/sh\nsleep 10\n").unwrap();
         std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755))
             .unwrap();
-        let started = Instant::now();
-        assert!(!xdpyinfo_answers(
-            ":1",
-            fake.to_str().unwrap(),
-            Duration::from_millis(100)
-        ));
+        let started = std::time::Instant::now();
+        assert!(!xdpyinfo_answers(":1", fake.to_str().unwrap(), Duration::from_millis(100)).await);
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 

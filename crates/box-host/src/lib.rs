@@ -186,8 +186,7 @@ async fn health() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok" })
 }
 
-/// Run a probe that may block (an X helper, a loopback connect) off the async workers. The X
-/// helpers are bounded by [`box_desktop::TOOL_TIMEOUT`], so this always comes back.
+/// Run a probe that may block (a loopback connect) off the async workers.
 async fn blocking<T: Send + 'static>(probe: impl FnOnce() -> T + Send + 'static) -> T {
     match tokio::task::spawn_blocking(probe).await {
         Ok(value) => value,
@@ -195,16 +194,18 @@ async fn blocking<T: Send + 'static>(probe: impl FnOnce() -> T + Send + 'static)
     }
 }
 
-/// Whether the display answers.
+/// Whether the display answers. Its X helper is bounded by [`box_desktop::TOOL_TIMEOUT`].
 async fn display_ready(desktop: &DesktopConfig) -> bool {
-    let desktop = desktop.clone();
-    blocking(move || desktop.probe_display()).await
+    desktop.probe_display().await
 }
 
 /// Whether the display answers, and whether its viewer does.
 async fn desktop_probe(desktop: &DesktopConfig) -> (bool, bool) {
-    let desktop = desktop.clone();
-    blocking(move || (desktop.probe_display(), desktop.viewer_ready())).await
+    let viewer = desktop.clone();
+    tokio::join!(
+        desktop.probe_display(),
+        blocking(move || viewer.viewer_ready())
+    )
 }
 
 async fn ready(State(state): State<AppState>) -> Result<Json<ReadyResponse>, ApiError> {
@@ -293,7 +294,7 @@ async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
 
 async fn desktop(State(state): State<AppState>) -> Json<DesktopStatus> {
     let host = container_local_host(state.host_bind);
-    Json(blocking(move || DesktopStatus::from_config(&state.desktop, &host)).await)
+    Json(DesktopStatus::from_config(&state.desktop, &host).await)
 }
 
 /// The box's own screen and every Bot's, with each one's viewer port and state.
@@ -323,7 +324,7 @@ async fn active_tab_now(Query(on): Query<OnScreen>) -> Json<active_tab::ActiveTa
 }
 
 async fn windows(State(state): State<AppState>) -> Json<WindowList> {
-    Json(blocking(move || WindowList::from_config(&state.desktop)).await)
+    Json(WindowList::from_config(&state.desktop).await)
 }
 
 #[derive(Serialize)]
