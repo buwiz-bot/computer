@@ -1003,3 +1003,127 @@ async fn metrics_reports_child_groups_and_open_descriptors() {
         "open descriptor gauge missing: {body}"
     );
 }
+
+#[tokio::test]
+async fn tree_and_element_take_the_token() {
+    let dir = TempDir::new().unwrap();
+    for uri in ["/v1/cua/tree", "/v1/cua/element"] {
+        let (status, body) = send(
+            state(&dir),
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"ref":"1:0","action":"press"}"#))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
+        assert_eq!(body["error"]["code"], "unauthorized", "{uri}");
+    }
+}
+
+#[tokio::test]
+async fn tree_and_element_are_cua_routes() {
+    let dir = TempDir::new().unwrap();
+    let s = state(&dir);
+    for (uri, payload) in [
+        ("/v1/cua/tree", json!({})),
+        ("/v1/cua/element", json!({"ref": "1:0", "action": "press"})),
+    ] {
+        let (status, body) = send(s.clone(), auth_json("POST", uri, "secret-token", payload)).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{uri}");
+        assert_eq!(body["error"]["code"], "cua_disabled", "{uri}");
+    }
+    let (status, body) = send(
+        s,
+        auth_json(
+            "POST",
+            "/v1/cua/tree?display=nope",
+            "secret-token",
+            json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["code"], "invalid_request");
+}
+
+/// CUA on, and no accessibility bus: what a box without one, or this machine, has.
+fn a11y_state(dir: &TempDir) -> AppState {
+    let mut s = state(dir);
+    s.cua.enabled = true;
+    s
+}
+
+#[tokio::test]
+async fn tree_without_a_bus_says_so() {
+    let dir = TempDir::new().unwrap();
+    let (status, body) = send(
+        a11y_state(&dir),
+        auth_json(
+            "POST",
+            "/v1/cua/tree?display=:97",
+            "secret-token",
+            json!({"scope": "desktop"}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["error"]["code"], "a11y_unavailable");
+    assert!(body["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains(":97 has no accessibility bus"));
+}
+
+#[tokio::test]
+async fn tree_limits_are_checked_first() {
+    let dir = TempDir::new().unwrap();
+    for payload in [
+        json!({"max_nodes": 0}),
+        json!({"max_nodes": 1_000_000}),
+        json!({"max_depth": 1000}),
+        json!({"timeout_ms": 600_000}),
+    ] {
+        let (status, body) = send(
+            a11y_state(&dir),
+            auth_json("POST", "/v1/cua/tree", "secret-token", payload.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{payload}");
+        assert_eq!(body["error"]["code"], "invalid_request", "{payload}");
+    }
+}
+
+#[tokio::test]
+async fn element_refs_are_checked_before_the_bus() {
+    let dir = TempDir::new().unwrap();
+    let s = a11y_state(&dir);
+    let cases = [
+        (
+            json!({"ref": "nope", "action": "press"}),
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+        ),
+        (
+            json!({"ref": "5:1", "action": "set_text"}),
+            StatusCode::BAD_REQUEST,
+            "invalid_request",
+        ),
+        (
+            json!({"ref": "5:1", "action": "press"}),
+            StatusCode::CONFLICT,
+            "stale_ref",
+        ),
+    ];
+    for (payload, want, code) in cases {
+        let (status, body) = send(
+            s.clone(),
+            auth_json("POST", "/v1/cua/element", "secret-token", payload.clone()),
+        )
+        .await;
+        assert_eq!(status, want, "{payload}: {body}");
+        assert_eq!(body["error"]["code"], code, "{payload}");
+    }
+}
