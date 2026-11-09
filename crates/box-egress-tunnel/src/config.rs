@@ -4,8 +4,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use box_common::{
-    ensure_token_strength, env_bool, env_nonempty, read_secret_from_env, wipe_secret_environ,
-    ConfigError,
+    ensure_token_strength, env_bool, env_nonempty, parse_addr, read_secret_from_env,
+    wipe_secret_environ, ConfigError,
 };
 
 use crate::allowlist::Allowlist;
@@ -36,9 +36,9 @@ pub struct TunnelClientConfig {
 
 impl TunnelServerConfig {
     pub fn from_env() -> Result<Self, ConfigError> {
-        let ws_bind = parse_addr("BOX_EGRESS_WS_BIND", DEFAULT_WS);
-        let proxy_bind = parse_addr("BOX_EGRESS_PROXY_BIND", DEFAULT_PROXY);
-        let admin_bind = parse_addr("BOX_EGRESS_ADMIN_BIND", DEFAULT_ADMIN);
+        let ws_bind = parse_addr("BOX_EGRESS_WS_BIND", DEFAULT_WS)?;
+        let proxy_bind = parse_addr("BOX_EGRESS_PROXY_BIND", DEFAULT_PROXY)?;
+        let admin_bind = parse_addr("BOX_EGRESS_ADMIN_BIND", DEFAULT_ADMIN)?;
         let bearer = read_secret_from_env("BOX_EGRESS_TUNNEL_BEARER", true)?.ok_or_else(|| {
             ConfigError(
                 "BOX_EGRESS_TUNNEL_BEARER must be set and non-empty, or BOX_EGRESS_TUNNEL_BEARER_FILE must point at a file containing it"
@@ -117,15 +117,6 @@ impl TunnelClientConfig {
         let loopback = url_is_loopback(&url);
         Self::from_parts(url, bearer, allowlist, reconnect, loopback)
     }
-}
-
-pub fn parse_addr(var: &str, default: &str) -> SocketAddr {
-    std::env::var(var)
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| default.to_string())
-        .parse()
-        .unwrap_or_else(|_| default.parse().expect("hardcoded bind addr"))
 }
 
 /// Load a bearer from an explicit file path and/or value. File wins.

@@ -7,10 +7,9 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use box_common::{container_local_host, env_bool, local_get};
+use box_common::{container_local_host, env_bool, local_get, parse_addr, ConfigError};
 use serde::{Deserialize, Serialize};
 
-use crate::config::parse_addr;
 use crate::protocol::PROTOCOL_NAME;
 
 const DEFAULT_WS: &str = "127.0.0.1:8790";
@@ -30,13 +29,15 @@ pub struct EgressConfig {
 }
 
 impl EgressConfig {
-    pub fn from_env() -> Self {
-        Self {
+    /// A malformed `BOX_EGRESS_*_BIND` is an error naming the variable; unset or empty is the
+    /// default.
+    pub fn from_env() -> Result<Self, ConfigError> {
+        Ok(Self {
             enabled: env_bool("BOX_EGRESS_TUNNEL", false),
-            ws_bind: parse_addr("BOX_EGRESS_WS_BIND", DEFAULT_WS),
-            proxy_bind: parse_addr("BOX_EGRESS_PROXY_BIND", DEFAULT_PROXY),
-            admin_bind: parse_addr("BOX_EGRESS_ADMIN_BIND", DEFAULT_ADMIN),
-        }
+            ws_bind: parse_addr("BOX_EGRESS_WS_BIND", DEFAULT_WS)?,
+            proxy_bind: parse_addr("BOX_EGRESS_PROXY_BIND", DEFAULT_PROXY)?,
+            admin_bind: parse_addr("BOX_EGRESS_ADMIN_BIND", DEFAULT_ADMIN)?,
+        })
     }
 
     pub fn disabled() -> Self {
@@ -123,6 +124,33 @@ mod tests {
         assert!(!st.ready);
         assert!(!st.client_attached);
         assert_eq!(st.protocol, PROTOCOL_NAME);
+    }
+
+    // The only test in this crate that touches these variables, so it needs no lock.
+    #[test]
+    fn a_malformed_egress_bind_is_an_error_and_unset_or_empty_is_the_default() {
+        std::env::remove_var("BOX_EGRESS_WS_BIND");
+        std::env::remove_var("BOX_EGRESS_ADMIN_BIND");
+        std::env::set_var("BOX_EGRESS_PROXY_BIND", "0.0.0.0:879x");
+        let err = EgressConfig::from_env().unwrap_err();
+        assert!(err.0.contains("BOX_EGRESS_PROXY_BIND"), "{err}");
+        assert!(err.0.contains("0.0.0.0:879x"), "{err}");
+
+        std::env::set_var("BOX_EGRESS_PROXY_BIND", " ");
+        let cfg = EgressConfig::from_env().unwrap();
+        assert_eq!(cfg.proxy_bind, DEFAULT_PROXY.parse().unwrap());
+
+        std::env::remove_var("BOX_EGRESS_PROXY_BIND");
+        let cfg = EgressConfig::from_env().unwrap();
+        assert_eq!(cfg.proxy_bind, DEFAULT_PROXY.parse().unwrap());
+        assert_eq!(cfg.ws_bind, DEFAULT_WS.parse().unwrap());
+        assert_eq!(cfg.admin_bind, DEFAULT_ADMIN.parse().unwrap());
+
+        // The tunnel daemon reads the same variables the same way, before its bearer.
+        std::env::set_var("BOX_EGRESS_WS_BIND", "nowhere");
+        let err = crate::config::TunnelServerConfig::from_env().unwrap_err();
+        assert!(err.0.contains("BOX_EGRESS_WS_BIND"), "{err}");
+        std::env::remove_var("BOX_EGRESS_WS_BIND");
     }
 
     #[tokio::test]

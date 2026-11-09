@@ -21,7 +21,7 @@ use axum::{Json, Router};
 use box_chrome::{probe_chrome, ChromeConfig, ChromeStatus};
 use box_common::{
     bearer_token, container_local_host, container_local_http_url, cors_layer, echo_request_id,
-    tokens_equal, ApiError, BoxConfig, GLOBAL_ALLOCATOR, PROTOCOL_VERSION,
+    tokens_equal, ApiError, BoxConfig, ConfigError, GLOBAL_ALLOCATOR, PROTOCOL_VERSION,
 };
 use box_cua::CuaConfig;
 use box_desktop::{slots_dir, DesktopConfig, DesktopStatus, ScreenList, WindowList, VIEWER_KIND};
@@ -49,8 +49,9 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn from_config(config: &BoxConfig) -> Self {
-        Self {
+    /// Fails when an egress bind is set and malformed.
+    pub fn from_config(config: &BoxConfig) -> Result<Self, ConfigError> {
+        Ok(Self {
             box_id: config.box_id.clone(),
             token: config.host_token.clone(),
             workspace: config.workspace.display().to_string(),
@@ -60,11 +61,11 @@ impl AppState {
             desktop: DesktopConfig::from_env(),
             chrome: ChromeConfig::from_env(),
             cua: CuaConfig::from_env(),
-            egress: EgressConfig::from_env(),
+            egress: EgressConfig::from_env()?,
             shutdown: Arc::new(Notify::new()),
             shutting_down: Arc::new(AtomicBool::new(false)),
             started_at: Instant::now(),
-        }
+        })
     }
 }
 
@@ -165,7 +166,7 @@ pub fn router(state: AppState) -> Router {
 
 pub async fn serve(config: BoxConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let bind = config.host_bind;
-    let state = AppState::from_config(&config);
+    let state = AppState::from_config(&config)?;
     let shutdown = state.shutdown.clone();
     let app = router(state);
     tracing::info!(

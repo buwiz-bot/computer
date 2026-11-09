@@ -269,7 +269,7 @@ fn default_box_id() -> String {
 
 /// `var` as a socket address. Unset or empty is `default`; anything else must parse, so a typo
 /// stops the daemon instead of quietly binding somewhere else.
-fn parse_addr(var: &str, default: &str) -> Result<SocketAddr, ConfigError> {
+pub fn parse_addr(var: &str, default: &str) -> Result<SocketAddr, ConfigError> {
     let Some(raw) = crate::env_nonempty(var) else {
         return Ok(default.parse().expect("hardcoded bind addr"));
     };
