@@ -5,6 +5,10 @@ The broker on your Mac launches one instance per computer from the launch templa
 hibernates the instance when the computer has been idle for 30 minutes, starts it again on the next
 use, and terminates it when you delete the computer. OpenTofu never creates an instance.
 
+**Keep in step with the CloudFormation template.** `cloudformation/buwiz-computer.yaml` makes the same
+things from the AWS console. This module and that template must change together:
+`bash deploy/aws/check-parity.sh` compares the settings they share and fails on drift.
+
 The defaults: region `ap-southeast-1` (Singapore), `m7i.large` (2 vCPU, 8 GiB), Ubuntu 24.04, an
 encrypted 60 GiB gp3 root volume, and hibernation on.
 
@@ -42,6 +46,34 @@ AWS_PROFILE=buwiz aws iam create-policy --policy-name buwiz-computer-broker \
 AWS_PROFILE=buwiz aws iam attach-user-policy --user-name buwiz-computer-broker \
   --policy-arn "arn:aws:iam::$(AWS_PROFILE=buwiz aws sts get-caller-identity --query Account --output text):policy/buwiz-computer-broker"
 ```
+
+## Without OpenTofu: CloudFormation
+
+`cloudformation/buwiz-computer.yaml` makes the same things as this module: the VPC, the SSH-only
+security group, the launch template `buwiz-computer`, the optional role, the broker's policy
+`buwiz-computer-broker` (with your account and region), and the broker's IAM user. It creates no
+instance and **no access key**. Stack outputs are readable by anyone who can call `DescribeStacks`,
+so the key is made in the IAM console and pasted into Buwiz Bot.
+
+1. **Find your address.** On the Mac that runs the broker: `curl -s https://checkip.amazonaws.com`.
+   Add `/32` for the parameter `AllowedSshCidr`. There is no default, and `0.0.0.0/0` is not allowed.
+2. **Create the stack** in the region you want, named `buwiz-computer`. Either:
+   - **No bucket:** CloudFormation console → Create stack → With new resources → Upload a template
+     file → `buwiz-computer.yaml`.
+   - **Launch Stack link:** `bash deploy/aws/cloudformation/publish.sh <bucket> <region>` uploads the
+     template to a bucket you own and prints a quick-create link. It needs the AWS CLI and a bucket,
+     and it creates no bucket. The person who opens the link must be able to read the object.
+     **Whether we host a public copy is the owner's call**, so until that is decided, use your own bucket.
+3. **Acknowledge** the IAM capability prompt (`CAPABILITY_NAMED_IAM`): the broker's policy and user,
+   and the optional role, have fixed names, because the broker's policy passes only `buwiz-computer*`
+   roles.
+4. **Read the outputs.** `BrokerEnv` has the lines `broker_env` prints. `BrokerAccessKeyConsole` opens
+   the IAM console for `buwiz-computer-broker`: create one access key there, once, and paste it into
+   Buwiz Bot.
+
+Not in the template: the region default, an existing subnet, a Local Zone (Manila), and a choice of
+Availability Zone other than the first. For those, use the OpenTofu module. Use one of the two per
+account and region: both create the same IAM names.
 
 ## How the broker uses it
 
@@ -160,3 +192,4 @@ hibernation isn't possible there, set `hibernation=false`; sleep is then a plain
 - That RunInstances with the default `aws/ebs` key needs no KMS permission beyond the policy. A
   `kms_key_id` of your own would need the broker's user to be allowed to use that key.
 - Docker's DNS with `--dns 169.254.169.253` behind the wall's rules.
+- The CloudFormation template, never deployed here: that `Fn::Cidr` makes the subnet `cidrsubnet(…, 8, 1)` makes, that the Canonical SSM parameters `/aws/service/canonical/ubuntu/server/24.04/stable/current/{amd64,arm64}/hvm/ebs-gp3/ami-id` resolve, that `/dev/sda1` is the root device, and that an update to the launch template makes its new version the default.
