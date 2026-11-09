@@ -1,0 +1,18 @@
+#cloud-config
+# No secret here: every process on the instance can read its user data, and cloud-init's logs.
+# The broker adds one part of its own at launch, the computer's SSH public key.
+package_update: true
+packages:
+  - ca-certificates
+  - docker.io
+  - ec2-hibinit-agent
+ssh_pwauth: false
+disable_root: true
+ssh_genkeytypes: [ed25519, ecdsa]
+# The broker pins the host key it reads here, from the console, before it logs in.
+ssh_key_console_blacklist: []
+ssh_fp_console_blacklist: []
+runcmd:
+  - [systemctl, enable, --now, docker]
+  - [sh, -c, "systemctl enable --now hibinit-agent || true"]
+  - [sh, -c, "docker pull -q '${image}' || true"]
