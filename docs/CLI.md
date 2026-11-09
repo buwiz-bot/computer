@@ -30,6 +30,7 @@ Commands:
   metrics      GET exec /v1/metrics
   shutdown     POST /v1/shutdown (exec, or --host)
   cua
+  browser      /v1/browser/*: a screen's Chromium over its DevTools pipe, through ultra-instinct
   help         Print this message or the help of the given subcommand(s)
 
 Options:
@@ -532,6 +533,160 @@ Options:
       --action <ACTION>    press, click, focus or set_text
       --text <TEXT>        The text, for set_text
       --display <DISPLAY>  Another of the box's screens (:N)
+  -h, --help               Print help
+```
+
+## `buwiz-computer browser`
+
+```text
+/v1/browser/*: a screen's Chromium over its DevTools pipe, through ultra-instinct
+
+Usage: buwiz-computer --exec-url <EXEC_URL> --host-url <HOST_URL> --token <TOKEN> browser [OPTIONS] <COMMAND>
+
+Commands:
+  snap      POST /v1/browser/snap: the current tab's controls, each with an @eN ref
+  act       POST /v1/browser/act: click, type, select, key, scroll or focus an element by ref
+  navigate  POST /v1/browser/navigate: the current tab to an http(s) URL
+  tabs      POST /v1/browser/tabs: list, open, close or switch tabs
+  wait      POST /v1/browser/wait: until the page shows text, an address, a control, or loads
+  shot      POST /v1/browser/shot: the current tab's viewport as a PNG
+  run       POST /v1/browser/run: Instinct runs a goal until done, blocked or abstained
+  state     POST /v1/browser/state: save or load this screen's login
+  help      Print this message or the help of the given subcommand(s)
+
+Options:
+      --display <DISPLAY>  Another of the box's screens (:N)
+  -h, --help               Print help
+```
+
+## `buwiz-computer browser snap`
+
+```text
+POST /v1/browser/snap: the current tab's controls, each with an @eN ref
+
+Usage: buwiz-computer browser snap [OPTIONS]
+
+Options:
+      --display <DISPLAY>      Another of the box's screens (:N)
+      --max-nodes <MAX_NODES>  The most elements returned (1 to 1000, default 200)
+  -h, --help                   Print help
+```
+
+## `buwiz-computer browser act`
+
+```text
+POST /v1/browser/act: click, type, select, key, scroll or focus an element by ref
+
+Usage: buwiz-computer browser act [OPTIONS] --ref <REFERENCE> --action <ACTION>
+
+Options:
+      --display <DISPLAY>             Another of the box's screens (:N)
+      --ref <REFERENCE>               @eN from the latest snap
+      --action <ACTION>               click, type, select, key, scroll or focus
+      --text <TEXT>                   type: the text; select: the option; key: the key
+      --snapshot <SNAPSHOT>           The snapshot the ref is from
+      --confirm <CONFIRM>             The token a confirm_required answer gave, once a person approved its label
+      --allow-domain <ALLOW_DOMAINS>  A host the page must be on (repeatable; *.example.com for its subdomains)
+  -h, --help                          Print help
+```
+
+## `buwiz-computer browser navigate`
+
+```text
+POST /v1/browser/navigate: the current tab to an http(s) URL
+
+Usage: buwiz-computer browser navigate [OPTIONS] <URL>
+
+Arguments:
+  <URL>
+
+Options:
+      --allow-domain <ALLOW_DOMAINS>
+      --display <DISPLAY>             Another of the box's screens (:N)
+  -h, --help                          Print help
+```
+
+## `buwiz-computer browser tabs`
+
+```text
+POST /v1/browser/tabs: list, open, close or switch tabs
+
+Usage: buwiz-computer browser tabs [OPTIONS] <OP>
+
+Arguments:
+  <OP>  list, open, close or switch
+
+Options:
+      --display <DISPLAY>             Another of the box's screens (:N)
+      --tab-id <TAB_ID>               close, switch: the tab
+      --url <URL>                     open: the page
+      --allow-domain <ALLOW_DOMAINS>
+  -h, --help                          Print help
+```
+
+## `buwiz-computer browser wait`
+
+```text
+POST /v1/browser/wait: until the page shows text, an address, a control, or loads
+
+Usage: buwiz-computer browser wait [OPTIONS]
+
+Options:
+      --display <DISPLAY>        Another of the box's screens (:N)
+      --text <TEXT>
+      --url <URL>
+      --control <CONTROL>
+      --gone <GONE>
+      --load <LOAD>              domcontentloaded or load
+      --timeout-ms <TIMEOUT_MS>
+  -h, --help                     Print help
+```
+
+## `buwiz-computer browser shot`
+
+```text
+POST /v1/browser/shot: the current tab's viewport as a PNG
+
+Usage: buwiz-computer browser shot [OPTIONS]
+
+Options:
+      --display <DISPLAY>  Another of the box's screens (:N)
+  -o, --output <OUTPUT>    Write the PNG here instead of printing the JSON
+  -h, --help               Print help
+```
+
+## `buwiz-computer browser run`
+
+```text
+POST /v1/browser/run: Instinct runs a goal until done, blocked or abstained
+
+Usage: buwiz-computer browser run [OPTIONS] <GOAL>
+
+Arguments:
+  <GOAL>
+
+Options:
+      --display <DISPLAY>             Another of the box's screens (:N)
+      --max-steps <MAX_STEPS>
+      --timeout-ms <TIMEOUT_MS>
+      --allow-domain <ALLOW_DOMAINS>
+      --confirm <CONFIRM>             The token a blocked run gave, once a person approved its confirm_label
+  -h, --help                          Print help
+```
+
+## `buwiz-computer browser state`
+
+```text
+POST /v1/browser/state: save or load this screen's login
+
+Usage: buwiz-computer browser state [OPTIONS] <OP>
+
+Arguments:
+  <OP>  save or load
+
+Options:
+      --display <DISPLAY>  Another of the box's screens (:N)
+      --name <NAME>        Which saved login (default `default`)
   -h, --help               Print help
 ```
 

@@ -12,7 +12,7 @@ Your orchestrator (the Bot)
     ▼
 buwiz-computer guest (this image)
     ├── box-host :1340   identity, capabilities, ready, screens, desktop/chrome/egress
-    ├── box-exec :1337   exec + files + /v1/cua/*
+    ├── box-exec :1337   exec + files + /v1/cua/* + /v1/browser/*
     ├── box-egress-tunnel :8790  optional laptop CONNECT mux (proxy 127.0.0.1:8791)
     ├── Xvfb :1 1280×800 + xfce + voxl :6901 (a Bot's own screen: :N and 6900+N)
     └── Chromium (profile volume; no DevTools port; a DevTools pipe only box-exec holds; optional --proxy-server)
@@ -36,7 +36,7 @@ Full list: [TERMINOLOGY.md](TERMINOLOGY.md).
 
 | Port | Process | Routes / role |
 | --- | --- | --- |
-| **1337** | `box-exec` | `GET /v1/health`, `POST /v1/exec`, `POST /v1/exec/stream`, files (JSON + raw), CUA, busy/metrics/shutdown |
+| **1337** | `box-exec` | `GET /v1/health`, `POST /v1/exec`, `POST /v1/exec/stream`, files (JSON + raw), CUA, browser, busy/metrics/shutdown |
 | **1340** | `box-host` | `GET /v1/health`, `GET /v1/ready`, `GET /v1/info`, `GET /v1/desktop`, `GET /v1/desktop/windows`, `GET /v1/screens`, `GET /v1/chrome`, `GET /v1/chrome/active-tab`, `GET /v1/egress`, busy/metrics/shutdown |
 | **6901–6905** | `voxl` | One per screen, `6900+N` for display `:N`: the live view, and `/wait`, `/screenshot`, `/record`. Published by Compose on loopback. |
 | **8790** | `box-egress-tunnel` WS | Laptop client when `BOX_EGRESS_TUNNEL=1`. Compose publishes loopback. |
@@ -173,13 +173,17 @@ CUA is first-party in this image:
 
 **What it respects.** Every flag the entrypoint and `box-chromium` already pass stays: the profile, the active-tab extension, the egress proxy flags, `--force-renderer-accessibility`. The restart loop and `chrome.pid` see the launcher, which passes on signals and exits with Chromium's status. `BOX_CHROME=0` starts no Chromium. `BOX_BROWSER=0` starts the main screen's Chromium with no pipe. The launcher fails closed: if the run folder is open to others, or there is no `boxsvc` user, Chromium starts as before, with no pipe.
 
+**What drives it.** The `box-browser` crate, in `box-exec`. Each screen gets a thread of its own the first time a call needs it. That thread owns the screen's pipe and the ultra-instinct objects on it, which are not `Send`, and runs the screen's calls one at a time; the async routes send it jobs and wait for the answer within each call's budget. It calls a fixed few of ultra-instinct's tools: the page's state, navigate, click, type, select, key, scroll into view, focus, the tab tools, wait, screenshot, save and load state, and its goal loop. Never the ones that read or set cookies, storage, headers or the network, or download. Their answers are read into `box-browser`'s own shapes, never passed on. The routes: [API.md](API.md#browser-v1browser).
+
+**Where ultra-instinct plugs in.** `box_browser::seam` is the only module that knows ultra-instinct's types. Its `Tools` trait is a tool call by name (JSON in, JSON or a coded failure out), the policy, and a goal run. `seam::open(pipe)` is where the pipe transport goes. Until it's linked, `seam::LINKED` is false, and no screen's pipe is taken from its launcher: one taken and dropped would close that Chromium.
+
 What's a wall here and what isn't: [USERS.md](USERS.md).
 
 ## Clients
 
 Workspace-only (do not publish):
 
-1. **Rust** `buwiz-computer` — `BuwizComputer::connect(exec_url, host_url, token)?` (it returns a `Result`) plus CLI. Every request is bounded by `DEFAULT_TIMEOUT` (120 s) unless `BuwizComputer::with_timeout(Duration)` sets another; an exec with `timeout_ms` gets that plus `EXEC_MARGIN` (35 s) if longer, a `cua_wait` its wait plus `WAIT_MARGIN` (5 s), a `cua_tree` its `timeout_ms` plus `TREE_MARGIN` (5 s). A file call gets one more second for every `TRANSFER_FLOOR` (64 KiB) sent and, by its `content-length`, received; a read with no `content-length` gets the timeout between pieces instead. Running out is `Error::Timeout`. The CLI's global flag is `--request-timeout-secs` (env `BUWIZ_COMPUTER_REQUEST_TIMEOUT_SECS`). CLI: [CLI.md](CLI.md)
+1. **Rust** `buwiz-computer` — `BuwizComputer::connect(exec_url, host_url, token)?` (it returns a `Result`) plus CLI. Every request is bounded by `DEFAULT_TIMEOUT` (120 s) unless `BuwizComputer::with_timeout(Duration)` sets another; an exec with `timeout_ms` gets that plus `EXEC_MARGIN` (35 s) if longer, a `cua_wait` its wait plus `WAIT_MARGIN` (5 s), a `cua_tree` its `timeout_ms` plus `TREE_MARGIN` (5 s), a `browser_wait` or `browser_run` its `timeout_ms` plus `BROWSER_MARGIN` (20 s). A file call gets one more second for every `TRANSFER_FLOOR` (64 KiB) sent and, by its `content-length`, received; a read with no `content-length` gets the timeout between pieces instead. Running out is `Error::Timeout`. The CLI's global flag is `--request-timeout-secs` (env `BUWIZ_COMPUTER_REQUEST_TIMEOUT_SECS`). CLI: [CLI.md](CLI.md)
 2. **TypeScript** `sdk/typescript` — same connect
 3. **Python** `sdk/python` — same connect
 
