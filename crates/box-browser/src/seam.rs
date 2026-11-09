@@ -23,8 +23,11 @@ use ultra_instinct_mcp::{Server, ToolError};
 /// a pipe: one taken and dropped would close the screen's Chromium.
 pub const LINKED: bool = true;
 
-/// The largest frame the pipe takes: a screenshot at box-browser's cap, base64, with room.
-pub const MAX_FRAME_BYTES: usize = 16 << 20;
+/// The largest frame the pipe takes: ultra-instinct's own default. A frame over it closes the
+/// screen's Chromium for good, so it sits well above box-browser's screenshot cap: a full-page
+/// shot comes back base64, a third larger than the PNG, and an answer the shot cap refuses must
+/// still arrive whole to be refused.
+pub const MAX_FRAME_BYTES: usize = 64 << 20;
 /// How long one CDP call on the pipe waits for its answer.
 pub const CALL_DEADLINE: Duration = Duration::from_secs(20);
 
