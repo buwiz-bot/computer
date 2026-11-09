@@ -1,6 +1,9 @@
 /target
 /.git
 /workspace-data
+# What scripts/write-secrets.sh writes: Compose mounts it, and no image layer may hold it.
+/secrets
+**/secrets/
 /chrome-profile
 **/*.md
 !README.md
