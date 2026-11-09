@@ -113,6 +113,13 @@ start_desktop() {
   export XDG_CONFIG_HOME="${HOME}/.config"
   mkdir -p "${XDG_RUNTIME_DIR}"
   chmod 700 "${XDG_RUNTIME_DIR}"
+  # The screen's accessibility bus, before anything that publishes on it: every app this session
+  # starts inherits the address, and Chromium publishes its own buttons only when told to.
+  # box-exec reads the trees for POST /v1/cua/tree (box-a11y-bus, docs/ARCHITECTURE.md). Without
+  # it the desktop still runs, and the route says this screen has no bus.
+  export AT_SPI_BUS_ADDRESS="unix:path=${BOX_SCREEN_RUN}/a11y-bus"
+  export ACCESSIBILITY_ENABLED=1
+  /usr/local/bin/box-a11y-bus "${BOX_SCREEN_RUN}/a11y-bus" || echo "no accessibility bus on ${DISPLAY}" >&2
   dbus-launch --exit-with-session xfce4-session >"${BOX_SCREEN_RUN}/xfce4-session.log" 2>&1 &
   record $!
 
@@ -181,6 +188,7 @@ start_chrome() {
         --disable-session-crashed-bubble \
         --disable-features=Translate \
         --load-extension=/opt/box/active-tab \
+        --force-renderer-accessibility \
         --window-size="${w},${h}" \
         --window-position=0,0 \
         "${proxy_args[@]}" \

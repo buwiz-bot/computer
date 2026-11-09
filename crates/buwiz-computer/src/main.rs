@@ -233,6 +233,42 @@ enum CuaCmd {
         #[arg(long)]
         file: PathBuf,
     },
+    /// POST /v1/cua/tree: the accessibility tree of the focused window, or the whole desktop
+    Tree {
+        /// focused_window (default) or desktop
+        #[arg(long)]
+        scope: Option<String>,
+        #[arg(long)]
+        max_depth: Option<u64>,
+        #[arg(long)]
+        max_nodes: Option<u64>,
+        #[arg(long)]
+        timeout_ms: Option<u64>,
+        /// Also nodes that are neither showing nor visible
+        #[arg(long)]
+        include_hidden: bool,
+        /// Keep the nameless containers compact mode leaves out
+        #[arg(long)]
+        no_compact: bool,
+        /// Another of the box's screens (:N)
+        #[arg(long)]
+        display: Option<String>,
+    },
+    /// POST /v1/cua/element: press, click, focus or set_text on a node of the latest tree
+    Element {
+        /// The node's ref, from `cua tree`
+        #[arg(long = "ref")]
+        reference: String,
+        /// press, click, focus or set_text
+        #[arg(long)]
+        action: String,
+        /// The text, for set_text
+        #[arg(long)]
+        text: Option<String>,
+        /// Another of the box's screens (:N)
+        #[arg(long)]
+        display: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -421,6 +457,46 @@ async fn main() -> Result<()> {
                 let request: serde_json::Value = serde_json::from_str(&raw)
                     .with_context(|| format!("parse {}", file.display()))?;
                 print_json(&box_client.recipe(&request).await?)?;
+            }
+            CuaCmd::Tree {
+                scope,
+                max_depth,
+                max_nodes,
+                timeout_ms,
+                include_hidden,
+                no_compact,
+                display,
+            } => {
+                let on = display.map_or_else(|| box_client.clone(), |d| box_client.on(&d));
+                let mut body = json!({});
+                if let Some(scope) = scope {
+                    body["scope"] = json!(scope);
+                }
+                if let Some(n) = max_depth {
+                    body["max_depth"] = json!(n);
+                }
+                if let Some(n) = max_nodes {
+                    body["max_nodes"] = json!(n);
+                }
+                if let Some(ms) = timeout_ms {
+                    body["timeout_ms"] = json!(ms);
+                }
+                if include_hidden {
+                    body["include_hidden"] = json!(true);
+                }
+                if no_compact {
+                    body["compact"] = json!(false);
+                }
+                print_json(&on.cua_tree(body).await?)?;
+            }
+            CuaCmd::Element {
+                reference,
+                action,
+                text,
+                display,
+            } => {
+                let on = display.map_or_else(|| box_client.clone(), |d| box_client.on(&d));
+                print_json(&on.cua_element(&reference, &action, text.as_deref()).await?)?;
             }
         },
     }

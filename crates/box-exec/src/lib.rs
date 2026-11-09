@@ -4,6 +4,7 @@
 //! box X display. Inference stays in L4. The process-wide heap is mimalloc
 //! when the `mimalloc` feature is on (default); see `box_common::GLOBAL_ALLOCATOR`.
 
+mod a11y;
 mod control;
 mod cua;
 mod exec;
@@ -63,6 +64,8 @@ pub struct AppState {
     pub users: users::Users,
     /// Where `box-keeper` takes screen requests.
     pub keeper_socket: PathBuf,
+    /// The latest accessibility tree of each screen, for `POST /v1/cua/element`.
+    pub a11y: box_a11y::Snapshots,
 }
 
 #[derive(Clone, Debug)]
@@ -97,6 +100,7 @@ impl AppState {
             child_groups: Arc::new(std::sync::Mutex::new(HashMap::new())),
             users: users::Users::from_env(),
             keeper_socket: PathBuf::from(box_common::KEEPER_SOCKET),
+            a11y: box_a11y::Snapshots::default(),
         }
     }
 
@@ -124,6 +128,7 @@ impl AppState {
             child_groups: Arc::new(std::sync::Mutex::new(HashMap::new())),
             users: users::Users::Same,
             keeper_socket: PathBuf::from("/nonexistent/keeper.sock"),
+            a11y: box_a11y::Snapshots::default(),
         }
     }
 }

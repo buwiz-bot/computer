@@ -1,0 +1,31 @@
+#!/bin/sh
+# A screen's accessibility (AT-SPI) bus, as that screen's desktop user, before its session starts:
+#
+#   box-a11y-bus <socket>
+#
+# The session's apps find it by AT_SPI_BUS_ADDRESS (entrypoint.sh, box-screen), which GTK's and
+# Chromium's AT-SPI bridges read before anything else, and by the AT_SPI_BUS property on the root
+# window. The registry runs on it here, not by D-Bus activation: activated, it would look for a
+# GNOME session on a session bus this screen doesn't have.
+#
+# The socket goes in the screen's run folder (/run/box/x/<N>/run), owned by the desktop user and
+# open to boxsvc's group alone, so box-exec can reach it and a command's user can't. The socket
+# itself has to be writable by boxsvc to be connected to, and the desktop user can't give it to
+# boxsvc's group, so it's 0666 inside that folder. box-exec checks who listens (SO_PEERCRED)
+# before it says a word: see crates/box-a11y.
+set -eu
+sock="${1:?box-a11y-bus <socket>}"
+case "${sock}" in
+  /run/box/x/*/run/a11y-bus) ;;
+  *) echo "box-a11y-bus: ${sock} is not a screen's bus" >&2; exit 2 ;;
+esac
+rm -f "${sock}"
+# --fork returns once the daemon listens.
+dbus-daemon --config-file=/etc/box/a11y-bus.conf --address="unix:path=${sock}" --fork --nopidfile
+chmod 0666 "${sock}"
+export AT_SPI_BUS_ADDRESS="unix:path=${sock}"
+# The registry lives as long as the bus does.
+setsid -f /usr/libexec/at-spi2-registryd >/dev/null 2>&1
+if [ -n "${DISPLAY:-}" ]; then
+  xprop -root -f AT_SPI_BUS 8s -set AT_SPI_BUS "${AT_SPI_BUS_ADDRESS}" 2>/dev/null || true
+fi

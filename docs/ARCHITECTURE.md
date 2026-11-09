@@ -145,8 +145,23 @@ CUA is first-party in this image:
 - Coordinate space = X framebuffer **1280×800** (see `BOX_DISPLAY_GEOM`), origin top-left
 - Verbs: screenshot, click, double-click, move (hover), drag, type, key, scroll, **recipe** (many of those in one HTTP call — [RECIPES.md](RECIPES.md))
 - Endpoints live on `box-exec` and share `BOX_TOKEN`. `?display=:N` puts a call on a Bot's own screen
+- Widgets as text: `POST /v1/cua/tree` and `POST /v1/cua/element`, over AT-SPI (below)
 
 **trycua** is not vendored and is not on the guest path. Windows/macOS remain clients or Docker hosts, not a native buwiz-computer OS.
+
+## Accessibility tree (AT-SPI)
+
+`POST /v1/cua/tree` and `POST /v1/cua/element` ([API.md](API.md#post-v1cuatree)) read a screen's widgets as text and act on them by `ref`. They are `box-exec` routes, in-process: the `box-a11y` crate speaks AT-SPI over D-Bus with the `atspi` crate's proxies (zbus), and there is no second daemon.
+
+**One accessibility bus per screen.** `docker/box-a11y-bus` starts it as the screen's desktop user, before the session (from `entrypoint.sh` for the main screen, from `box-screen` for a Bot's), with the AT-SPI registry on it, and exports `AT_SPI_BUS_ADDRESS` to everything the session starts. GTK's bridge and Chromium's read that address first, and Chromium publishes its own buttons and pages because it runs with `--force-renderer-accessibility` and `ACCESSIBILITY_ENABLED=1`. The image removes `at-spi-bus-launcher`'s autostart and D-Bus activation, so there's no second bus in the desktop's private runtime folder, where `box-exec` couldn't read it.
+
+**Who can reach it.** The bus listens on `/run/box/x/<slot>/run/a11y-bus`. That folder is the desktop user's, group `boxsvc`, mode 0750, so `box-exec` can enter it and a command's user (`agent`, a Bot's agent user) can't. The socket is 0666 inside it, because the desktop user can't give it to `boxsvc`'s group. The bus's policy (`docker/a11y-bus.conf`) lets in the desktop user, who owns it, and `boxsvc`, and no one else, and allows no eavesdropping. Two walls, then, the folder and the policy, and the rule that commands can't reach a desktop holds: a command can't read a tree or press a button any more than it can connect to X. `box-exec` is the trusted daemon here, as it is for X.
+
+**What's checked is what's spoken to.** As with X, `box-exec` connects, then asks the kernel who listens (`SO_PEERCRED`) and refuses unless it's that screen's desktop user, before it sends a byte. A desktop's applications are not trusted either: they can answer with anything, or not at all, so every answer is bounded by the request's node, depth and time limits, every string is clipped, each call has a one-second limit, and refs are kept only for each screen's latest tree.
+
+**Coordinates.** `bounds` are AT-SPI's screen coordinates. Each screen is its own X server at 0,0, so they are the pixels `/v1/cua/click` takes, and `element` `click` clicks the middle of an element's bounds as they are when it's asked.
+
+**The focused window.** X knows which window has the keyboard focus better than AT-SPI does: Chromium never marks its frame `active`, and xfwm4 keeps an offscreen helper window that always is. So `focused_window` is the window named like the focused X window's title (read as recipes' `observe` reads it), then one AT-SPI calls active, and never a window off the screen.
 
 ## Clients
 

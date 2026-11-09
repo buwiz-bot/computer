@@ -2,7 +2,8 @@
 # The dock's Chromium. Same profile as the Chromium the entrypoint starts
 # (BOX_CHROME=1), so this opens a window in that instance; with no instance
 # running it starts one. A desktop's user has no setuid sandbox in this image, hence
-# --no-sandbox, and --test-type hides the banner about it.
+# --no-sandbox, and --test-type hides the banner about it. --force-renderer-accessibility puts its
+# buttons and pages on the screen's accessibility bus (POST /v1/cua/tree), as the entrypoint's does.
 #
 # When BOX_EGRESS_TUNNEL is on, pass the same CONNECT proxy flags as the
 # entrypoint so a cold start (no running instance) still exits via the laptop.
@@ -50,6 +51,7 @@ exec chromium \
   --disable-session-crashed-bubble \
   --disable-features=Translate \
   --load-extension=/opt/box/active-tab \
+  --force-renderer-accessibility \
   ${proxy_server} \
   ${proxy_bypass} \
   ${proxy_webrtc} \

@@ -41,6 +41,8 @@ need=(
   "/v1/cua/wait:"
   "/v1/cua/record/start:"
   "/v1/cua/record/stop:"
+  "/v1/cua/tree:"
+  "/v1/cua/element:"
 )
 
 missing=0
@@ -61,6 +63,10 @@ if ! grep -q "StepObservation" "${SPEC}"; then
 fi
 if ! grep -q "reset_desktop" "${SPEC}"; then
   echo "openapi missing reset_desktop" >&2
+  missing=1
+fi
+if ! grep -q "stale_ref" "${SPEC}"; then
+  echo "openapi missing the element route's stale_ref" >&2
   missing=1
 fi
 if ! grep -q "x-request-id" "${SPEC}"; then
