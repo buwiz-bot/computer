@@ -392,6 +392,71 @@ assert seen.get("wait") is False, seen
 '
 fi
 
+echo "==> POST /v1/cua/tree + /v1/cua/element (AT-SPI)"
+# The panel and Chromium register on the screen's accessibility bus a moment after the desktop is
+# up: wait for both, then check the panel's Files button and Chromium's toolbar are in the tree.
+tree=""
+for _ in $(seq 1 30); do
+  tree="$(curl -fsS \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H "Content-Type: application/json" \
+    -d '{"scope":"desktop","max_nodes":800}' \
+    "${EXEC_URL}/v1/cua/tree" || true)"
+  if printf '%s' "${tree}" | grep -q '"name":"Files"' \
+    && printf '%s' "${tree}" | grep -q '"name":"Reload"'; then
+    break
+  fi
+  sleep 1
+done
+files_ref=""
+if command -v python3 >/dev/null 2>&1; then
+  files_ref="$(printf '%s' "${tree}" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert d["scope"] == "desktop" and d["display"] == ":1", d
+def walk(nodes):
+    for n in nodes:
+        yield n
+        yield from walk(n.get("children", []))
+nodes = list(walk(d["nodes"]))
+assert len(nodes) == d["count"], "count is the nodes sent"
+apps = {n["name"] for n in d["nodes"]}
+assert "xfce4-panel" in apps and "Chromium" in apps, apps
+files = [n for n in nodes if n["role"] == "button" and n["name"] == "Files"]
+assert files, "the panel has no Files button"
+b = files[0]["bounds"]
+assert 0 <= b["x"] < 1280 and 0 <= b["y"] < 800 and b["width"] > 0, b
+assert any(n["role"] == "button" and n["name"] == "Reload" for n in nodes), "no Chromium toolbar"
+assert len({n["ref"] for n in nodes}) == len(nodes), "refs repeat"
+print(files[0]["ref"])
+')"
+else
+  printf '%s' "${tree}" | grep -q '"role":"button","name":"Files"'
+  files_ref="$(printf '%s' "${tree}" | sed -n 's/.*"ref":"\([0-9]*:[0-9]*\)","role":"button","name":"Files".*/\1/p')"
+fi
+if [[ -z "${files_ref}" ]]; then
+  echo "accessibility tree has no Files button: ${tree:0:600}" >&2
+  exit 1
+fi
+echo "Files button ${files_ref}"
+curl -fsS -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+  -d '{}' "${EXEC_URL}/v1/cua/tree" | grep -q '"scope":"focused_window"'
+# The tree above is no longer the latest, so its refs are stale.
+stale_code="$(curl -sS -o /dev/null -w '%{http_code}' \
+  -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+  -d "{\"ref\":\"${files_ref}\",\"action\":\"focus\"}" "${EXEC_URL}/v1/cua/element")"
+if [[ "${stale_code}" != "409" ]]; then
+  echo "expected 409 stale_ref for an older tree's ref, got ${stale_code}" >&2
+  exit 1
+fi
+a11y_exec="$(curl -fsS \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"command":["sh","-c","if [ -r /run/box/x/1/run ] || [ -w /run/box/x/1/run/a11y-bus ]; then echo A11Y_REACHED; else echo A11Y_WALLED; fi"]}' \
+  "${EXEC_URL}/v1/exec")"
+echo "${a11y_exec}"
+echo "${a11y_exec}" | grep -q A11Y_WALLED
+
 echo "==> BOX_DESKTOP=0 still serves exec+host"
 "${COMPOSE[@]}" down --remove-orphans >/dev/null 2>&1 || true
 if [[ "${COMPOSE[0]}" == "sudo" ]]; then
