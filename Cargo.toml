@@ -33,9 +33,9 @@ box-browser = { path = "crates/box-browser" }
 # 851536f on ultra-instinct's main (its PR #102, phase 2: the pipe server, snapshot-bound presses,
 # stable error codes, run_goal); its docs/embedding.md is the guide. box-browser's `seam` is the
 # only place that knows its types.
-ultra-instinct-mcp = { git = "https://github.com/hexuria/ultra-instinct", rev = "851536ff8ae12fae7646e065d67004a2871e686d", default-features = false }
-ultra-instinct-guard = { git = "https://github.com/hexuria/ultra-instinct", rev = "851536ff8ae12fae7646e065d67004a2871e686d", default-features = false }
-ultra-instinct-cdp = { git = "https://github.com/hexuria/ultra-instinct", rev = "851536ff8ae12fae7646e065d67004a2871e686d", default-features = false }
+ultra-instinct-mcp = { git = "https://github.com/hexuria/ultra-instinct", rev = "22885b36e761f9cba1b4f9f4df246647cbab8c76", default-features = false }
+ultra-instinct-guard = { git = "https://github.com/hexuria/ultra-instinct", rev = "22885b36e761f9cba1b4f9f4df246647cbab8c76", default-features = false }
+ultra-instinct-cdp = { git = "https://github.com/hexuria/ultra-instinct", rev = "22885b36e761f9cba1b4f9f4df246647cbab8c76", default-features = false }
 box-egress-tunnel = { path = "crates/box-egress-tunnel" }
 tokio-tungstenite = { version = "0.26", features = ["connect", "rustls-tls-webpki-roots"] }
 axum = { version = "0.8", features = ["json", "macros"] }

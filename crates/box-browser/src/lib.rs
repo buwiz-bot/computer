@@ -47,8 +47,8 @@ pub enum BrowserError {
     /// A ref from an older snapshot, or an element that's gone.
     #[error("{0}")]
     Stale(String),
-    /// The click needs a person to confirm `label`; `token` goes back as `confirm`.
-    #[error("clicking {label:?} needs a person's confirm: send the token back as `confirm`")]
+    /// The press needs a person to confirm `label`; `token` goes back as `confirm`.
+    #[error("pressing {label:?} needs a person's confirm: send the token back as `confirm`")]
     ConfirmRequired { label: String, token: String },
     /// The page, or the address asked for, isn't on the call's allow-list.
     #[error("{0} is not on this call's allow_domains")]
@@ -453,8 +453,14 @@ impl ActRequest {
             ),
             _ => Ok(()),
         }?;
-        if self.confirm.is_some() && self.action != ActAction::Click {
-            return Err(BrowserError::Invalid("`confirm` is for click alone".into()));
+        let presses = matches!(
+            self.action,
+            ActAction::Click | ActAction::Key | ActAction::Type
+        );
+        if self.confirm.is_some() && !presses {
+            return Err(BrowserError::Invalid(
+                "`confirm` is for click, key and type alone".into(),
+            ));
         }
         Ok(())
     }
@@ -737,6 +743,13 @@ pub struct RunResponse {
     /// `blocked` on a confirm: the token to send back as `confirm`, once they have.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confirm: Option<String>,
+    /// `blocked`: `needs_confirm` (with `confirm_label` and `confirm`) or `domain_not_allowed`
+    /// (with `host`), the codes a press's error would carry. None: the run stopped itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<&'static str>,
+    /// `blocked` on `domain_not_allowed`: the host off the list, when it could be read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
     /// `abstained`, `failed`: why. After an abstain the caller's model may take over.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,

@@ -609,6 +609,27 @@ bpost act "{\"ref\":\"${pay}\",\"action\":\"click\",\"confirm\":\"${token}\",\"a
 [[ "${code}" == "409" ]]
 echo "a spent token confirms nothing: ${code}"
 
+# A key confirms by the form it sends: Enter in a field outside any form presses nothing, and
+# goes through; Enter in the checkout's field would send it, so it needs Place order's confirm.
+bpost snap '{}'
+[[ "${code}" == "200" ]]
+email="$(ref_of Email text_field)"
+card="$(ref_of Card text_field)"
+bpost act "{\"ref\":\"${email}\",\"action\":\"key\",\"text\":\"Enter\",\"allow_domains\":${allow}}"
+echo "enter outside a form ${code} ${body}"
+[[ "${code}" == "200" ]]
+bpost act "{\"ref\":\"${card}\",\"action\":\"key\",\"text\":\"Enter\",\"allow_domains\":${allow}}"
+echo "enter in the checkout ${code} ${body}"
+[[ "${code}" == "409" ]]
+printf '%s' "${body}" | grep -q '"code":"confirm_required"'
+printf '%s' "${body}" | grep -q '"label":"Place order"'
+token="$(printf '%s' "${body}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["error"]["details"]["confirm"])')"
+bpost act "{\"ref\":\"${card}\",\"action\":\"key\",\"text\":\"Enter\",\"confirm\":\"${token}\",\"allow_domains\":${allow}}"
+echo "enter confirmed ${code} ${body}"
+[[ "${code}" == "200" ]]
+bpost wait '{"text":"order placed","timeout_ms":10000}'
+printf '%s' "${body}" | grep -q '"seen":true'
+
 # Off the allow-list: refused before the browser goes anywhere.
 bpost navigate "{\"url\":\"https://example.org/\",\"allow_domains\":${allow}}"
 echo "off-list ${code} ${body}"
@@ -664,7 +685,7 @@ echo "run pay ${code} ${body}"
 run_token="$(printf '%s' "${body}" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
-assert d["outcome"] == "blocked" and d["confirm_label"] == "Pay $18" and d["confirm"], d
+assert d["outcome"] == "blocked" and d.get("code") == "needs_confirm" and d["confirm_label"] == "Pay $18" and d["confirm"], d
 print(d["confirm"])
 ')"
 bpost run "{\"goal\":\"Click Pay \$18\",\"max_steps\":4,\"confirm\":\"${run_token}\",\"allow_domains\":${allow}}"

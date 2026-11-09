@@ -13,7 +13,7 @@ use base64::Engine as _;
 use serde_json::{json, Value};
 
 use crate::policy::{AllowList, Confirms, Rules};
-use crate::seam::{GoalBounds, GoalEnd, PolicyLists, ToolFailure, Tools};
+use crate::seam::{BlockedBy, GoalBounds, GoalEnd, PolicyLists, ToolFailure, Tools};
 use crate::shape::{self, Seen};
 use crate::{
     ActAction, ActRequest, ActResponse, BrowserError, Element, Job, NavigateResponse, Opener,
@@ -274,19 +274,29 @@ impl Screen {
             })?;
 
         let mut confirmed = Vec::new();
-        if let Some(label) = self.gate(req, &here.label, &snapped_label, &now) {
-            let redeemed = req
-                .confirm
-                .as_deref()
-                .and_then(|token| self.confirms.redeem(token, Some(&region)));
-            match redeemed {
-                // A token confirms the label it was given for, and nothing it has turned into.
-                Some(approved) if approved == label => confirmed.push(approved),
-                _ => {
-                    let token = self.confirms.issue(&label, Some(&region))?;
-                    return Err(BrowserError::ConfirmRequired { label, token });
-                }
+        let redeemed = req
+            .confirm
+            .as_deref()
+            .and_then(|token| self.confirms.redeem(token, Some(&region)));
+        match (self.gate(req, &here.label, &snapped_label, &now), redeemed) {
+            // A token confirms the label it was given for, and nothing it has turned into.
+            (Some(label), Some(approved)) if approved == label => confirmed.push(approved),
+            (Some(label), _) => {
+                let token = self.confirms.issue(&label, Some(&region))?;
+                return Err(BrowserError::ConfirmRequired { label, token });
             }
+            // One the guard asked for, on this element: the submit button of the form an Enter
+            // would send, say. The guard checks the label again on its own fresh look, and asks
+            // anew if the press would now do something else.
+            (None, Some(approved)) => confirmed.push(approved),
+            (None, None) if req.confirm.is_some() => {
+                return Err(BrowserError::Invalid(
+                    "`confirm` is not a token this screen gave for this element, or it was used \
+                     or is old"
+                        .into(),
+                ));
+            }
+            (None, None) => {}
         }
         self.apply(allow, confirmed.clone())?;
 
@@ -307,7 +317,13 @@ impl Screen {
                 "browser_select_dropdown",
                 json!({"index": index, "text": req.text}),
             ),
-            ActAction::Key => ("browser_send_key", json!({"index": index, "key": req.text})),
+            ActAction::Key => {
+                let mut args = json!({"index": index, "key": req.text});
+                if let Some(label) = confirmed.first() {
+                    args["confirm"] = json!(label);
+                }
+                ("browser_send_key", args)
+            }
             ActAction::Scroll => ("browser_scroll_to", json!({"index": index})),
             ActAction::Focus => ("browser_focus", json!({"index": index})),
         };
@@ -338,11 +354,12 @@ impl Screen {
         })
     }
 
-    /// The label a person must confirm before `req`, if any. A click or a key on an element the
-    /// confirm rules name; and a key that activates or submits (Enter, Space), or typed text that
-    /// ends a line, while the page shows any element they name, since that key may press it: a
-    /// focused Pay button, or a field whose form's default button is Pay. ultra-instinct's guard
-    /// gates clicks alone, so a key is box-browser's to stop.
+    /// The label a person must confirm before `req`, if any: a click or a key on an element the
+    /// confirm rules name, and typed text that ends a line while the page shows any element they
+    /// name, since that line end may submit the form whose default button it is. An Enter or a
+    /// Space on any other element is ultra-instinct's guard's to stop: it knows the form the key
+    /// would send, and asks for the confirm of that form's submit button (through
+    /// [`Self::failed`]).
     fn gate(
         &self,
         req: &ActRequest,
@@ -356,12 +373,7 @@ impl Screen {
             return Some(label.to_string());
         }
         let text = req.text.as_deref().unwrap_or_default();
-        let submits = match req.action {
-            ActAction::Key => activates(text),
-            ActAction::Type => text.contains(['\n', '\r']),
-            _ => false,
-        };
-        if !submits {
+        if !(req.action == ActAction::Type && text.contains(['\n', '\r'])) {
             return None;
         }
         page.elements
@@ -597,6 +609,8 @@ impl Screen {
             reason: None,
             confirm_label: None,
             confirm: None,
+            code: None,
+            host: None,
             why: None,
             steps: report
                 .steps
@@ -612,16 +626,22 @@ impl Screen {
         };
         match report.end {
             GoalEnd::Done => {}
-            GoalEnd::Blocked { reason, label } => {
+            GoalEnd::Blocked { reason, by } => {
                 out.outcome = Outcome::Blocked;
                 out.reason = Some(shape::clip(&reason, 400));
-                // a person is asked only for a label box-browser's own rules want confirmed: a
-                // label off the allow-list gets no token, since a confirm can't let it through
-                let confirm_label = label.filter(|l| self.rules.needs_confirm(l));
-                if let Some(label) = confirm_label {
-                    let label = shape::clip(&label, shape::MAX_LABEL_CHARS);
-                    out.confirm = Some(self.confirms.issue(&label, Some(&run_key(&req.goal)))?);
-                    out.confirm_label = Some(label);
+                match by {
+                    // only a confirm gets a token: one can't let an off-list host through
+                    BlockedBy::Confirm { label } => {
+                        out.code = Some("needs_confirm");
+                        // the token holds the label whole, as the guard named it
+                        out.confirm = Some(self.confirms.issue(&label, Some(&goal_key))?);
+                        out.confirm_label = Some(shape::clip(&label, shape::MAX_LABEL_CHARS));
+                    }
+                    BlockedBy::Domain { host } => {
+                        out.code = Some("domain_not_allowed");
+                        out.host = host.map(|h| shape::clip(&h, shape::MAX_URL_CHARS));
+                    }
+                    BlockedBy::Loop => {}
                 }
             }
             GoalEnd::Abstained { why } => {
@@ -641,20 +661,6 @@ impl Screen {
 /// What a goal run's confirm token is bound to: its goal. Element regions never start `run:`.
 fn run_key(goal: &str) -> String {
     format!("run:{}", goal.trim())
-}
-
-/// Whether `key` activates or submits what has focus: Enter or Space, alone or with modifiers.
-fn activates(key: &str) -> bool {
-    let last = key
-        .rsplit('+')
-        .next()
-        .unwrap_or(key)
-        .trim()
-        .to_ascii_lowercase();
-    matches!(
-        last.as_str(),
-        "enter" | "return" | "numpadenter" | "space" | "spacebar" | "" | "\n" | "\r"
-    ) || key.ends_with(' ')
 }
 
 /// `@e5`, `e5` or `5`, alone or after `<snapshot>:`.

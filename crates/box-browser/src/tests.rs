@@ -10,7 +10,9 @@ use base64::Engine as _;
 use serde_json::{json, Value};
 
 use crate::policy::Rules;
-use crate::seam::{GoalBounds, GoalEnd, GoalReport, GoalStep, PolicyLists, ToolFailure, Tools};
+use crate::seam::{
+    BlockedBy, GoalBounds, GoalEnd, GoalReport, GoalStep, PolicyLists, ToolFailure, Tools,
+};
 use crate::*;
 
 #[derive(Default)]
@@ -83,23 +85,44 @@ impl Tools for Fake {
                     )));
                 }
                 let el = at(&w)?;
-                // ultra-instinct's own guard, as the fake's: the policy last set decides.
-                if name == "browser_click" {
-                    let policy = w
-                        .policies
-                        .last()
-                        .cloned()
-                        .unwrap_or_default()
-                        .to_policy()
-                        .unwrap();
-                    let label = el["label"].as_str().unwrap();
-                    let extra = w.extra_confirm.iter().any(|l| l == label)
-                        && !policy.confirmed.iter().any(|c| c == label);
-                    if policy.confirm_pattern(label).is_some() || extra {
-                        return Err(ToolFailure::NeedsConfirm {
-                            label: label.into(),
-                        });
+                // ultra-instinct's own guard, as the fake's: the policy last set, and this call's
+                // `confirm`, decide.
+                let mut policy = w
+                    .policies
+                    .last()
+                    .cloned()
+                    .unwrap_or_default()
+                    .to_policy()
+                    .unwrap();
+                if let Some(label) = args["confirm"].as_str() {
+                    policy = policy.with_confirmed(label);
+                }
+                let needs = |label: &str| {
+                    policy.confirm_pattern(label).is_some()
+                        || (w.extra_confirm.iter().any(|l| l == label)
+                            && !policy.confirmed.iter().any(|c| c == label))
+                };
+                let label = el["label"].as_str().unwrap();
+                let key = args["key"].as_str().unwrap_or_default();
+                let activates = matches!(key, "Enter" | "Shift+Enter" | "Space");
+                let refused = match name {
+                    "browser_click" => needs(label).then(|| label.to_string()),
+                    // an Enter or a Space presses the control, or sends its form: the fake's form
+                    // is the page, and its submit button the first one a confirm rule names
+                    "browser_send_key" if activates => {
+                        needs(label).then(|| label.to_string()).or_else(|| {
+                            w.elements
+                                .iter()
+                                .filter_map(|e| e["label"].as_str())
+                                .find(|l| Rules::default().needs_confirm(l))
+                                .filter(|l| needs(l))
+                                .map(str::to_string)
+                        })
                     }
+                    _ => None,
+                };
+                if let Some(label) = refused {
+                    return Err(ToolFailure::NeedsConfirm { label });
                 }
                 let region = w
                     .drift_to
@@ -611,11 +634,13 @@ async fn goal_runs_end_done_blocked_abstained_or_failed() {
     h.world.lock().unwrap().goal = Some(GoalReport {
         end: GoalEnd::Blocked {
             reason: "domain-not-allowed".into(),
-            label: Some("Open the partner site".into()),
+            by: BlockedBy::Domain {
+                host: Some("partner.example".into()),
+            },
         },
         steps: vec![],
     });
-    // a label no confirm rule names: blocked, and no person is asked, since a confirm can't help
+    // off the list: blocked, and no person is asked, since a confirm can't help
     let off_list = h
         .browsers
         .run_goal(":1", run("Go to the partner"))
@@ -623,17 +648,47 @@ async fn goal_runs_end_done_blocked_abstained_or_failed() {
         .unwrap();
     assert_eq!(off_list.outcome, Outcome::Blocked);
     assert!(off_list.confirm.is_none() && off_list.confirm_label.is_none());
+    assert_eq!(off_list.code, Some("domain_not_allowed"));
+    assert_eq!(off_list.host.as_deref(), Some("partner.example"));
+
+    // the guard's own label for a form it can't see the button of: still a person's to confirm
+    h.world.lock().unwrap().goal = Some(GoalReport {
+        end: GoalEnd::Blocked {
+            reason: "needs-confirm".into(),
+            by: BlockedBy::Confirm {
+                label: "(form submit)".into(),
+            },
+        },
+        steps: vec![],
+    });
+    let unseen = h.browsers.run_goal(":1", run("Sign up")).await.unwrap();
+    assert_eq!(unseen.confirm_label.as_deref(), Some("(form submit)"));
+    assert!(unseen.confirm.is_some());
+
+    // the run stopped itself: no code, no token
+    h.world.lock().unwrap().goal = Some(GoalReport {
+        end: GoalEnd::Blocked {
+            reason: "loop".into(),
+            by: BlockedBy::Loop,
+        },
+        steps: vec![],
+    });
+    let looped = h.browsers.run_goal(":1", run("Go round")).await.unwrap();
+    assert!(looped.code.is_none() && looped.confirm.is_none());
 
     h.world.lock().unwrap().goal = Some(GoalReport {
         end: GoalEnd::Blocked {
             reason: "needs-confirm".into(),
-            label: Some("Place order".into()),
+            by: BlockedBy::Confirm {
+                label: "Place order".into(),
+            },
         },
         steps: vec![step.clone()],
     });
     let blocked = h.browsers.run_goal(":1", run("Buy it")).await.unwrap();
     assert_eq!(blocked.outcome, Outcome::Blocked);
     assert_eq!(blocked.confirm_label.as_deref(), Some("Place order"));
+    assert_eq!(blocked.code, Some("needs_confirm"));
     let token = blocked.confirm.clone().unwrap();
     let wire = serde_json::to_value(&blocked).unwrap();
     assert_eq!(wire["outcome"], "blocked");
@@ -969,23 +1024,44 @@ async fn a_key_that_can_press_a_pay_button_needs_its_confirm_too() {
         panic!("Enter on Pay went through");
     };
     assert_eq!(label, "Pay $18");
-    // Enter, or Space, or a line typed, in a field while the page shows a Pay button: it may
-    // submit the form whose default button that is
-    for (action, text) in [
-        (ActAction::Key, "Enter"),
-        (ActAction::Key, "Shift+Enter"),
-        (ActAction::Key, "Space"),
-        (ActAction::Type, "kid@example.com\n"),
-    ] {
-        assert!(
-            matches!(
-                h.browsers.act(":1", act("@e2", action, Some(text))).await,
-                Err(BrowserError::ConfirmRequired { .. })
-            ),
-            "{action:?} {text:?}"
-        );
+    assert!(calls_of(&h, "browser_send_key").is_empty());
+    // Enter or Space in a field: the guard knows the form it would send, and asks for its button
+    for key in ["Enter", "Shift+Enter", "Space"] {
+        let Err(BrowserError::ConfirmRequired { label, .. }) = h
+            .browsers
+            .act(":1", act("@e2", ActAction::Key, Some(key)))
+            .await
+        else {
+            panic!("{key} in the field went through");
+        };
+        assert_eq!(label, "Pay $18", "{key}");
     }
-    assert!(calls_of(&h, "browser_send_key").is_empty() && calls_of(&h, "browser_type").is_empty());
+    // a line typed while the page shows a Pay button may submit the form too: box-browser stops it
+    assert!(matches!(
+        h.browsers
+            .act(":1", act("@e2", ActAction::Type, Some("kid@example.com\n")))
+            .await,
+        Err(BrowserError::ConfirmRequired { .. })
+    ));
+    assert!(calls_of(&h, "browser_type").is_empty());
+    // the guard's token, once a person approves, lets that one Enter through
+    let Err(BrowserError::ConfirmRequired { token, .. }) = h
+        .browsers
+        .act(":1", act("@e2", ActAction::Key, Some("Enter")))
+        .await
+    else {
+        panic!("Enter in the field went through");
+    };
+    let mut approved = act("@e2", ActAction::Key, Some("Enter"));
+    approved.confirm = Some(token.clone());
+    h.browsers.act(":1", approved.clone()).await.unwrap();
+    let sent = calls_of(&h, "browser_send_key");
+    assert_eq!(sent.last().unwrap()["confirm"], "Pay $18");
+    // spent: the same token again is no token
+    assert!(matches!(
+        h.browsers.act(":1", approved).await,
+        Err(BrowserError::Invalid(_))
+    ));
     // a key that submits nothing, and text with no line end, go through
     h.browsers
         .act(":1", act("@e2", ActAction::Key, Some("Tab")))
@@ -1010,7 +1086,9 @@ async fn a_goal_runs_confirm_is_for_that_goal_alone() {
     h.world.lock().unwrap().goal = Some(GoalReport {
         end: GoalEnd::Blocked {
             reason: "needs-confirm".into(),
-            label: Some("Pay $18".into()),
+            by: BlockedBy::Confirm {
+                label: "Pay $18".into(),
+            },
         },
         steps: vec![],
     });

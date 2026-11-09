@@ -418,7 +418,7 @@ components:
         snapshot: { type: integer, description: The snapshot the ref is from; anything but the latest is stale_ref }
         action: { type: string, enum: [click, type, select, key, scroll, focus] }
         text: { type: string, maxLength: 65536, description: "type: the text; select: the option; key: the key (Enter, Escape, ArrowDown, …)" }
-        confirm: { type: string, description: "click: the token a confirm_required answer gave, once a person approved its label" }
+        confirm: { type: string, description: "click, key, type: the token a confirm_required answer gave, once a person approved its label" }
         allow_domains: { $ref: "#/components/schemas/AllowDomains" }
     BrowserActResponse:
       type: object
@@ -504,6 +504,8 @@ components:
         reason: { type: string, description: "blocked: why" }
         confirm_label: { type: string, description: "blocked on a confirm: the label a person may approve" }
         confirm: { type: string, description: "blocked on a confirm: the token to send back as confirm" }
+        code: { type: string, enum: [needs_confirm, domain_not_allowed], description: "blocked: what stopped it. Absent: the run stopped itself." }
+        host: { type: string, description: "blocked on domain_not_allowed: the host off the list, when it could be read" }
         why: { type: string, description: "abstained, failed: why. After an abstain the caller's model may take over." }
         steps:
           type: array
@@ -1879,8 +1881,9 @@ paths:
       summary: Click, type, select, key, scroll or focus an element by ref
       description: |
         On the element `ref` names in the tab's latest snapshot, where it is now, through
-        ultra-instinct's gate and one-shot ticket. A click on a label matching BOX_BROWSER_CONFIRM_PRESS
-        (default `Pay*`, `Delete*`, `Buy*`, `Place order*`) is 409 confirm_required with
+        ultra-instinct's gate and one-shot ticket. A click or key on a label matching
+        BOX_BROWSER_CONFIRM_PRESS (default `Pay*`, `Delete*`, `Buy*`, `Place order*`), or an Enter or
+        Space that would send a form whose submit button matches, is 409 confirm_required with
         `error.details.{label, confirm}` until `confirm` brings the token back.
       security: [{ bearer: [] }]
       parameters:

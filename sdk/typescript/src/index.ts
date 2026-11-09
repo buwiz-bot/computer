@@ -388,6 +388,10 @@ export type BrowserRunResponse = {
   reason?: string;
   confirm_label?: string;
   confirm?: string;
+  /** `blocked`: what stopped it. Absent: the run stopped itself. */
+  code?: "needs_confirm" | "domain_not_allowed";
+  /** `blocked` on `domain_not_allowed`: the host off the list, when it could be read. */
+  host?: string;
   why?: string;
   steps: { action: string; target: string; effect: string }[];
   elapsed_ms: number;
@@ -705,8 +709,9 @@ export class BuwizComputer {
 
   /**
    * Click, type, select, key, scroll or focus an element by ref, through ultra-instinct's ticketed
-   * guard. A click on a label like `Pay*` is refused with `409 confirm_required` until `confirm`
-   * brings back `error.details.confirm`.
+   * guard. A click or key on a label like `Pay*`, or an Enter that would send a form whose submit
+   * button is one, is refused with `409 confirm_required` until `confirm` brings back
+   * `error.details.confirm`.
    */
   async browserAct(request: BrowserActRequest, display?: string): Promise<BrowserActResponse> {
     return this.authJson("POST", onScreen(`${this.execUrl}/v1/browser/act`, display), request);

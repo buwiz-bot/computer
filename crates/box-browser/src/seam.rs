@@ -16,7 +16,9 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use ultra_instinct_cdp::{PipeBrowser, PipeLimits};
 use ultra_instinct_guard::Policy;
-use ultra_instinct_mcp::{Downloads, RunLimits, RunOutcome, Server, ToolError, ToolLimits};
+use ultra_instinct_mcp::{
+    BlockKind, Downloads, RunLimits, RunOutcome, Server, ToolError, ToolLimits, Uploads,
+};
 
 /// Whether [`open`] can speak over a pipe in this build. While it can't, box-browser never takes
 /// a pipe: one taken and dropped would close the screen's Chromium.
@@ -34,8 +36,9 @@ pub const MAX_SHOT_BYTES: usize = crate::screen::MAX_SHOT_BYTES;
 
 /// The only tools a screen's server answers: reading and pressing, the tabs, saving and loading
 /// a login, and a goal run. Never a script (`browser_exec`), the DOM, cookies, storage, headers,
-/// the network, a download, an upload or a PDF; and none of the keyboard-only tools, which
-/// don't check the domain allow-list yet. Every key box-browser sends names an element.
+/// the network, a download, an upload or a PDF; and none of the keyboard-only tools
+/// (`browser_keyboard`, `browser_hold_key`): every key box-browser sends names an element, so it
+/// has no use for one.
 pub const ALLOWED: [&str; 17] = [
     "browser_navigate",
     "browser_get_state",
@@ -85,6 +88,8 @@ pub fn open(pipe: OwnedFd) -> Result<Box<dyn Tools>, ToolFailure> {
             ..ToolLimits::default()
         })
         .with_downloads(Downloads::Off)
+        // `browser_file_upload` is off the list too: this is the second lock
+        .with_uploads(Uploads::Off)
         .with_tool_allowlist(ALLOWED);
     // A browser already gone says so now, not on the first real call. Any other failure keeps the
     // server: dropping it would close the pipe, and Chromium quits with status 0 once it closes,
@@ -162,12 +167,10 @@ pub struct GoalBounds {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GoalEnd {
     Done,
-    /// The guard or the policy stopped it. `label` is the target's, when the policy refused it:
-    /// one that needs a confirm, or sits off the allow-list. Which, it doesn't say: box-browser's
-    /// own confirm rules decide whether a person is asked.
+    /// The guard or the policy stopped it, and `by` says which.
     Blocked {
         reason: String,
-        label: Option<String>,
+        by: BlockedBy,
     },
     /// Instinct wouldn't choose: the caller's model may.
     Abstained {
@@ -176,6 +179,20 @@ pub enum GoalEnd {
     Failed {
         why: String,
     },
+}
+
+/// What stopped a goal run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BlockedBy {
+    /// A press needs a person's confirm of `label`: a control's own, the submit button of the form
+    /// a key would send, or the guard's `(form submit)` / `(unobserved focus)` when it couldn't
+    /// see which.
+    Confirm { label: String },
+    /// The page, or the form a press would send, is off the allow-list. `host` is `None` when
+    /// its address couldn't be read. A confirm can't let it through.
+    Domain { host: Option<String> },
+    /// The run stopped itself.
+    Loop,
 }
 
 /// One verified step of a goal run.
@@ -275,9 +292,8 @@ fn from_code(code: &str, message: String, wire: &Value) -> ToolFailure {
         "invalid_arguments" => ToolFailure::Invalid(message),
         // what box-browser sends is wrong: a bug here, not the caller's
         "tool_not_allowed" | "snapshot_required" | "bad_snapshot" | "path_not_absolute"
-        | "path_not_allowed" | "downloads_off" | "unknown_tool" | "missing_tool_name" => {
-            ToolFailure::NotAllowed(message)
-        }
+        | "path_not_allowed" | "downloads_off" | "uploads_off" | "unknown_tool"
+        | "missing_tool_name" => ToolFailure::NotAllowed(message),
         _ => ToolFailure::Browser(message),
     }
 }
@@ -336,13 +352,30 @@ impl Tools for ServerTools {
         let report = self.server()?.run_goal(goal, limits);
         let end = match report.outcome {
             RunOutcome::Done { .. } => GoalEnd::Done,
-            RunOutcome::Blocked { label, reason } => GoalEnd::Blocked {
+            RunOutcome::Blocked {
+                label,
                 reason,
-                label: Some(label).filter(|l| !l.trim().is_empty()),
+                kind,
+            } => GoalEnd::Blocked {
+                reason,
+                by: match kind {
+                    // a confirm with no label to show a person is no confirm
+                    Some(BlockKind::NeedsConfirm) if !label.trim().is_empty() => {
+                        BlockedBy::Confirm { label }
+                    }
+                    Some(BlockKind::DomainNotAllowed { host }) => BlockedBy::Domain { host },
+                    _ => BlockedBy::Loop,
+                },
             },
             RunOutcome::Abstained { why } => GoalEnd::Abstained { why },
-            // a pipe that went is found by the next call, which answers `pipe_closed`
-            RunOutcome::Failed { error } => GoalEnd::Failed { why: error },
+            // refused before the loop began: the same failure a tool call would be, so a pipe
+            // that went resets the screen
+            RunOutcome::Failed {
+                error,
+                code: Some(code),
+            } => return Err(from_code(code, error, &Value::Null)),
+            // the loop's own: the browser failed, or the steps or the time ran out
+            RunOutcome::Failed { error, code: None } => GoalEnd::Failed { why: error },
         };
         Ok(GoalReport {
             end,
@@ -436,6 +469,7 @@ mod tests {
             ("snapshot_required", "NotAllowed"),
             ("path_not_absolute", "NotAllowed"),
             ("downloads_off", "NotAllowed"),
+            ("uploads_off", "NotAllowed"),
             ("browser", "Browser"),
             ("something_new", "Browser"),
         ];

@@ -354,7 +354,8 @@ class BuwizComputer:
         display: str | None = None,
     ) -> Any:
         """``click``, ``type``, ``select``, ``key``, ``scroll`` or ``focus`` on an element by ref,
-        through ultra-instinct's ticketed guard. A click on a label like ``Pay*`` fails with 409
+        through ultra-instinct's ticketed guard. A click or key on a label like ``Pay*``, or an
+        Enter that would send a form whose submit button is one, fails with 409
         ``confirm_required``; its ``error.details.confirm`` goes back as ``confirm`` once a person
         approved ``error.details.label``."""
         body: dict[str, Any] = {"ref": ref, "action": action}
