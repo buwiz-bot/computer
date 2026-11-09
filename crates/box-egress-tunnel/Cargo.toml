@@ -6,6 +6,7 @@ license.workspace = true
 authors.workspace = true
 description = "Guest egress tunnel: WS mux + HTTP CONNECT proxy so Chromium can exit via the operator's machine"
 rust-version.workspace = true
+publish = false
 
 [dependencies]
 box-common = { workspace = true }
@@ -18,6 +19,3 @@ clap = { workspace = true }
 anyhow = { workspace = true }
 futures-util = { workspace = true }
 tokio-tungstenite = { workspace = true }
-
-[dev-dependencies]
-tempfile = { workspace = true }

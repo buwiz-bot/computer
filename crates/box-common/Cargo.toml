@@ -6,6 +6,7 @@ license.workspace = true
 authors.workspace = true
 description = "Shared types, auth, and workspace path jail for buwiz-computer"
 rust-version.workspace = true
+publish = false
 
 [features]
 default = []
@@ -17,7 +18,6 @@ mimalloc = ["dep:mimalloc"]
 libc = { workspace = true }
 mimalloc = { workspace = true, optional = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
 thiserror = { workspace = true }
 axum = { workspace = true }
 http = { workspace = true }
