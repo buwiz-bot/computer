@@ -103,7 +103,7 @@ Workspace packages (not published):
 cargo test --workspace
 ```
 
-Native mode sets `BOX_DESKTOP=0`. CUA screenshot needs the container (or a local Xvfb).
+Native mode sets `BOX_DESKTOP=0`. CUA screenshot needs the container (or a local Xvfb). With the desktop on, a box without `xdpyinfo` is never desktop-ready: box-host logs a warning at startup when it isn't on `PATH`.
 
 ## How an orchestrator should plug in
 

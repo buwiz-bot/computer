@@ -21,7 +21,7 @@ The caller already has three values from **their** orchestrator:
 
 `GET {hostUrl}/v1/ready` requires Bearer. 200 when exec health OK, and X up when `BOX_DESKTOP_REQUIRED=1`.
 
-The Compose healthcheck is the public `/v1/health` on 1340 and on 1337, with no token, so the token is never in `curl`'s argv. `/v1/ready` is for callers. Chrome is not required for ready. The X probe has a time limit, and a missing `xdpyinfo` means the display is not ready.
+The Compose healthcheck is the public `/v1/health` on 1340 and on 1337, with no token, so the token is never in `curl`'s argv. `/v1/ready` is for callers. Chrome is not required for ready. The X probe has a time limit, and a missing `xdpyinfo` means the display is not ready; box-host warns once at startup when `BOX_DESKTOP` is on and `xdpyinfo` isn't on `PATH`.
 
 ## Authenticated calls
 

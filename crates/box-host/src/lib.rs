@@ -167,6 +167,12 @@ pub fn router(state: AppState) -> Router {
 pub async fn serve(config: BoxConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let bind = config.host_bind;
     let state = AppState::from_config(&config)?;
+    if state.desktop.enabled && !on_path("xdpyinfo", &std::env::var_os("PATH").unwrap_or_default())
+    {
+        tracing::warn!(
+            "xdpyinfo is not on PATH: the desktop is on, but its display will never be ready"
+        );
+    }
     let shutdown = state.shutdown.clone();
     let app = router(state);
     tracing::info!(
@@ -180,6 +186,15 @@ pub async fn serve(config: BoxConfig) -> Result<(), Box<dyn std::error::Error + 
         .with_graceful_shutdown(shutdown_signal(shutdown))
         .await?;
     Ok(())
+}
+
+/// Whether `program` is an executable file in one of `path`'s folders.
+fn on_path(program: &str, path: &std::ffi::OsStr) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::split_paths(path).any(|dir| {
+        std::fs::metadata(dir.join(program))
+            .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    })
 }
 
 async fn health() -> Json<HealthResponse> {
@@ -449,6 +464,22 @@ async fn shutdown_signal(notify: Arc<Notify>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_tool_is_on_path_only_as_an_executable_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let tool = dir.path().join("xdpyinfo");
+        std::fs::write(&tool, "#!/bin/sh\n").unwrap();
+        let path = std::env::join_paths(["/nonexistent", dir.path().to_str().unwrap()]).unwrap();
+        assert!(!super::on_path("xdpyinfo", &path));
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(super::on_path("xdpyinfo", &path));
+        assert!(!super::on_path(
+            "xdpyinfo",
+            std::ffi::OsStr::new("/nonexistent")
+        ));
+    }
+
     use super::*;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
