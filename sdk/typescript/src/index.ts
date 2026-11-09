@@ -408,7 +408,9 @@ export class BuwizComputer {
     const query = new URLSearchParams({ path });
     const response = await this.raw("PUT", `${this.execUrl}/v1/files/raw?${query.toString()}`, {
       headers: { "content-type": "application/octet-stream", accept: "application/json" },
-      body: body instanceof Uint8Array ? body : new Uint8Array(body),
+      // A Uint8Array may sit on a SharedArrayBuffer, which the DOM types leave out of BodyInit;
+      // fetch takes the bytes either way.
+      body: (body instanceof Uint8Array ? body : new Uint8Array(body)) as BodyInit,
     });
     const parsed = await parseBody(response);
     if (!response.ok) {
