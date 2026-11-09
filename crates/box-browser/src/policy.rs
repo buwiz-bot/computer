@@ -162,16 +162,29 @@ impl Confirms {
         Ok(token)
     }
 
-    /// Spends `token` for `target`, giving back the label it confirms. A token for another target,
-    /// an old one or a spent one confirms nothing.
-    pub fn redeem(&mut self, token: &str, target: Option<&str>) -> Option<String> {
+    /// The label `token` confirms for `target`, leaving it unspent: a call checks the token first
+    /// and [`Self::spend`]s it only once the press goes out, so a call that fails before then
+    /// keeps the person's approval. A token for another target, an old one or a spent one
+    /// confirms nothing.
+    pub fn peek(&mut self, token: &str, target: Option<&str>) -> Option<String> {
         let now = Instant::now();
         self.pending.retain(|p| p.expires > now);
-        let at = self
-            .pending
+        self.pending
             .iter()
-            .position(|p| p.token == token.trim() && p.target.as_deref() == target)?;
-        Some(self.pending.remove(at).label)
+            .find(|p| p.token == token.trim() && p.target.as_deref() == target)
+            .map(|p| p.label.clone())
+    }
+
+    /// `token` is spent: it confirms nothing again.
+    pub fn spend(&mut self, token: &str) {
+        self.pending.retain(|p| p.token != token.trim());
+    }
+
+    /// [`Self::peek`], then [`Self::spend`].
+    pub fn redeem(&mut self, token: &str, target: Option<&str>) -> Option<String> {
+        let label = self.peek(token, target)?;
+        self.spend(token);
+        Some(label)
     }
 }
 

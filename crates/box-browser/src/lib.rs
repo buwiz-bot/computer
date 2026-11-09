@@ -153,7 +153,9 @@ impl Browsers {
     }
 
     /// Runs `work` on `display`'s thread, within `budget`. The thread keeps going past the budget
-    /// if the browser does; what waits behind it waits, and past [`QUEUE`] is told it's busy.
+    /// if the browser does; what waits behind it waits, and past [`QUEUE`] is told it's busy. A
+    /// call whose caller stopped waiting before its turn isn't run, and one running sends no press
+    /// it couldn't hear the answer to in time ([`Screen`]'s deadline).
     async fn run<R, F>(&self, display: &str, budget: Duration, work: F) -> Result<R, BrowserError>
     where
         R: Send + 'static,
@@ -163,8 +165,15 @@ impl Browsers {
             return Err(BrowserError::Disabled);
         }
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let deadline = std::time::Instant::now() + budget;
         let mut job: Job = Box::new(move |screen: &mut Screen| {
-            let _ = tx.send(work(screen));
+            if tx.is_closed() || std::time::Instant::now() >= deadline {
+                return;
+            }
+            screen.set_deadline(Some(deadline));
+            let answer = work(screen);
+            screen.set_deadline(None);
+            let _ = tx.send(answer);
         });
         for _ in 0..2 {
             let sender = self.thread(display)?;
@@ -175,8 +184,10 @@ impl Browsers {
                         Ok(Err(_)) => Err(BrowserError::Backend(
                             "the screen's browser thread dropped the call".into(),
                         )),
+                        // A press already sent may still land: the caller looks before trying again.
                         Err(_) => Err(BrowserError::Timeout(format!(
-                            "the browser did not answer in {} s",
+                            "the browser did not answer in {} s; a press already sent may still \
+                             land, so snap before trying it again",
                             budget.as_secs()
                         ))),
                     };
@@ -625,8 +636,9 @@ pub struct WaitResponse {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ShotResponse {
+    /// `png`, or `jpeg` when the PNG was over the cap and the shot was taken again.
     pub format: &'static str,
-    /// The PNG, base64.
+    /// The picture, base64.
     pub data: String,
     pub bytes: usize,
     pub width: u32,

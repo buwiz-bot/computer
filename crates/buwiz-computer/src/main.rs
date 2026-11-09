@@ -159,9 +159,10 @@ enum BrowserCmd {
         #[arg(long)]
         timeout_ms: Option<u64>,
     },
-    /// POST /v1/browser/shot: the current tab's viewport as a PNG
+    /// POST /v1/browser/shot: the current tab's viewport as a PNG, or a JPEG when a PNG is too big
     Shot {
-        /// Write the PNG here instead of printing the JSON
+        /// Write the picture here and print where it went. A `.png` gets `.jpg` when the shot is a
+        /// JPEG, and the other way round
         #[arg(long, short)]
         output: Option<PathBuf>,
     },
@@ -677,13 +678,20 @@ async fn browser(on: &BuwizComputer, cmd: BrowserCmd) -> Result<()> {
             let shot = on.browser_shot().await?;
             if let Some(path) = output {
                 use base64::Engine as _;
-                let png = base64::engine::general_purpose::STANDARD
+                let picture = base64::engine::general_purpose::STANDARD
                     .decode(shot["data"].as_str().unwrap_or_default())
                     .context("the shot's data isn't base64")?;
-                std::fs::write(&path, png).with_context(|| format!("write {}", path.display()))?;
-                return Ok(());
+                let format = shot["format"].as_str().unwrap_or("png");
+                let path = shot_path(path, format);
+                std::fs::write(&path, picture)
+                    .with_context(|| format!("write {}", path.display()))?;
+                json!({
+                    "format": format, "path": path, "bytes": shot["bytes"],
+                    "width": shot["width"], "height": shot["height"],
+                })
+            } else {
+                shot
             }
-            shot
         }
         BrowserCmd::Run {
             goal,
@@ -711,4 +719,32 @@ fn print_json(value: &impl serde::Serialize) -> Result<()> {
     serde_json::to_writer_pretty(std::io::stdout(), value)?;
     println!();
     Ok(())
+}
+
+/// `path`, its extension made to say `format` when it names the other picture format.
+fn shot_path(path: PathBuf, format: &str) -> PathBuf {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    match (format, ext.as_deref()) {
+        ("jpeg", Some("png")) => path.with_extension("jpg"),
+        ("png", Some("jpg" | "jpeg")) => path.with_extension("png"),
+        _ => path,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_shots_file_says_its_format() {
+        let at = |p: &str, f: &str| shot_path(PathBuf::from(p), f);
+        assert_eq!(at("shot.png", "jpeg"), PathBuf::from("shot.jpg"));
+        assert_eq!(at("shot.PNG", "jpeg"), PathBuf::from("shot.jpg"));
+        assert_eq!(at("shot.jpeg", "png"), PathBuf::from("shot.png"));
+        assert_eq!(at("shot.png", "png"), PathBuf::from("shot.png"));
+        assert_eq!(at("shot", "jpeg"), PathBuf::from("shot"));
+    }
 }

@@ -549,7 +549,7 @@ Commands:
   navigate  POST /v1/browser/navigate: the current tab to an http(s) URL
   tabs      POST /v1/browser/tabs: list, open, close or switch tabs
   wait      POST /v1/browser/wait: until the page shows text, an address, a control, or loads
-  shot      POST /v1/browser/shot: the current tab's viewport as a PNG
+  shot      POST /v1/browser/shot: the current tab's viewport as a PNG, or a JPEG when a PNG is too big
   run       POST /v1/browser/run: Instinct runs a goal until done, blocked or abstained
   state     POST /v1/browser/state: save or load this screen's login
   help      Print this message or the help of the given subcommand(s)
@@ -645,13 +645,13 @@ Options:
 ## `buwiz-computer browser shot`
 
 ```text
-POST /v1/browser/shot: the current tab's viewport as a PNG
+POST /v1/browser/shot: the current tab's viewport as a PNG, or a JPEG when a PNG is too big
 
 Usage: buwiz-computer browser shot [OPTIONS]
 
 Options:
       --display <DISPLAY>  Another of the box's screens (:N)
-  -o, --output <OUTPUT>    Write the PNG here instead of printing the JSON
+  -o, --output <OUTPUT>    Write the picture here and print where it went. A `.png` gets `.jpg` when the shot is a JPEG, and the other way round
   -h, --help               Print help
 ```
 

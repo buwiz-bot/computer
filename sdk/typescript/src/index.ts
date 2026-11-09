@@ -364,8 +364,9 @@ export type BrowserWaitRequest = {
 };
 
 export type BrowserShotResponse = {
-  format: "png";
-  /** The PNG, base64. */
+  /** `jpeg` when the PNG was over 8 MiB and the shot was taken again. */
+  format: "png" | "jpeg";
+  /** The picture, base64. */
   data: string;
   bytes: number;
   width: number;

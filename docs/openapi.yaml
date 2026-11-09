@@ -481,8 +481,8 @@ components:
       type: object
       required: [format, data, bytes, width, height]
       properties:
-        format: { type: string, enum: [png] }
-        data: { type: string, description: "The PNG, base64; at most 8 MiB decoded" }
+        format: { type: string, enum: [png, jpeg], description: "png, or jpeg when the PNG was over 8 MiB and the shot was taken again" }
+        data: { type: string, description: "The picture, base64; at most 8 MiB decoded" }
         bytes: { type: integer }
         width: { type: integer }
         height: { type: integer }

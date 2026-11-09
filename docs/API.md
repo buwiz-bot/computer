@@ -511,7 +511,7 @@ Each screen's Chromium, driven over its DevTools pipe through [ultra-instinct](h
 
 ### `POST /v1/browser/shot`
 
-→ `{"format": "png", "data": "<base64>", "bytes": 48213, "width": 1280, "height": 720}`, the current tab's viewport. It's written nowhere.
+→ `{"format": "png", "data": "<base64>", "bytes": 48213, "width": 1280, "height": 720}`, the current tab's viewport. It's written nowhere. A PNG over 8 MiB is taken again as a JPEG, and `format` says `jpeg`.
 
 ### `POST /v1/browser/run`
 

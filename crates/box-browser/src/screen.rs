@@ -27,6 +27,8 @@ pub const MAX_SHOT_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_ANSWER_BYTES: usize = 4 * 1024 * 1024;
 /// Steps of a goal run returned.
 const MAX_REPORTED_STEPS: usize = 50;
+/// The least of the caller's time a press is sent with: what one CDP call may take.
+const PRESS_TIME: Duration = crate::seam::CALL_DEADLINE;
 pub const MAX_URL_BYTES: usize = 8 * 1024;
 
 /// Snapshot numbers start somewhere new each time box-exec does, as box-a11y's do, so a ref kept
@@ -60,6 +62,8 @@ pub struct Screen {
     policy: Option<PolicyLists>,
     latest: Option<Snapshot>,
     confirms: Confirms,
+    /// When the call being run stops being waited for.
+    deadline: Option<Instant>,
 }
 
 /// The thread: one job at a time, until box-exec drops the sender.
@@ -77,6 +81,24 @@ pub(crate) fn serve(mut screen: Screen, jobs: Receiver<Job>) {
 }
 
 impl Screen {
+    /// The call being run is waited for until `deadline`; `None` once it's done.
+    pub(crate) fn set_deadline(&mut self, deadline: Option<Instant>) {
+        self.deadline = deadline;
+    }
+
+    /// Whether a press sent now can still answer before the caller stops waiting. A press past
+    /// that would land with the caller told it timed out, and a retry would press again.
+    fn in_time(&self) -> Result<(), BrowserError> {
+        match self.deadline {
+            Some(deadline) if deadline.saturating_duration_since(Instant::now()) < PRESS_TIME => {
+                Err(BrowserError::Timeout(
+                    "too little of the call's time was left to press: nothing was pressed".into(),
+                ))
+            }
+            _ => Ok(()),
+        }
+    }
+
     pub fn new(display: String, opener: Arc<dyn Opener>, rules: Arc<Rules>) -> Self {
         Self {
             display,
@@ -86,6 +108,7 @@ impl Screen {
             policy: None,
             latest: None,
             confirms: Confirms::default(),
+            deadline: None,
         }
     }
 
@@ -245,6 +268,15 @@ impl Screen {
                 self.display
             ))
         })?;
+        // the ref's own snapshot and the body's must agree: either one may name an older one
+        if let (Some(body), Some(named)) = (req.snapshot, named) {
+            if body != named {
+                return Err(BrowserError::Invalid(format!(
+                    "{} names snapshot {named}, and `snapshot` says {body}",
+                    req.reference.trim()
+                )));
+            }
+        }
         if let Some(id) = req.snapshot.or(named) {
             if id != latest.id {
                 return Err(BrowserError::Stale(format!(
@@ -274,14 +306,15 @@ impl Screen {
             })?;
 
         let mut confirmed = Vec::new();
-        let redeemed = req
-            .confirm
-            .as_deref()
-            .and_then(|token| self.confirms.redeem(token, Some(&region)));
+        let token = req.confirm.as_deref();
+        let redeemed = token.and_then(|token| self.confirms.peek(token, Some(&region)));
         match (self.gate(req, &here.label, &snapped_label, &now), redeemed) {
             // A token confirms the label it was given for, and nothing it has turned into.
             (Some(label), Some(approved)) if approved == label => confirmed.push(approved),
-            (Some(label), _) => {
+            (Some(label), redeemed) => {
+                if let (Some(token), Some(_)) = (token, redeemed) {
+                    self.confirms.spend(token);
+                }
                 let token = self.confirms.issue(&label, Some(&region))?;
                 return Err(BrowserError::ConfirmRequired { label, token });
             }
@@ -330,6 +363,12 @@ impl Screen {
         // the press is bound to the element this look showed: one that moved or changed since is
         // refused `stale_ref`, with nothing pressed
         args["snapshot"] = snapshot;
+        // Past here the press may land, so the approval is used, whatever the call answers. And
+        // with too little of the caller's budget left for it to answer, it isn't sent at all.
+        self.in_time()?;
+        if let (Some(token), false) = (token, confirmed.is_empty()) {
+            self.confirms.spend(token);
+        }
         let done = self.call(tool, args, Some(&region));
         if !confirmed.is_empty() {
             // The confirm was for this press alone: the next call gets the policy without it.
@@ -586,7 +625,7 @@ impl Screen {
         let confirmed: Vec<String> = req
             .confirm
             .as_deref()
-            .and_then(|token| self.confirms.redeem(token, Some(&goal_key)))
+            .and_then(|token| self.confirms.peek(token, Some(&goal_key)))
             .into_iter()
             .collect();
         if req.confirm.is_some() && confirmed.is_empty() {
@@ -600,6 +639,11 @@ impl Screen {
             max_steps,
             deadline: started + timeout,
         };
+        // a token that was given is good (else the run was refused above): the run may press
+        // what it lifts, so it's used now
+        if let Some(token) = req.confirm.as_deref() {
+            self.confirms.spend(token);
+        }
         let report = self.tools()?.run_goal(&req.goal, &bounds);
         // The confirm was for this run alone.
         self.policy = None;

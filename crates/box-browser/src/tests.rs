@@ -25,6 +25,8 @@ struct World {
     goals: Vec<(String, u32)>,
     /// What the next call answers instead, once.
     fail_next: Option<ToolFailure>,
+    /// What the next policy set answers instead, once.
+    fail_policy: Option<ToolFailure>,
     /// The region the next press lands on, instead of the one at its index.
     drift_to: Option<String>,
     shot: Vec<u8>,
@@ -164,7 +166,11 @@ impl Tools for Fake {
 
     fn set_policy(&mut self, policy: &PolicyLists) -> Result<(), ToolFailure> {
         policy.to_policy()?;
-        self.0.lock().unwrap().policies.push(policy.clone());
+        let mut w = self.0.lock().unwrap();
+        if let Some(fail) = w.fail_policy.take() {
+            return Err(fail);
+        }
+        w.policies.push(policy.clone());
         Ok(())
     }
 
@@ -1124,4 +1130,66 @@ async fn a_saved_login_runs_under_no_list_another_call_left() {
     h.browsers.state(":1", "main", save).await.unwrap();
     let last = h.world.lock().unwrap().policies.last().cloned().unwrap();
     assert!(last.allow_domains.is_empty(), "{last:?}");
+}
+
+#[tokio::test]
+async fn a_ref_and_a_body_naming_two_snapshots_is_refused() {
+    let h = harness();
+    let first = h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    let latest = h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    // the ref names the old snapshot, the body the latest: the old one must not be pressed as new
+    let mut press = act(&format!("{}:@e1", first.snapshot), ActAction::Click, None);
+    press.snapshot = Some(latest.snapshot);
+    assert!(matches!(
+        h.browsers.act(":1", press).await,
+        Err(BrowserError::Invalid(_))
+    ));
+    assert!(calls_of(&h, "browser_click").is_empty());
+}
+
+#[tokio::test]
+async fn an_approval_outlives_a_call_that_failed_before_its_press() {
+    let h = harness();
+    h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    let Err(BrowserError::ConfirmRequired { token, .. }) = h
+        .browsers
+        .act(":1", act("@e4", ActAction::Click, None))
+        .await
+    else {
+        panic!("Pay went through");
+    };
+    let mut approved = act("@e4", ActAction::Click, None);
+    approved.confirm = Some(token);
+    // the policy can't be set: nothing is pressed, and the token is still good
+    h.world.lock().unwrap().fail_policy = Some(ToolFailure::Browser("socket".into()));
+    assert!(h.browsers.act(":1", approved.clone()).await.is_err());
+    assert!(calls_of(&h, "browser_click").is_empty());
+    h.browsers.act(":1", approved.clone()).await.unwrap();
+    assert_eq!(calls_of(&h, "browser_click").len(), 1);
+    // and once the press went out, it's spent
+    assert!(matches!(
+        h.browsers.act(":1", approved).await,
+        Err(BrowserError::ConfirmRequired { .. })
+    ));
+}
+
+#[test]
+fn no_press_goes_out_without_time_to_answer() {
+    let h = harness();
+    let mut screen =
+        crate::screen::Screen::new(":1".into(), h.opener.clone(), Arc::new(Rules::default()));
+    let allow = crate::policy::AllowList::parse(None).unwrap();
+    screen
+        .snap(&SnapRequest::default().limits().unwrap())
+        .unwrap();
+    screen.set_deadline(Some(std::time::Instant::now() + Duration::from_secs(1)));
+    assert!(matches!(
+        screen.act(&act("@e1", ActAction::Click, None), &allow),
+        Err(BrowserError::Timeout(_))
+    ));
+    assert!(calls_of(&h, "browser_click").is_empty());
+    screen.set_deadline(None);
+    screen
+        .act(&act("@e1", ActAction::Click, None), &allow)
+        .unwrap();
 }
