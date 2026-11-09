@@ -289,6 +289,17 @@ async fn a_node_that_fails_is_skipped_not_fatal() {
 }
 
 #[tokio::test]
+async fn a_live_node_that_cannot_be_read_is_counted_not_pruned() {
+    // `bus` turns a state or child count it can't read into an error, which the walk counts.
+    let mut fake = desktop();
+    fake.broken.push("/panel".into());
+    let shaped = walk(&fake, &limits(), None).await.unwrap().shape(1);
+    assert_eq!(shaped.skipped, 1);
+    assert!(find(&shaped.nodes, "OK").is_none());
+    assert!(find(&shaped.nodes, "Files").is_some());
+}
+
+#[tokio::test]
 async fn nothing_published_is_an_empty_tree_with_a_reason() {
     let fake = Fake::default();
     let shaped = walk(&fake, &limits(), None).await.unwrap().shape(1);

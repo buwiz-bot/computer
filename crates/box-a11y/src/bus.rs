@@ -16,7 +16,7 @@ use atspi::proxy::action::ActionProxy;
 use atspi::proxy::component::ComponentProxy;
 use atspi::proxy::editable_text::EditableTextProxy;
 use atspi::proxy::text::TextProxy;
-use atspi::{CoordType, Interface, InterfaceSet, ObjectRefOwned, Role, State};
+use atspi::{CoordType, Interface, InterfaceSet, ObjectRefOwned, Role, State, StateSet};
 use tokio::net::UnixStream;
 use zbus::proxy::CacheProperties;
 
@@ -251,6 +251,22 @@ fn handle(object: ObjectRefOwned) -> Option<Handle> {
     })
 }
 
+/// What a node must answer to be kept. A node that fails to say its states or its child count is
+/// an error, which the walk counts as skipped: not a hidden node, or a leaf, it may not be.
+fn essentials(
+    name: zbus::Result<String>,
+    states: zbus::Result<StateSet>,
+    interfaces: zbus::Result<InterfaceSet>,
+    child_count: zbus::Result<i32>,
+) -> Result<(String, StateSet, InterfaceSet, i32), A11yError> {
+    Ok((
+        name.map_err(gone)?,
+        states.map_err(gone)?,
+        interfaces.map_err(gone)?,
+        child_count.map_err(gone)?,
+    ))
+}
+
 /// Whether a node's text may be read: only when it has the Text interface and a role that is known
 /// and isn't a password field's. A role that can't be read, or reads as unknown, could be one.
 fn may_read_text(interfaces: InterfaceSet, role: Option<Role>) -> bool {
@@ -286,14 +302,12 @@ impl Source for Screen {
             accessible.child_count(),
             accessible.get_role(),
         );
-        let name = name.map_err(gone)?;
-        let interfaces = interfaces.map_err(gone)?;
+        let (name, states, interfaces, child_count) =
+            essentials(name, states, interfaces, child_count)?;
         // A role this crate doesn't know yet is no reason to lose the node, but it is a reason not
         // to read its text: it could be a password field.
         let role = role.ok();
-        let states = states
-            .map(|set| set.iter().map(|s| s.to_static_str()).collect())
-            .unwrap_or_default();
+        let states = states.iter().map(|s| s.to_static_str()).collect();
 
         let bounds = async {
             if !interfaces.contains(Interface::Component) {
@@ -339,7 +353,7 @@ impl Source for Screen {
             bounds,
             actions,
             text,
-            child_count: usize::try_from(child_count.unwrap_or(0)).unwrap_or(0),
+            child_count: usize::try_from(child_count).unwrap_or(0),
         })
     }
 
@@ -368,5 +382,18 @@ mod tests {
         assert!(!may_read_text(text, Some(Role::Unknown)));
         assert!(!may_read_text(text, Some(Role::Invalid)));
         assert!(!may_read_text(InterfaceSet::empty(), Some(Role::Entry)));
+    }
+
+    #[test]
+    fn a_node_that_cannot_say_its_states_or_children_is_an_error() {
+        fn failed<T>() -> zbus::Result<T> {
+            Err(zbus::Error::Failure("no".into()))
+        }
+        let name = || Ok("OK".to_string());
+        let states = || Ok(StateSet::new(State::Showing));
+        let interfaces = || Ok(InterfaceSet::empty());
+        assert!(essentials(name(), states(), interfaces(), Ok(2)).is_ok());
+        assert!(essentials(name(), failed(), interfaces(), Ok(2)).is_err());
+        assert!(essentials(name(), states(), interfaces(), failed()).is_err());
     }
 }
