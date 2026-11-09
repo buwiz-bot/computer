@@ -15,6 +15,14 @@ class BuwizComputerError(Exception):
         self.body = body
 
 
+DEFAULT_TIMEOUT = 120.0
+"""Seconds a request may take, unless it waits on purpose."""
+
+BROWSER_MARGIN = 20.0
+"""Seconds added to a browser wait's or run's own ``timeout_ms``: the guest gives the browser 15 s
+past it, then replies."""
+
+
 def _trim_slash(url: str) -> str:
     return url.strip().rstrip("/")
 
@@ -24,7 +32,8 @@ class BuwizComputer:
         self.exec_url = _trim_slash(exec_url)
         self.host_url = _trim_slash(host_url)
         self.token = token
-        self._http = httpx.Client(timeout=120.0)
+        self._timeout = DEFAULT_TIMEOUT
+        self._http = httpx.Client(timeout=DEFAULT_TIMEOUT)
 
     @classmethod
     def connect(cls, exec_url: str, host_url: str, token: str) -> BuwizComputer:
@@ -327,6 +336,77 @@ class BuwizComputer:
         url = self._on_screen(f"{self.exec_url}/v1/cua/element", display)
         return self._auth("POST", url, body)
 
+    def browser_snap(self, display: str | None = None, **fields: Any) -> Any:
+        """The current tab's controls, each with an ``@eN`` ref good for this snapshot alone.
+
+        ``fields``: ``max_nodes`` (1 to 1000, default 200). A password field's text never comes.
+        """
+        return self._auth("POST", self._on_screen(f"{self.exec_url}/v1/browser/snap", display), dict(fields))
+
+    def browser_act(
+        self,
+        ref: str,
+        action: str,
+        text: str | None = None,
+        confirm: str | None = None,
+        snapshot: int | None = None,
+        allow_domains: list[str] | None = None,
+        display: str | None = None,
+    ) -> Any:
+        """``click``, ``type``, ``select``, ``key``, ``scroll`` or ``focus`` on an element by ref,
+        through ultra-instinct's ticketed guard. A click or key on a label like ``Pay*``, or an
+        Enter that would send a form whose submit button is one, fails with 409
+        ``confirm_required``; its ``error.details.confirm`` goes back as ``confirm`` once a person
+        approved ``error.details.label``."""
+        body: dict[str, Any] = {"ref": ref, "action": action}
+        for key, value in (
+            ("text", text),
+            ("confirm", confirm),
+            ("snapshot", snapshot),
+            ("allow_domains", allow_domains),
+        ):
+            if value is not None:
+                body[key] = value
+        return self._auth("POST", self._on_screen(f"{self.exec_url}/v1/browser/act", display), body)
+
+    def browser_navigate(
+        self, url: str, allow_domains: list[str] | None = None, display: str | None = None
+    ) -> Any:
+        body: dict[str, Any] = {"url": url}
+        if allow_domains is not None:
+            body["allow_domains"] = allow_domains
+        return self._auth("POST", self._on_screen(f"{self.exec_url}/v1/browser/navigate", display), body)
+
+    def browser_tabs(self, op: str, display: str | None = None, **fields: Any) -> Any:
+        """``op`` is ``list``, ``open`` (``url``), ``close`` or ``switch`` (``tab_id``)."""
+        body = {"op": op, **fields}
+        return self._auth("POST", self._on_screen(f"{self.exec_url}/v1/browser/tabs", display), body)
+
+    def browser_wait(self, display: str | None = None, **fields: Any) -> Any:
+        """Until ``text``, ``url``, ``control``, ``gone`` or ``load`` holds, or ``timeout_ms``
+        (default 10000, at most 60000) runs out."""
+        wait = float(fields.get("timeout_ms") or 10_000) / 1000
+        url = self._on_screen(f"{self.exec_url}/v1/browser/wait", display)
+        return self._auth("POST", url, dict(fields), timeout=wait + BROWSER_MARGIN)
+
+    def browser_shot(self, display: str | None = None) -> Any:
+        """The current tab's viewport: ``{format, data, bytes, width, height}``, ``data`` base64."""
+        return self._auth("POST", self._on_screen(f"{self.exec_url}/v1/browser/shot", display), {})
+
+    def browser_run(self, goal: str, display: str | None = None, **fields: Any) -> Any:
+        """Instinct runs ``goal`` until it's done, blocked or abstains: ``max_steps``,
+        ``timeout_ms`` (default 120000), ``allow_domains``, ``confirm``."""
+        run = float(fields.get("timeout_ms") or 120_000) / 1000
+        url = self._on_screen(f"{self.exec_url}/v1/browser/run", display)
+        return self._auth("POST", url, {"goal": goal, **fields}, timeout=run + BROWSER_MARGIN)
+
+    def browser_state(self, op: str, name: str | None = None, display: str | None = None) -> Any:
+        """``save`` or ``load`` this screen's login, a 0600 file only box-exec can read."""
+        body: dict[str, Any] = {"op": op}
+        if name is not None:
+            body["name"] = name
+        return self._auth("POST", self._on_screen(f"{self.exec_url}/v1/browser/state", display), body)
+
     @staticmethod
     def _on_screen(url: str, display: str | None) -> str:
         return f"{url}?{urlencode({'display': display})}" if display else url
@@ -335,12 +415,17 @@ class BuwizComputer:
         response = self._http.get(url)
         return self._decode(response, url)
 
-    def _auth(self, method: str, url: str, json: Any | None = None) -> Any:
+    def _auth(
+        self, method: str, url: str, json: Any | None = None, timeout: float | None = None
+    ) -> Any:
         headers = {
             "authorization": f"Bearer {self.token}",
             "x-request-id": self._request_id(),
         }
-        response = self._http.request(method, url, headers=headers, json=json)
+        extra: dict[str, Any] = {}
+        if timeout is not None and timeout > self._timeout:
+            extra["timeout"] = timeout
+        response = self._http.request(method, url, headers=headers, json=json, **extra)
         return self._decode(response, url)
 
     def _body(self, response: httpx.Response) -> Any:

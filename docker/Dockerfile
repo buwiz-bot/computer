@@ -4,23 +4,23 @@
 # box-exec / box-host default features compile in mimalloc (needs gcc, already
 # in rust:bookworm). Opt out with cargo --no-default-features.
 
-FROM rust:1.85-bookworm AS builder
+FROM rust:1.99-bookworm AS builder
 WORKDIR /src
 
 COPY Cargo.toml rust-toolchain.toml ./
 COPY crates ./crates
 COPY Cargo.lock* ./
 
-RUN cargo build --release -p box-exec -p box-host -p box-egress-tunnel \
+RUN cargo build --release -p box-exec -p box-host -p box-egress-tunnel -p box-chrome \
     && strip target/release/box-exec target/release/box-host target/release/box-egress-tunnel \
-        target/release/box-keeper target/release/box-active-tab
+        target/release/box-keeper target/release/box-active-tab target/release/box-chrome-pipe
 
 COPY docker/shm-private.c ./
 RUN gcc -shared -fPIC -O2 -o /src/target/release/libbox-shm-private.so shm-private.c
 
 # voxl serves each screen to a browser: H.264 over a WebSocket, and /wait, /screenshot and
 # /record for the agent. Pinned, because it moves fast: bump it on purpose. It stays a separate
-# process (x264 is GPL) and needs a newer Rust than the box's own 1.85.
+# process (x264 is GPL), built on the toolchain its own release was checked on.
 FROM rust:1.93-bookworm AS voxl-builder
 ARG VOXL_VERSION=0.3.3
 RUN apt-get update \
@@ -105,6 +105,9 @@ COPY --from=builder --chmod=0111 /src/target/release/box-egress-tunnel /usr/loca
 # only the `tabs` permission reports it to box-active-tab over native messaging, and
 # box-host serves it at GET /v1/chrome/active-tab. Every Chromium launch loads the extension.
 COPY --from=builder /src/target/release/box-active-tab /usr/local/bin/box-active-tab
+# Each screen's Chromium on a DevTools pipe whose other end only box-exec gets (docs/USERS.md). It
+# runs as the desktop user and makes itself undumpable, so it needs no execute-only mode.
+COPY --from=builder --chmod=0755 /src/target/release/box-chrome-pipe /usr/local/bin/box-chrome-pipe
 COPY docker/app.buwiz.active_tab.json /etc/chromium/native-messaging-hosts/app.buwiz.active_tab.json
 COPY docker/active-tab /opt/box/active-tab
 COPY --from=builder --chmod=0755 /src/target/release/libbox-shm-private.so /usr/lib/box/libbox-shm-private.so

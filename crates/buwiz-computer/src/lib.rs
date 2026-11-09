@@ -18,6 +18,9 @@
 //!   client timeout and the wait's own `timeout` (voxl's default 10 s) plus [`WAIT_MARGIN`].
 //! - [`BuwizComputer::cua_tree`] waits for the walk, so it is bounded by the larger of the client
 //!   timeout and its `timeout_ms` (the guest's default 3 s) plus [`TREE_MARGIN`].
+//! - [`BuwizComputer::browser_wait`] and [`BuwizComputer::browser_run`] wait for the page or the
+//!   goal, so each is bounded by the larger of the client timeout and its `timeout_ms` (the
+//!   guest's default 10 s for a wait, 120 s for a run) plus [`BROWSER_MARGIN`].
 //!
 //! The file calls ([`BuwizComputer::files_get`], [`BuwizComputer::files_put`],
 //! [`BuwizComputer::files_get_raw`], [`BuwizComputer::files_put_raw`]) move bytes, so their bound
@@ -58,6 +61,14 @@ pub const WAIT_MARGIN: Duration = Duration::from_secs(5);
 
 /// Added to a `cua_tree`'s own `timeout_ms`: connecting to the screen's bus and the reply.
 pub const TREE_MARGIN: Duration = Duration::from_secs(5);
+
+/// Added to a `browser_wait`'s or `browser_run`'s own `timeout_ms`: the guest gives the browser
+/// 15 s past it before it gives up, and then replies.
+pub const BROWSER_MARGIN: Duration = Duration::from_secs(20);
+
+/// The guest's `browser_wait` and `browser_run` when the request names no `timeout_ms`.
+const DEFAULT_BROWSER_WAIT: Duration = Duration::from_millis(10_000);
+const DEFAULT_BROWSER_RUN: Duration = Duration::from_millis(120_000);
 
 /// The slowest rate a file transfer is given time for, in bytes a second (64 KiB/s): a 10 MiB
 /// file gets 160 s on top of the client timeout.
@@ -642,6 +653,97 @@ impl BuwizComputer {
             .await
     }
 
+    /// `/v1/browser/<path>` on the exec URL, on this client's screen.
+    fn browser(&self, path: &str) -> String {
+        format!(
+            "{}/v1/browser/{path}{}",
+            self.exec_url,
+            self.screen_query('?')
+        )
+    }
+
+    /// `POST /v1/browser/snap`: the current tab's interactive elements, each with an `@eN` ref
+    /// good for this snapshot alone, its role, label and rect. `body` takes `max_nodes`; `{}` for
+    /// the default. A password field's text never comes.
+    pub async fn browser_snap(&self, body: Value) -> Result<Value, Error> {
+        self.send_json("POST", &self.browser("snap"), Some(body), true)
+            .await
+    }
+
+    /// `POST /v1/browser/act`: `{ref, action, text?, confirm?, snapshot?, allow_domains?}`, with
+    /// `action` one of `click`, `type`, `select`, `key`, `scroll` or `focus`, through
+    /// ultra-instinct's ticketed guard. A click on a label like `Pay*` is refused with
+    /// `409 confirm_required` and `error.details.{label, confirm}` until `confirm` brings the token
+    /// back.
+    pub async fn browser_act(&self, body: Value) -> Result<Value, Error> {
+        self.send_json("POST", &self.browser("act"), Some(body), true)
+            .await
+    }
+
+    /// `POST /v1/browser/navigate`: `{url, allow_domains?}`.
+    pub async fn browser_navigate(&self, body: Value) -> Result<Value, Error> {
+        self.send_json("POST", &self.browser("navigate"), Some(body), true)
+            .await
+    }
+
+    /// `POST /v1/browser/tabs`: `{op: list|open|close|switch, tab_id?, url?, allow_domains?}`.
+    pub async fn browser_tabs(&self, body: Value) -> Result<Value, Error> {
+        self.send_json("POST", &self.browser("tabs"), Some(body), true)
+            .await
+    }
+
+    /// `POST /v1/browser/wait`: until `text`, `url`, `control`, `gone` or `load` holds, or
+    /// `timeout_ms` runs out. Bounded by the client timeout, or by `timeout_ms` plus
+    /// [`BROWSER_MARGIN`] if that is longer.
+    pub async fn browser_wait(&self, body: Value) -> Result<Value, Error> {
+        let bound = self.browser_bound(&body, DEFAULT_BROWSER_WAIT);
+        self.send_json_within(
+            Bound::Whole(bound),
+            "POST",
+            &self.browser("wait"),
+            Some(body),
+            true,
+        )
+        .await
+    }
+
+    /// `POST /v1/browser/shot`: the current tab's viewport as a PNG, `{format, data, bytes,
+    /// width, height}` with `data` base64.
+    pub async fn browser_shot(&self) -> Result<Value, Error> {
+        self.send_json("POST", &self.browser("shot"), Some(json!({})), true)
+            .await
+    }
+
+    /// `POST /v1/browser/run`: `{goal, max_steps?, timeout_ms?, allow_domains?, confirm?}`.
+    /// Instinct runs the loop; the answer's `outcome` is `done`, `blocked`, `abstained` or
+    /// `failed`, with the verified `steps`. Bounded by the client timeout, or by `timeout_ms`
+    /// plus [`BROWSER_MARGIN`] if that is longer.
+    pub async fn browser_run(&self, body: Value) -> Result<Value, Error> {
+        let bound = self.browser_bound(&body, DEFAULT_BROWSER_RUN);
+        self.send_json_within(
+            Bound::Whole(bound),
+            "POST",
+            &self.browser("run"),
+            Some(body),
+            true,
+        )
+        .await
+    }
+
+    /// `POST /v1/browser/state`: `{op: save|load, name?}`, this screen's saved login.
+    pub async fn browser_state(&self, body: Value) -> Result<Value, Error> {
+        self.send_json("POST", &self.browser("state"), Some(body), true)
+            .await
+    }
+
+    fn browser_bound(&self, body: &Value, default: Duration) -> Duration {
+        let own = body
+            .get("timeout_ms")
+            .and_then(Value::as_u64)
+            .map_or(default, Duration::from_millis);
+        self.timeout.max(own.saturating_add(BROWSER_MARGIN))
+    }
+
     async fn send_json<T: for<'de> Deserialize<'de>>(
         &self,
         method: &str,
@@ -1095,6 +1197,25 @@ mod tests {
             .with_timeout(Duration::from_millis(300));
         let err = client.files_get_raw("/f").await.unwrap_err();
         assert!(matches!(err, Error::Timeout(_)), "{err}");
+    }
+
+    #[test]
+    fn browser_waits_and_runs_get_their_own_time() {
+        let client = BuwizComputer::connect("http://127.0.0.1:1", "http://127.0.0.1:2", "t")
+            .unwrap()
+            .with_timeout(Duration::from_secs(1));
+        assert_eq!(
+            client.browser_bound(&json!({ "timeout_ms": 60_000 }), DEFAULT_BROWSER_WAIT),
+            Duration::from_secs(80)
+        );
+        assert_eq!(
+            client.browser_bound(&json!({}), DEFAULT_BROWSER_RUN),
+            Duration::from_secs(140)
+        );
+        assert_eq!(
+            client.on(":3").browser("snap"),
+            "http://127.0.0.1:1/v1/browser/snap?display=%3A3"
+        );
     }
 
     #[tokio::test]

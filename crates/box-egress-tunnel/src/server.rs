@@ -215,6 +215,9 @@ async fn handle_admin(shared: Arc<Shared>, mut stream: TcpStream) -> std::io::Re
     Ok(())
 }
 
+// The handshake callback's error type is tungstenite's `ErrorResponse`, a whole HTTP response: its
+// size is the crate's signature, not a choice made here.
+#[allow(clippy::result_large_err)]
 async fn handle_ws(
     shared: Arc<Shared>,
     stream: TcpStream,

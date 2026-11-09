@@ -8,6 +8,7 @@ members = [
     "crates/box-chrome",
     "crates/box-cua",
     "crates/box-a11y",
+    "crates/box-browser",
     "crates/box-egress-tunnel",
     "crates/buwiz-computer",
 ]
@@ -17,9 +18,8 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 authors = ["Uriah"]
-description = "Sandboxed Linux computer for agents (buwiz-computer guest image, CLI, and SDKs)"
 repository = "https://github.com/buwiz-bot/computer"
-rust-version = "1.85"
+rust-version = "1.99"
 
 [workspace.dependencies]
 box-common = { path = "crates/box-common" }
@@ -27,6 +27,16 @@ box-desktop = { path = "crates/box-desktop" }
 box-chrome = { path = "crates/box-chrome" }
 box-cua = { path = "crates/box-cua" }
 box-a11y = { path = "crates/box-a11y" }
+box-browser = { path = "crates/box-browser" }
+# ultra-instinct (hexuria/ultra-instinct, MIT): the observe -> gate -> ticket -> execute loop that
+# box-browser drives a screen's Chromium through, and its DevTools pipe transport. Pinned to
+# 22885b3 on ultra-instinct's main (its PR #102, phase 2: the pipe server, snapshot-bound presses,
+# stable error codes, run_goal; #104, label folding; #106, the guard on keys and form submits,
+# BlockKind, uploads); its docs/embedding.md is the guide. box-browser's `seam` is the
+# only place that knows its types.
+ultra-instinct-mcp = { git = "https://github.com/hexuria/ultra-instinct", rev = "22885b36e761f9cba1b4f9f4df246647cbab8c76", default-features = false }
+ultra-instinct-guard = { git = "https://github.com/hexuria/ultra-instinct", rev = "22885b36e761f9cba1b4f9f4df246647cbab8c76", default-features = false }
+ultra-instinct-cdp = { git = "https://github.com/hexuria/ultra-instinct", rev = "22885b36e761f9cba1b4f9f4df246647cbab8c76", default-features = false }
 box-egress-tunnel = { path = "crates/box-egress-tunnel" }
 tokio-tungstenite = { version = "0.26", features = ["connect", "rustls-tls-webpki-roots"] }
 axum = { version = "0.8", features = ["json", "macros"] }

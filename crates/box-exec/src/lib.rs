@@ -5,6 +5,7 @@
 //! when the `mimalloc` feature is on (default); see `box_common::GLOBAL_ALLOCATOR`.
 
 mod a11y;
+mod browser;
 mod control;
 mod cua;
 mod exec;
@@ -66,6 +67,8 @@ pub struct AppState {
     pub keeper_socket: PathBuf,
     /// The latest accessibility tree of each screen, for `POST /v1/cua/element`.
     pub a11y: box_a11y::Snapshots,
+    /// Each screen's Chromium over its DevTools pipe, for `/v1/browser/*`.
+    pub browser: box_browser::Browsers,
 }
 
 #[derive(Clone, Debug)]
@@ -101,6 +104,7 @@ impl AppState {
             users: users::Users::from_env(),
             keeper_socket: PathBuf::from(box_common::KEEPER_SOCKET),
             a11y: box_a11y::Snapshots::default(),
+            browser: box_browser::Browsers::from_env(),
         }
     }
 
@@ -129,6 +133,7 @@ impl AppState {
             users: users::Users::Same,
             keeper_socket: PathBuf::from("/nonexistent/keeper.sock"),
             a11y: box_a11y::Snapshots::default(),
+            browser: box_browser::Browsers::disabled(),
         }
     }
 }
@@ -151,6 +156,7 @@ pub async fn serve(config: BoxConfig) -> Result<(), Box<dyn std::error::Error + 
     let bind = config.exec_bind;
     let state = AppState::from_config(&config);
     let shutdown = state.shutdown.clone();
+    let browsers = state.browser.clone();
     let app = router(state);
     tracing::info!(
         %bind,
@@ -163,9 +169,13 @@ pub async fn serve(config: BoxConfig) -> Result<(), Box<dyn std::error::Error + 
     tokio::spawn(async move {
         box_cua::warmup_pointer(&warmup_cfg).await;
     });
-    axum::serve(listener, app)
+    let served = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(shutdown))
-        .await?;
+        .await;
+    // Each screen's Chromium is asked to quit over its pipe, which then closes; its launcher
+    // ends whatever of it is left.
+    browsers.close_all(Duration::from_secs(3)).await;
+    served?;
     Ok(())
 }
 

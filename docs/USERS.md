@@ -5,7 +5,7 @@ Everything the model runs on a computer runs as a user that can't reach a person
 | User | uid | Runs | Owns |
 | --- | --- | --- | --- |
 | root | 0 | `tini`, `box-keeper`, and `box-prepare` and `box-screen` when it calls them | `/run/box`, `/home/box/.box` |
-| `boxsvc` | 990 | `box-exec`, `box-host` | `/run/box/svc`, `/run/box/keeper.sock` |
+| `boxsvc` | 990 | `box-exec`, `box-host` | `/run/box/svc`, `/run/box/keeper.sock`, `/home/box/browser-state` |
 | `box` | 1000 | the main screen's X server, session, browser and voxl | `/home/box/desktops/main` |
 | `agent` | 1500 | a command or file request that names no Bot | `/workspace/shared`, `/home/box/agents/shared` |
 | a Bot's agent user | 20000 + 2i | that Bot's commands and file requests | `/workspace/agents/<bot>`, `/home/box/agents/<bot>` |
@@ -24,7 +24,9 @@ The container starts as root with `--cap-drop ALL` and only `CHOWN DAC_OVERRIDE 
 - **X.** Each server runs with `-auth`, a fresh cookie and no `-ac`. The cookie is in `/run/box/x/<slot>/auth`, root's, for its desktop's group alone, so the desktop can read it and can't hand it on, and in `/run/box/x/svc.auth` for the services, gone when the screen stops. `/run/box/x` can't be listed, and cookies are written under `umask 077`, so neither is readable for a moment. What a desktop writes goes in `/run/box/x/<slot>/run`. **An empty cookie file opens X to every local client**, so both scripts refuse to start a server on one.
 - **A cookie goes only to the real server.** Clients try the abstract socket first, and anybody can hold that name for a screen that's down. Before any `?display=:N` call connects, `box-exec` connects to that name itself, sends nothing, and asks the kernel whose it is. If it isn't that screen's desktop user, the call is refused.
 - **Accessibility.** Each screen's AT-SPI bus, where its apps publish their widgets, listens in its run folder, which only its desktop and `boxsvc` may enter, and its policy lets in no one else. `box-exec` checks who listens before it speaks, as for X. A command can't read a screen's tree or press its buttons: see [`ARCHITECTURE.md`](ARCHITECTURE.md#accessibility-tree-at-spi).
-- **No DevTools port.** It has no login, and every user shares the box's loopback, so a command could read cookies and drive the browser. Nothing here needs one: a page's address comes from that screen's own extension report, and Chromium's readiness from its process.
+- **No DevTools port.** It has no login, and every user shares the box's loopback, so a command could read cookies and drive the browser. A page's address comes from that screen's own extension report, and Chromium's readiness from its process.
+- **A DevTools pipe, held by `box-exec`.** Each screen's Chromium is started by `box-chrome-pipe`, as that screen's desktop user, from the entrypoint's restart loop or `box-chromium`. It makes a socket pair and gives Chromium one end as fds 3 and 4 (`--remote-debugging-pipe`). It offers the other end once, at `cdp.sock` in the screen's run folder, which only the desktop and `boxsvc` may enter. It sends it (`SCM_RIGHTS`) only to a peer the kernel says is `boxsvc`, then closes its own copy and removes the socket. `box-exec` checks, before it takes anything, that what listens there is that screen's desktop user, as for X and the accessibility bus. From then on the only other end of the browser's protocol is in `box-exec`, which is undumpable. Nothing listens on TCP. A command can't enter the folder, can't connect to the socket, and can't ptrace `box-exec`, so it can't reach the protocol. If the folder is open to others, there is no `boxsvc` user, or the screen's pipe is already offered, the launcher starts Chromium with no pipe. `BOX_BROWSER=0` does the same on the main screen.
+- **Saved logins.** `POST /v1/browser/state` (below) writes a screen's cookies and storage to `/home/box/browser-state/<screen>/<name>.json`, mode 0600, in a folder that is `boxsvc`'s alone (0700). `<screen>` is the Bot that holds the screen, or `main`. It isn't in a Bot's folder, which that Bot's commands can read.
 - **Root and links.** Root sets an owner only on a path whose parent is root's, and checks for a link first. `box-prepare` moves aside anything under `agents/` that isn't a Bot's real folder, to `/workspace/old-agents-<time>`, root's. In a desktop's home the desktop's own user does the work.
 - **Logs** in `/run/box/log` are root's alone.
 - **No `-shmem`.** Xvfb makes that framebuffer mode 0777, which any user can attach and read without asking X anything. voxl falls back to MIT-SHM into a segment of its own. X will only share memory with a client it can attach as itself, which is why voxl runs as the screen's desktop user.
@@ -42,6 +44,8 @@ A process of an agent user, whatever it's started, can't:
 - read a desktop's home, browser profile or cookie, or another Bot's folder;
 - signal, ptrace or read the memory of `box-keeper`, `box-exec`, `box-host`, voxl, Xvfb or a desktop;
 - connect to any screen's accessibility bus;
+- get any screen's DevTools pipe, or speak to its browser's protocol;
+- read a saved browser login;
 - bind a service's port;
 - get a capability back. Setuid programs are off (`no-new-privileges`), and none of its capability sets holds anything.
 
@@ -58,6 +62,8 @@ An `LD_PRELOAD` into an allowed program is just that user running that program w
 - **Links the desktop might follow.** A Bot's folder is writable by both its users, so a command can leave a link where the browser saves a download. It's only that Bot's desktop, and this isn't verified against Chromium.
 - **The egress tunnel.** Off by default. When it's on, 8790 and 8791 are above the port floor, so a command could take them while they're free, and it can use the proxy on 8791.
 - **Helper programs and the cookie.** `box-exec`'s own X connections do the handshake on the stream the kernel vouched for. Helpers it runs (`xdotool`, `wmctrl`, `ffmpeg`) connect again by themselves after that check, so a server dying in that moment could leave the name to a squatter, who'd hear a dead server's cookie.
+- **A desktop's processes and the DevTools pipe.** Chromium runs as the desktop user, so any process of that user can ptrace it, where the kernel's ptrace rules let it, and take its end of the pipe or do what the pipe does. The launcher is undumpable, but Chromium can't be. So the pipe is no wall against the desktop user. It doesn't need to be: that user already has the profile and the screen, and is the one the model drives ("The screen itself" above). The wall is against commands.
+- **What the browser says to `box-exec`.** On the pipe, Chromium, and so its pages, answers `box-exec` with anything. `box-browser` bounds every answer by time, size and count, never returns a password field's text, and re-checks the allow-list and confirm rules itself on every call but a goal run, whose steps only ultra-instinct's guard sees before they happen. But a label, an address or a goal run's verdict is still the page's word.
 - **A desktop's apps and `box-exec`.** On a screen's accessibility bus the desktop's processes can send `box-exec`'s connection anything, and answer it with anything. It serves nothing there, and it reads every answer within the request's limits and time, but what an app says it is (a name, a role, bounds) is that app's word.
 - **The kernel.** Everything shares one. This is a user boundary inside a container, not a VM.
 

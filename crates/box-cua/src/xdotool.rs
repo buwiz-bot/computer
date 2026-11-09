@@ -82,7 +82,7 @@ async fn run_capture(cmd: &mut Command) -> Result<Vec<u8>, CuaError> {
 }
 
 pub(crate) async fn xdotool(config: &CuaConfig, args: &[&str]) -> Result<(), CuaError> {
-    if args.iter().any(|a| *a == "--sync") {
+    if args.contains(&"--sync") {
         return Err(CuaError::Tool(
             "xdotool --sync is not allowed (Xvfb can block ~15s)".into(),
         ));

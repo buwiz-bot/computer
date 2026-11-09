@@ -37,7 +37,20 @@ geom="${BOX_DISPLAY_GEOM:-1280x800x24}"
 win_w="${geom%%x*}"
 rest="${geom#*x}"
 win_h="${rest%%x*}"
-exec chromium \
+# A DevTools pipe whose other end only box-exec gets (box-chrome-pipe, docs/USERS.md), when this
+# starts the screen's browser: if Chromium is already running on the profile, the launcher sees its
+# pipe is taken and this just opens a window in it. BOX_BROWSER=0 starts it with no pipe.
+launcher=""
+case "$(echo "${BOX_BROWSER:-1}" | tr '[:upper:]' '[:lower:]')" in
+  0|false|off|no) ;;
+  *)
+    if [ -n "${BOX_SCREEN_RUN:-}" ] && [ -x /usr/local/bin/box-chrome-pipe ]; then
+      launcher="/usr/local/bin/box-chrome-pipe ${BOX_SCREEN_RUN}/cdp.sock --"
+    fi
+    ;;
+esac
+# shellcheck disable=SC2086 # the launcher's words, like the proxy flags, are split on purpose
+exec ${launcher} chromium \
   --user-data-dir="${BOX_CHROME_PROFILE:-${HOME}/chrome-profile}" \
   --window-size="${win_w},${win_h}" \
   --window-position=0,0 \

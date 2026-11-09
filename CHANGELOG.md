@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+| Item | Where |
+| --- | --- |
+| Rust 1.99.0 everywhere (toolchain, MSRV, the image's builder, CI), clean under its lints. The lock moved: uuid 1.26.1 → 1.29.2, zbus 5.13.2 → 5.14.0, zvariant 5.9.2 → 5.15.1 (atspi 0.30 holds zbus below 5.15) | `rust-toolchain.toml`, `Cargo.toml`, `docker/Dockerfile`, `.github/workflows/ci.yml` |
+| Each screen's Chromium runs on a DevTools pipe, through `box-chrome-pipe`, whose other end only `box-exec` gets: offered once in the screen's run folder, to a `boxsvc` peer, still with no port | `crates/box-chrome`, `docker/entrypoint.sh`, `docker/box-chromium`, `docs/USERS.md`, `docs/ARCHITECTURE.md` |
+| `/v1/browser/*` (snap, act, navigate, tabs, wait, shot, run, state) through ultra-instinct, with snapshot-scoped `@eN` refs, no password text, confirm tokens for `Pay*`-like clicks, per-call allow-lists and saved logins at 0600. On ultra-instinct's pipe server (main 22885b3): presses bound to the state they were read in (`409 stale_ref` when it moved), a goal run (`run`) under the call's allow-list and confirm rules, `sensitive` from ultra-instinct (failing closed), typed secrets masked in every answer and hidden from a shot, a tool allow-list, and a frame too large costing only its call. In the Rust client and CLI (`browser …`), both SDKs, the API doc, the OpenAPI spec and the image smoke | `crates/box-browser`, `crates/box-exec`, `crates/buwiz-computer`, `sdk/`, `docs/`, `scripts/smoke.sh` |
+| Chromium has a process group of its own, which its launcher kills 3 s after a signal it passes on, and when Chromium exits; `box-exec` sends `Browser.close` to every screen's Chromium as it stops, and never drops a live pipe by accident (Chromium quits with status 0 when its pipe closes) | `crates/box-chrome`, `crates/box-browser`, `crates/box-exec`, `docs/ARCHITECTURE.md` |
+| A key press asks for the confirm of what it would press: the guard checks an Enter or a Space in a form against that form's submit button, in `act` and in a goal run alike, and `confirm` is taken on `key` and `type` as well as `click`. A blocked run says what stopped it (`code`, `host`); uploads are off in the server too | `crates/box-browser`, `docs/API.md`, `docs/openapi.yaml`, both SDKs, `scripts/smoke.sh` |
+| A browser press can't go wrong quietly: a ref and a `snapshot` naming different snapshots are refused, a confirm is spent only once its press goes out, a call whose caller stopped waiting isn't run, and no press is sent with too little time left to answer (a `504 browser_timeout` says a press already sent may still land). `shot` may be a JPEG, as `format` says, in the spec and the SDKs, and `browser shot -o` names the file by it | `crates/box-browser`, `crates/buwiz-computer`, `docs/`, `sdk/typescript` |
+| A label is checked and confirmed whole, and only clipped where it's shown, so a long one can be confirmed. `snap` and `wait` refuse a body that isn't JSON (`400 invalid_request`) instead of dropping it. The TypeScript SDK waits 60 s for a browser call, past box-exec's 45 s budget. The docs say a page script's own submit on a `select` or an unnamed click isn't asked about | `crates/box-browser`, `crates/box-exec`, `sdk/typescript`, `docs/API.md` |
+| A press whose element now shows another label than the snap did is `409 stale_ref`, not a press on whatever took its place. With `allow_domains` set, only `about:blank` of the pages with no host gets input (`file:` and `data:` don't). Chromium dies with its launcher, even when the launcher is killed outright, and a signal before Chromium is up no longer leaves it behind. The saved-login owner lookup runs off the async threads | `crates/box-browser`, `crates/box-chrome`, `crates/box-exec` |
+| An error may carry `error.details` (`confirm_required`'s label and token, `domain_not_allowed`'s host) | `crates/box-common` |
+
 ## 0.1.0 (2026-11-09)
 
 | Item | Where |

@@ -22,7 +22,9 @@ Auth: `Authorization: Bearer <BOX_TOKEN>` unless noted. `GET /v1/health` is the 
 }
 ```
 
-Common codes: `unauthorized`, `invalid_request`, `path_escape`, `not_found`, `payload_too_large`, `exec_failed`, `io_error`, `internal`, `not_ready`, `busy` (429, every exec slot is taken), `cua_disabled`, `display_unavailable` (503, the X server is down), `viewer_unavailable` (503, that screen's voxl is down), `out_of_range`, `cua_backend` (502), `keeper_failed` (502, `POST /v1/screen` could not reach `box-keeper`).
+Common codes: `unauthorized`, `invalid_request`, `path_escape`, `not_found`, `payload_too_large`, `exec_failed`, `io_error`, `internal`, `not_ready`, `busy` (429, every exec slot is taken), `cua_disabled`, `display_unavailable` (503, the X server is down), `viewer_unavailable` (503, that screen's voxl is down), `out_of_range`, `cua_backend` (502), `keeper_failed` (502, `POST /v1/screen` could not reach `box-keeper`), and the browser's: `browser_disabled`, `browser_unavailable` (503), `stale_ref`, `confirm_required`, `target_gone`, `dialog_open` (409), `domain_not_allowed` (403), `action_refused` (422), `browser_backend` (502), `browser_timeout` (504).
+
+A few errors carry `error.details`, what the caller needs to act on them: `confirm_required` has `{label, confirm}`, `domain_not_allowed` has `{host}`. Every other error has none.
 
 CUA coordinate space is the X framebuffer **1280×800** (`BOX_DISPLAY_GEOM=1280x800x24`). Origin is top-left. Clicks outside that range return `400 out_of_range`.
 
@@ -410,6 +412,125 @@ An action on a node of the screen's latest tree, by `ref`. `?display=:N` must be
 `200 {"ok": true, "ref": "48213:35", "action": "press", "performed": "Click"}`. Errors: `409 stale_ref` (the ref is from an older tree, from another screen's, or its element is gone: read the tree again), `422 unsupported_action` (the element has no way to do it), `422 action_refused` (its application said no), `400 invalid_request` (a malformed ref, `set_text` without `text`, `text` with another action), `400 out_of_range` (a `click` off the screen), `502 a11y_backend`, and the `503`s of `/v1/cua/tree`.
 
 How box-exec reaches each screen's tree, and why a command can't: [`ARCHITECTURE.md`](ARCHITECTURE.md#accessibility-tree-at-spi).
+
+---
+
+## Browser (`/v1/browser/*`)
+
+Each screen's Chromium, driven over its DevTools pipe through [ultra-instinct](https://github.com/hexuria/ultra-instinct): ultra-instinct reads the page (DOM and accessibility tree), and every press goes through its gate and a one-shot ticket bound to what it saw. All eight routes are `POST` on `box-exec`, take the token, and take `?display=:N` for another screen, as `/v1/cua/*` do. The pipe is `box-exec`'s alone, never a command's: [USERS.md](USERS.md).
+
+**Tabs.** The tabs a call drives are the browser's page tabs: the first one, until `tabs open` or `switch` picks another. A tab a person opens by hand isn't driven until it's switched to.
+
+**Presses are bound to what was seen.** Every `act` presses the element in the state ultra-instinct read just before it: if that element moved, changed or left the page in between, nothing is pressed and the answer is `409 stale_ref`.
+
+**Limits.** Every call has a time budget (45 s; a wait or a run gets its own `timeout_ms` plus 15 s). Past it the answer is `504 browser_timeout`, and calls queue behind the one still running: past 4 waiting, `429 busy`. Every answer is bounded: labels at 160 characters, addresses at 2048, a field's text at 400, 8 actions per element, 100 tabs, a screenshot at 8 MiB, anything else at 4 MiB of JSON.
+
+**Errors**, the same on every route:
+
+| Status | `code` | When |
+| --- | --- | --- |
+| 400 | `invalid_request` | A field out of range or unknown, a malformed ref, a display that isn't `:N` |
+| 403 | `domain_not_allowed` | The page, or the address asked for, is off `allow_domains`; `error.details.host` |
+| 409 | `stale_ref` | The ref is from an older snapshot, or its element is gone, moved, or now shows another label |
+| 409 | `confirm_required` | The press needs a person's confirm; `error.details.{label, confirm}` (`label` shown to 160 characters; the token holds it whole) |
+| 409 | `target_gone` | The tab is gone: list the tabs, switch or open one, snap again |
+| 409 | `dialog_open` | A JavaScript dialog holds the tab |
+| 422 | `action_refused` | ultra-instinct's guard said no: covered, disabled, drifted, a spent ticket |
+| 429 | `busy` | More calls wait for this screen's browser than it takes |
+| 500 | `internal` | `box-exec` asked ultra-instinct for a tool it may not use: a bug in `box-exec` |
+| 502 | `browser_backend` | The browser answered badly, too much, or not at all |
+| 503 | `browser_disabled` | `BOX_BROWSER`, `BOX_CHROME` or `BOX_DESKTOP` is off |
+| 503 | `browser_unavailable` | The screen has no browser `box-exec` can use: no transport yet, or its pipe closed (the next call takes the new Chromium's) |
+| 504 | `browser_timeout` | The call's budget ran out |
+
+`target_gone` is 409, not 404: the call named nothing wrong, the browser's state moved under it, as with `stale_ref`.
+
+**Rules, checked by box-exec before ultra-instinct's guard checks them again:**
+
+- **Confirm.** A click or a key on an element whose label matches `BOX_BROWSER_CONFIRM_PRESS` (comma list of globs; default `Pay*,Delete*,Buy*,Place order*`; empty confirms nothing), and typed text ending a line while the page shows such an element (it may submit the form that element belongs to), is refused with `409 confirm_required`, `error.details.label` and a one-time token, `error.details.confirm`. An Enter or a Space (any modifiers) on any other element is ultra-instinct's guard's to check, and it knows what the key would press: in a field, a checkbox or a radio inside a form, the form's submit button, so Enter in the checkout's card field needs `Place order`'s confirm, and Enter in a search box outside any form needs none. When it can't see which, it asks for `(form submit)` (a form with no readable submit button) or `(unobserved focus)`. A person approves the label, and the caller sends the token back as `confirm` on the same `click`, `key` or `type`. A token is good once, for that element, on that screen, for 10 minutes, and only while the label is the one approved; the guard checks the label again on its own fresh look and asks anew if the press would now do something else. With `allow_domains` set, a press that would send a form to a host off the list is `403 domain_not_allowed`. The rule goes by what is pressed, not by what a page's script does next: a `select`, or a click on a label the globs don't name, whose change or click handler sends a form is not asked about. A label is checked and confirmed whole; answers show its first 160 characters.
+- **Allowed domains.** `allow_domains` (`shop.example`, `*.shop.example`), sent with each call that gives input or goes somewhere. Off the list, `navigate` and `tabs open` refuse the address and `act` refuses the page, `403 domain_not_allowed` with `error.details.host`. Absent or empty is no restriction. Of the pages with no host, only `about:blank` is on every list: `file:` and `data:` pages are off one. It's per call, not kept per screen: the broker names the Bot and its list from its own records with every call, as it does `bot`, so nothing a screen kept from one Bot can reach the next one to use it, and a goal run's list covers every step of it.
+- **Secrets.** A field is `sensitive: true` when it's a password, hidden or file input, when its label names a secret (password, PIN, CVV, card, one-time code, …), or when its input type can't be read. A sensitive field's text is never returned. `value` would come only for a field whose input type is known and isn't one of those, and ultra-instinct's page state carries no field's text today, so no `value` comes at all. Text typed into a sensitive field is masked as `••••` in every later answer, a page that echoes it included, and `shot` hides sensitive fields' text while it captures, or refuses with `422 action_refused` and captures nothing.
+
+### `POST /v1/browser/snap`
+
+```json
+{ "max_nodes": 200 }
+```
+
+```json
+{
+  "snapshot": 48213,
+  "display": ":1",
+  "url": "https://shop.example/login",
+  "title": "Sign in",
+  "elements": [
+    { "ref": "@e1", "role": "text_field", "label": "Email", "actions": ["type"],
+      "rect": { "x": 400, "y": 200, "width": 200, "height": 32 }, "value": "kid@example.com" },
+    { "ref": "@e2", "role": "text_field", "label": "Password", "actions": ["type"],
+      "rect": { "x": 400, "y": 240, "width": 200, "height": 32 }, "sensitive": true },
+    { "ref": "@e3", "role": "button", "label": "Sign in", "actions": ["click"],
+      "rect": { "x": 400, "y": 300, "width": 80, "height": 32 } }
+  ],
+  "total": 3,
+  "truncated": false,
+  "text": "@e1 text_field \"Email\" value=\"kid@example.com\"\n@e2 text_field \"Password\" [sensitive]\n@e3 button \"Sign in\"\n",
+  "elapsed_ms": 61
+}
+```
+
+- The current tab's interactive elements in reading order, the first `max_nodes` (1–1000, default 200). `truncated` when the page had more.
+- `rect` is the page's viewport in CSS pixels, not screen pixels.
+- A ref is good while this is the current tab's **latest** snapshot. A newer snap, a navigation, or a tab opened, switched or closed ends it.
+
+### `POST /v1/browser/act`
+
+```json
+{ "ref": "@e1", "action": "type", "text": "kid@example.com", "allow_domains": ["shop.example"] }
+{ "ref": "@e3", "action": "click", "snapshot": 48213 }
+{ "ref": "@e3", "action": "click", "confirm": "9f2c…" }
+```
+
+- `action`: `click`, `type` (`text`), `select` (`text` is the option), `key` (`text` is the key: `Enter`, `Escape`, the arrows, `Home`, `End`, `PageUp`, `PageDown`), `scroll` (into view) or `focus`. `text` is up to 64 KiB, and only for those three.
+- `ref` is `@eN` or `<snapshot>:@eN`. With `snapshot`, or the long form, a ref from anything but the latest snapshot is `409 stale_ref`.
+- The page is looked at again first. The element is found by its identity, not its number, so one that moved is still hit, and one that's gone is `409 stale_ref`.
+- **The window that leaves.** ultra-instinct takes the element's number in reading order, and looks at the page once more to find it. Between `box-exec`'s look and that one, a few CDP round trips, the page can move, and another element can take the number. The press then lands on that element, under ultra-instinct's gate and ticket as always, and `box-exec` answers `409 stale_ref` because the identity it pressed isn't the one asked for: the press happened. ultra-instinct's coming presses bound to the snapshot close the window.
+
+`200 {"ok": true, "ref": "@e3", "action": "click", "ticket": 41}`. Errors: `409 stale_ref`, `409 confirm_required`, `403 domain_not_allowed`, `422 action_refused` (ultra-instinct's guard said no: covered, disabled, drifted), `400 invalid_request`.
+
+### `POST /v1/browser/navigate`
+
+`{"url": "https://shop.example/", "allow_domains": [...]}` → `{"ok": true, "url": "https://shop.example/"}`. `http`, `https` or `about:blank`, up to 8 KiB.
+
+### `POST /v1/browser/tabs`
+
+`{"op": "list"}` → `{"op": "list", "tabs": [{"tab_id": "…", "url": "…", "title": "…"}]}`. `{"op": "open", "url": "…"}` → `{"op": "open", "tab_id": "…"}`, and that tab is the one every other call drives. `{"op": "switch" | "close", "tab_id": "…"}`.
+
+### `POST /v1/browser/wait`
+
+`{"text": "Welcome", "url": "/orders", "control": "Sign out", "gone": "Loading", "load": "domcontentloaded" | "load", "timeout_ms": 10000}`: every given condition, looked for about every 200 ms. With none, it waits out `timeout_ms` (1–60000, default 10000). → `{"seen": true, "after_ms": 840, "url": "…"}`.
+
+### `POST /v1/browser/shot`
+
+→ `{"format": "png", "data": "<base64>", "bytes": 48213, "width": 1280, "height": 720}`, the current tab's viewport. It's written nowhere. A PNG over 8 MiB is taken again as a JPEG, and `format` says `jpeg`.
+
+### `POST /v1/browser/run`
+
+```json
+{ "goal": "Type \"rust\" into Search", "max_steps": 20, "timeout_ms": 120000, "allow_domains": ["docs.rs"] }
+```
+
+Instinct runs ultra-instinct's loop on the current tab: observe, choose or abstain, gate, ticket, execute, verify, until the goal is done, it's blocked, it abstains, or `max_steps` (1–50, default 20) or `timeout_ms` (1000–300000, default 120000) runs out. No model runs in the box: after an abstain the caller's model may take over, with snap and act.
+
+```json
+{ "outcome": "blocked", "reason": "needs-confirm", "code": "needs_confirm", "confirm_label": "Place order", "confirm": "9f2c…",
+  "steps": [ { "action": "type", "target": "Search", "effect": "success" } ], "elapsed_ms": 2310 }
+```
+
+`outcome` is `done`, `blocked` (`reason`, and `code`: `needs_confirm` with `confirm_label` and a `confirm` token, run again with `confirm` once a person approves; `domain_not_allowed` with `host` when it could be read; no `code` when the run stopped itself), `abstained` (`why`) or `failed` (`why`, which says when `max_steps` or `timeout_ms` ran out). `steps` are the verified ones, at most 50. Within a run the allow-list and the confirm globs are ultra-instinct's guard's to enforce, on clicks and keys alike (an Enter or a Space is checked as `act` describes): `box-exec` hands it both, but doesn't see a step before it happens. A run stopped by the allow-list gets no token, since a confirm can't let it through. The token is for that goal alone, and lifts the label for that one run. What a run typed is never returned.
+
+### `POST /v1/browser/state`
+
+`{"op": "save" | "load", "name": "default"}` → `{"op": "save", "name": "default", "cookies": 12, "origins": ["https://shop.example"]}`. A screen's logins: cookies, and the storage of the origin the tab is on, in `/home/box/browser-state/<screen>/<name>.json`, mode 0600, in a folder only `box-exec` can read. `<screen>` is the Bot holding the screen, or `main`. `name` is 1–64 letters, digits, `_` and `-`. Counts come back, never values. `load` refuses a file others could read; origins it couldn't write come back in `pending_origins`: navigate there and load again. `404 not_found` when no Bot holds the screen.
 
 ---
 

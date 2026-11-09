@@ -85,6 +85,108 @@ enum Commands {
     },
     #[command(subcommand)]
     Cua(CuaCmd),
+    /// /v1/browser/*: a screen's Chromium over its DevTools pipe, through ultra-instinct
+    Browser {
+        /// Another of the box's screens (:N)
+        #[arg(long, global = true)]
+        display: Option<String>,
+        #[command(subcommand)]
+        cmd: BrowserCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum BrowserCmd {
+    /// POST /v1/browser/snap: the current tab's controls, each with an @eN ref
+    Snap {
+        /// The most elements returned (1 to 1000, default 200)
+        #[arg(long)]
+        max_nodes: Option<u64>,
+    },
+    /// POST /v1/browser/act: click, type, select, key, scroll or focus an element by ref
+    Act {
+        /// @eN from the latest snap
+        #[arg(long = "ref")]
+        reference: String,
+        /// click, type, select, key, scroll or focus
+        #[arg(long)]
+        action: String,
+        /// type: the text; select: the option; key: the key
+        #[arg(long)]
+        text: Option<String>,
+        /// The snapshot the ref is from
+        #[arg(long)]
+        snapshot: Option<u64>,
+        /// The token a confirm_required answer gave, once a person approved its label
+        #[arg(long)]
+        confirm: Option<String>,
+        /// A host the page must be on (repeatable; *.example.com for its subdomains)
+        #[arg(long = "allow-domain")]
+        allow_domains: Vec<String>,
+    },
+    /// POST /v1/browser/navigate: the current tab to an http(s) URL
+    Navigate {
+        url: String,
+        #[arg(long = "allow-domain")]
+        allow_domains: Vec<String>,
+    },
+    /// POST /v1/browser/tabs: list, open, close or switch tabs
+    Tabs {
+        /// list, open, close or switch
+        op: String,
+        /// close, switch: the tab
+        #[arg(long)]
+        tab_id: Option<String>,
+        /// open: the page
+        #[arg(long)]
+        url: Option<String>,
+        #[arg(long = "allow-domain")]
+        allow_domains: Vec<String>,
+    },
+    /// POST /v1/browser/wait: until the page shows text, an address, a control, or loads
+    Wait {
+        #[arg(long)]
+        text: Option<String>,
+        #[arg(long)]
+        url: Option<String>,
+        #[arg(long)]
+        control: Option<String>,
+        #[arg(long)]
+        gone: Option<String>,
+        /// domcontentloaded or load
+        #[arg(long)]
+        load: Option<String>,
+        #[arg(long)]
+        timeout_ms: Option<u64>,
+    },
+    /// POST /v1/browser/shot: the current tab's viewport as a PNG, or a JPEG when a PNG is too big
+    Shot {
+        /// Write the picture here and print where it went. A `.png` gets `.jpg` when the shot is a
+        /// JPEG, and the other way round
+        #[arg(long, short)]
+        output: Option<PathBuf>,
+    },
+    /// POST /v1/browser/run: Instinct runs a goal until done, blocked or abstained
+    Run {
+        goal: String,
+        #[arg(long)]
+        max_steps: Option<u32>,
+        #[arg(long)]
+        timeout_ms: Option<u64>,
+        #[arg(long = "allow-domain")]
+        allow_domains: Vec<String>,
+        /// The token a blocked run gave, once a person approved its confirm_label
+        #[arg(long)]
+        confirm: Option<String>,
+    },
+    /// POST /v1/browser/state: save or load this screen's login
+    State {
+        /// save or load
+        op: String,
+        /// Which saved login (default `default`)
+        #[arg(long)]
+        name: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -500,12 +602,149 @@ async fn main() -> Result<()> {
                 print_json(&on.cua_element(&reference, &action, text.as_deref()).await?)?;
             }
         },
+        Commands::Browser { display, cmd } => {
+            let on = display.map_or_else(|| box_client.clone(), |d| box_client.on(&d));
+            browser(&on, cmd).await?;
+        }
     }
     Ok(())
+}
+
+/// `allow_domains` in `body`, when any were given.
+fn with_allow(mut body: serde_json::Value, allow_domains: Vec<String>) -> serde_json::Value {
+    if !allow_domains.is_empty() {
+        body["allow_domains"] = json!(allow_domains);
+    }
+    body
+}
+
+/// `body` without its null fields: the guest takes an absent field as its default.
+fn compact(mut body: serde_json::Value) -> serde_json::Value {
+    if let Some(map) = body.as_object_mut() {
+        map.retain(|_, v| !v.is_null());
+    }
+    body
+}
+
+async fn browser(on: &BuwizComputer, cmd: BrowserCmd) -> Result<()> {
+    let answer = match cmd {
+        BrowserCmd::Snap { max_nodes } => {
+            on.browser_snap(compact(json!({ "max_nodes": max_nodes })))
+                .await?
+        }
+        BrowserCmd::Act {
+            reference,
+            action,
+            text,
+            snapshot,
+            confirm,
+            allow_domains,
+        } => {
+            let body = json!({
+                "ref": reference, "action": action, "text": text,
+                "snapshot": snapshot, "confirm": confirm,
+            });
+            on.browser_act(with_allow(compact(body), allow_domains))
+                .await?
+        }
+        BrowserCmd::Navigate { url, allow_domains } => {
+            on.browser_navigate(with_allow(json!({ "url": url }), allow_domains))
+                .await?
+        }
+        BrowserCmd::Tabs {
+            op,
+            tab_id,
+            url,
+            allow_domains,
+        } => {
+            let body = compact(json!({ "op": op, "tab_id": tab_id, "url": url }));
+            on.browser_tabs(with_allow(body, allow_domains)).await?
+        }
+        BrowserCmd::Wait {
+            text,
+            url,
+            control,
+            gone,
+            load,
+            timeout_ms,
+        } => {
+            let body = json!({
+                "text": text, "url": url, "control": control, "gone": gone,
+                "load": load, "timeout_ms": timeout_ms,
+            });
+            on.browser_wait(compact(body)).await?
+        }
+        BrowserCmd::Shot { output } => {
+            let shot = on.browser_shot().await?;
+            if let Some(path) = output {
+                use base64::Engine as _;
+                let picture = base64::engine::general_purpose::STANDARD
+                    .decode(shot["data"].as_str().unwrap_or_default())
+                    .context("the shot's data isn't base64")?;
+                let format = shot["format"].as_str().unwrap_or("png");
+                let path = shot_path(path, format);
+                std::fs::write(&path, picture)
+                    .with_context(|| format!("write {}", path.display()))?;
+                json!({
+                    "format": format, "path": path, "bytes": shot["bytes"],
+                    "width": shot["width"], "height": shot["height"],
+                })
+            } else {
+                shot
+            }
+        }
+        BrowserCmd::Run {
+            goal,
+            max_steps,
+            timeout_ms,
+            allow_domains,
+            confirm,
+        } => {
+            let body = json!({
+                "goal": goal, "max_steps": max_steps, "timeout_ms": timeout_ms,
+                "confirm": confirm,
+            });
+            on.browser_run(with_allow(compact(body), allow_domains))
+                .await?
+        }
+        BrowserCmd::State { op, name } => {
+            on.browser_state(compact(json!({ "op": op, "name": name })))
+                .await?
+        }
+    };
+    print_json(&answer)
 }
 
 fn print_json(value: &impl serde::Serialize) -> Result<()> {
     serde_json::to_writer_pretty(std::io::stdout(), value)?;
     println!();
     Ok(())
+}
+
+/// `path`, its extension made to say `format` when it names the other picture format.
+fn shot_path(path: PathBuf, format: &str) -> PathBuf {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    match (format, ext.as_deref()) {
+        ("jpeg", Some("png")) => path.with_extension("jpg"),
+        ("png", Some("jpg" | "jpeg")) => path.with_extension("png"),
+        _ => path,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_shots_file_says_its_format() {
+        let at = |p: &str, f: &str| shot_path(PathBuf::from(p), f);
+        assert_eq!(at("shot.png", "jpeg"), PathBuf::from("shot.jpg"));
+        assert_eq!(at("shot.PNG", "jpeg"), PathBuf::from("shot.jpg"));
+        assert_eq!(at("shot.jpeg", "png"), PathBuf::from("shot.png"));
+        assert_eq!(at("shot.png", "png"), PathBuf::from("shot.png"));
+        assert_eq!(at("shot", "jpeg"), PathBuf::from("shot"));
+    }
 }

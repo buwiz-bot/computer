@@ -12,10 +12,10 @@ Your orchestrator (the Bot)
     ▼
 buwiz-computer guest (this image)
     ├── box-host :1340   identity, capabilities, ready, screens, desktop/chrome/egress
-    ├── box-exec :1337   exec + files + /v1/cua/*
+    ├── box-exec :1337   exec + files + /v1/cua/* + /v1/browser/*
     ├── box-egress-tunnel :8790  optional laptop CONNECT mux (proxy 127.0.0.1:8791)
     ├── Xvfb :1 1280×800 + xfce + voxl :6901 (a Bot's own screen: :N and 6900+N)
-    └── Chromium (profile volume; no DevTools port; optional --proxy-server)
+    └── Chromium (profile volume; no DevTools port; a DevTools pipe only box-exec holds; optional --proxy-server)
 ```
 
 The TypeScript / Python / Rust SDKs never call `docker run` and never treat `/v1/info.endpoints` as the URLs to dial. Those endpoints are **container-local listen addresses** so operators can see what the processes bound.
@@ -36,7 +36,7 @@ Full list: [TERMINOLOGY.md](TERMINOLOGY.md).
 
 | Port | Process | Routes / role |
 | --- | --- | --- |
-| **1337** | `box-exec` | `GET /v1/health`, `POST /v1/exec`, `POST /v1/exec/stream`, files (JSON + raw), CUA, busy/metrics/shutdown |
+| **1337** | `box-exec` | `GET /v1/health`, `POST /v1/exec`, `POST /v1/exec/stream`, files (JSON + raw), CUA, browser, busy/metrics/shutdown |
 | **1340** | `box-host` | `GET /v1/health`, `GET /v1/ready`, `GET /v1/info`, `GET /v1/desktop`, `GET /v1/desktop/windows`, `GET /v1/screens`, `GET /v1/chrome`, `GET /v1/chrome/active-tab`, `GET /v1/egress`, busy/metrics/shutdown |
 | **6901–6905** | `voxl` | One per screen, `6900+N` for display `:N`: the live view, and `/wait`, `/screenshot`, `/record`. Published by Compose on loopback. |
 | **8790** | `box-egress-tunnel` WS | Laptop client when `BOX_EGRESS_TUNNEL=1`. Compose publishes loopback. |
@@ -83,7 +83,8 @@ tini
       ├── entrypoint.sh                    the desktop; holds no secret
       │    ├── Xvfb :1  (1280x800x24)      if BOX_DESKTOP=1
       │    ├── xfce4-session
-      │    ├── chromium (profile volume; no DevTools port)
+      │    ├── box-chrome-pipe → chromium (profile volume; no DevTools port; --remote-debugging-pipe,
+      │    │     the other end offered once at /run/box/x/<slot>/run/cdp.sock, to box-exec alone)
       │    │     optional --proxy-server=http://127.0.0.1:8791 when BOX_EGRESS_TUNNEL=1
       │    │     not in the death-watch — closing the browser must not kill the box
       │    └── box-egress-tunnel  (WS 8790, CONNECT 127.0.0.1:8791, admin 127.0.0.1:8792)
@@ -109,6 +110,7 @@ Small programs in the image that the daemons and the entrypoint start. None list
 | --- | --- | --- |
 | `box-active-tab` | Chromium, as its native-messaging host (`docker/active-tab` extension) | Keeps the front tab's URL, the kind of box focused and a report count in `/run/box/x/<slot>/run/active-tab.json`, and removes the file when Chromium closes the port. `GET /v1/chrome/active-tab` reads it back. |
 | `box-refresh-extension` | the entrypoint before the main screen's Chromium, `box-screen` before a Bot's | Clears the profile's service workers once when the extension's files changed, so Chromium does not keep running the old worker. On a new profile it also sets the download folder to the screen's own (`BOX_SCREEN_WORKSPACE`). |
+| `box-chrome-pipe` | the entrypoint's restart loop, `box-chromium` | Starts a screen's Chromium as its desktop user with `--remote-debugging-pipe` on one end of a socket pair, and hands the other end once, over `cdp.sock` in the screen's run folder, to a `boxsvc` peer: [Browser](#browser-devtools-pipe). Lives as long as Chromium and exits as it does. |
 | `box-screen` | `box-keeper`, as root, for `POST /v1/screen` | `up`, `down`, `forget`, `open` and `list` for a Bot's own screen: its users, X server, session, voxl and Chromium. See [USERS.md](USERS.md). |
 
 `GET /v1/info` `capabilities`:
@@ -163,11 +165,27 @@ CUA is first-party in this image:
 
 **The focused window.** X knows which window has the keyboard focus better than AT-SPI does: Chromium never marks its frame `active`, and xfwm4 keeps an offscreen helper window that always is. So `focused_window` is the window named like the focused X window's title (read as recipes' `observe` reads it), then one AT-SPI calls active, and never a window off the screen.
 
+## Browser (DevTools pipe)
+
+**Who holds the pipe.** Every screen's Chromium is started through `box-chrome-pipe`: by the entrypoint's restart loop for the main screen, and by `box-chromium` (the dock, `box-screen open`) for any screen. It runs as the screen's desktop user, makes a socket pair, and starts Chromium with `--remote-debugging-pipe` and one end on fds 3 and 4. It keeps the other end and listens at `/run/box/x/<slot>/run/cdp.sock`, in the folder only the desktop and `boxsvc` may enter. The first peer the kernel says is `boxsvc` gets the end (`SCM_RIGHTS`). The launcher then closes its own copy and removes the socket. Anyone else is hung up on. A lock next to the socket (`cdp.lock`) makes one launcher per screen: a second start, which Chromium turns into a window of the running instance, gets no pipe and touches nothing.
+
+**Who takes it.** `box-exec` connects when a `/v1/browser/*` call first needs the screen. It checks that the listener is that screen's desktop user (`SO_PEERCRED`) before it reads, and takes exactly one fd. The fd goes to the screen's own thread in `box-browser`, which owns it, and everything spoken over it, for as long as Chromium runs. When Chromium exits, the pipe closes: the call that finds it answers `503 browser_unavailable`, and the next one takes the new Chromium's pipe from its launcher (the image smoke kills Chromium and checks this).
+
+**Ending it.** Checked live: Chromium quits about a second after the other end of its pipe closes, **with status 0**. The restart loop takes a 0 for a person closing the browser and doesn't start another. So `box-exec` lets go of a live pipe only when it means to: a call that panics loses its snapshot, never the pipe. `box-exec`'s shutdown sends every screen's Chromium `Browser.close` over its pipe, within 3 s. The launcher runs Chromium in a process group of its own. A signal it's sent (the entrypoint's shutdown, `box-screen down`) goes to that group, and if Chromium is still there 3 s later the group is killed. When Chromium exits for any reason, whatever is left of its group is killed too. A frame over the pipe's 64 MiB cap costs only the call it answers (`502 browser_backend`): the pipe and the screen's other tabs go on.
+
+**What it respects.** Every flag the entrypoint and `box-chromium` already pass stays: the profile, the active-tab extension, the egress proxy flags, `--force-renderer-accessibility`. The restart loop and `chrome.pid` see the launcher, which passes on signals and exits with Chromium's status. `BOX_CHROME=0` starts no Chromium. `BOX_BROWSER=0` turns `/v1/browser/*` off on every screen, and starts the main screen's Chromium with no pipe. The launcher fails closed: if the run folder is open to others, or there is no `boxsvc` user, Chromium starts as before, with no pipe.
+
+**What drives it.** The `box-browser` crate, in `box-exec`. Each screen gets a thread of its own the first time a call needs it. That thread owns the screen's pipe and the ultra-instinct objects on it, which are not `Send`, and runs the screen's calls one at a time; the async routes send it jobs and wait for the answer within each call's budget. It calls a fixed few of ultra-instinct's tools: the page's state, navigate, click, type, select, key, scroll into view, focus, the tab tools, wait, screenshot, save and load state, and its goal loop. Never the ones that read or set cookies, storage, headers or the network, or download. Their answers are read into `box-browser`'s own shapes, never passed on. The routes: [API.md](API.md#browser-v1browser).
+
+**Where ultra-instinct plugs in.** `box_browser::seam` is the only module that knows ultra-instinct's types (pinned to 22885b3 on its main; its `docs/embedding.md` is the guide). Its `Tools` trait is a tool call by name (JSON in, JSON or a coded failure out), the policy, and a goal run. `seam::open(pipe)` puts ultra-instinct's `PipeBrowser` on the screen's socket (one socket, so the same end is its reader and its writer; ultra-instinct makes the writer non-blocking, and no other copy of the socket is kept), with a 64 MiB frame cap and a 20 s deadline per CDP call, and serves it with `Server::with_pipe`: the tab tools go over the pipe's own `Target.*`, and the first call binds the first page tab. The server is built with `require_snapshot(true)`, so every index press names the `browser_get_state` snapshot it was read in and is refused `stale_ref` when that element moved or changed; with downloads and uploads off; with an 8 MiB screenshot cap (past it the shot is taken again as a JPEG); and with an allow-list of the tools box-browser calls (`seam::ALLOWED`): never a script, the DOM, cookies, storage, headers, the network, a download, an upload, a PDF, or the keyboard-only tools: every key box-browser sends names an element. The policy is set on the live server (`set_policy`) before each call that needs it; a confirm is for that call alone. Every failure is read from ultra-instinct's stable error `code`, never its text. A key press's confirm is the guard's to ask for when it would send a form: box-browser asks only for a key on a named element, and turns the guard's `needs_confirm` into a token like its own. A goal run is `Server::run_goal`: its report's steps and outcome are kept, with why it was blocked (`BlockKind`), and what it typed is dropped; one refused before its loop began is that call's failure.
+
+What's a wall here and what isn't: [USERS.md](USERS.md).
+
 ## Clients
 
 Workspace-only (do not publish):
 
-1. **Rust** `buwiz-computer` — `BuwizComputer::connect(exec_url, host_url, token)?` (it returns a `Result`) plus CLI. Every request is bounded by `DEFAULT_TIMEOUT` (120 s) unless `BuwizComputer::with_timeout(Duration)` sets another; an exec with `timeout_ms` gets that plus `EXEC_MARGIN` (35 s) if longer, a `cua_wait` its wait plus `WAIT_MARGIN` (5 s), a `cua_tree` its `timeout_ms` plus `TREE_MARGIN` (5 s). A file call gets one more second for every `TRANSFER_FLOOR` (64 KiB) sent and, by its `content-length`, received; a read with no `content-length` gets the timeout between pieces instead. Running out is `Error::Timeout`. The CLI's global flag is `--request-timeout-secs` (env `BUWIZ_COMPUTER_REQUEST_TIMEOUT_SECS`). CLI: [CLI.md](CLI.md)
+1. **Rust** `buwiz-computer` — `BuwizComputer::connect(exec_url, host_url, token)?` (it returns a `Result`) plus CLI. Every request is bounded by `DEFAULT_TIMEOUT` (120 s) unless `BuwizComputer::with_timeout(Duration)` sets another; an exec with `timeout_ms` gets that plus `EXEC_MARGIN` (35 s) if longer, a `cua_wait` its wait plus `WAIT_MARGIN` (5 s), a `cua_tree` its `timeout_ms` plus `TREE_MARGIN` (5 s), a `browser_wait` or `browser_run` its `timeout_ms` plus `BROWSER_MARGIN` (20 s). A file call gets one more second for every `TRANSFER_FLOOR` (64 KiB) sent and, by its `content-length`, received; a read with no `content-length` gets the timeout between pieces instead. Running out is `Error::Timeout`. The CLI's global flag is `--request-timeout-secs` (env `BUWIZ_COMPUTER_REQUEST_TIMEOUT_SECS`). CLI: [CLI.md](CLI.md)
 2. **TypeScript** `sdk/typescript` — same connect
 3. **Python** `sdk/python` — same connect
 

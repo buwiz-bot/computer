@@ -5,6 +5,13 @@
  * Docker and never treats `/v1/info` advertised URLs as the dial address.
  */
 
+/**
+ * How long a browser call (snap, act, navigate, tabs, shot, state) is waited for: box-exec's own
+ * 45 s budget for one, and a margin. A client that gave up sooner could retry a press that still
+ * landed.
+ */
+export const BROWSER_CALL_MS = 60_000;
+
 export class BuwizComputerError extends Error {
   readonly status: number;
   readonly body: unknown;
@@ -288,6 +295,123 @@ export type A11yElementResponse = {
   performed?: string;
   /** For `click`: where the click went. */
   at?: { x: number; y: number };
+};
+
+/** A rectangle in a page's viewport, in CSS pixels. */
+export type BrowserRect = { x: number; y: number; width: number; height: number };
+
+/** A host the page must be on: `shop.example`, or `*.shop.example` for its subdomains. */
+export type AllowDomains = string[];
+
+export type BrowserElement = {
+  /** `@eN`: good for this snapshot alone. */
+  ref: string;
+  role: string;
+  label: string;
+  actions: string[];
+  rect: BrowserRect;
+  /** A password field, or one that may be: its text never comes. */
+  sensitive?: boolean;
+  /** A field's text, only when it's known not to be a password's. */
+  value?: string;
+};
+
+export type BrowserSnapResponse = {
+  /** Its refs are good while this is the current tab's latest snapshot. */
+  snapshot: number;
+  display: string;
+  url: string | null;
+  title: string | null;
+  elements: BrowserElement[];
+  total: number;
+  truncated: boolean;
+  /** One line per element, `@eN role "label"`. */
+  text: string;
+  elapsed_ms: number;
+};
+
+export type BrowserAction = "click" | "type" | "select" | "key" | "scroll" | "focus";
+
+export type BrowserActRequest = {
+  ref: string;
+  action: BrowserAction;
+  /** type: the text; select: the option; key: the key. */
+  text?: string;
+  snapshot?: number;
+  /** The token a `409 confirm_required` gave (`error.details.confirm`), once a person approved its label. */
+  confirm?: string;
+  allow_domains?: AllowDomains;
+};
+
+export type BrowserActResponse = { ok: boolean; ref: string; action: BrowserAction; ticket?: number };
+
+export type BrowserTab = { tab_id: string; url: string; title: string };
+
+export type BrowserTabsRequest = {
+  op: "list" | "open" | "close" | "switch";
+  tab_id?: string;
+  url?: string;
+  allow_domains?: AllowDomains;
+};
+
+export type BrowserTabsResponse = {
+  op: BrowserTabsRequest["op"];
+  tabs?: BrowserTab[];
+  tab_id?: string;
+};
+
+export type BrowserWaitRequest = {
+  text?: string;
+  url?: string;
+  control?: string;
+  gone?: string;
+  load?: "domcontentloaded" | "load";
+  /** 1–60000 (default 10000). */
+  timeout_ms?: number;
+};
+
+export type BrowserShotResponse = {
+  /** `jpeg` when the PNG was over 8 MiB and the shot was taken again. */
+  format: "png" | "jpeg";
+  /** The picture, base64. */
+  data: string;
+  bytes: number;
+  width: number;
+  height: number;
+};
+
+export type BrowserRunRequest = {
+  goal: string;
+  /** 1–50 (default 20). */
+  max_steps?: number;
+  /** 1000–300000 (default 120000). */
+  timeout_ms?: number;
+  allow_domains?: AllowDomains;
+  /** The token a `blocked` run gave, once a person approved its `confirm_label`. */
+  confirm?: string;
+};
+
+export type BrowserRunResponse = {
+  outcome: "done" | "blocked" | "abstained" | "failed";
+  reason?: string;
+  confirm_label?: string;
+  confirm?: string;
+  /** `blocked`: what stopped it. Absent: the run stopped itself. */
+  code?: "needs_confirm" | "domain_not_allowed";
+  /** `blocked` on `domain_not_allowed`: the host off the list, when it could be read. */
+  host?: string;
+  why?: string;
+  steps: { action: string; target: string; effect: string }[];
+  elapsed_ms: number;
+};
+
+export type BrowserStateResponse = {
+  op: "save" | "load";
+  name: string;
+  /** Counts only: never a value. */
+  cookies: number;
+  origins?: string[];
+  pending_origins?: string[];
 };
 
 /** Another of the box's screens (`:N`) for a call; without it, the box's own. */
@@ -584,6 +708,66 @@ export class BuwizComputer {
       action,
       text,
     });
+  }
+
+  /** The current tab's controls, each with an `@eN` ref good for this snapshot alone. */
+  async browserSnap(request: { max_nodes?: number } = {}, display?: string): Promise<BrowserSnapResponse> {
+    return this.authJson("POST", onScreen(`${this.execUrl}/v1/browser/snap`, display), request, BROWSER_CALL_MS);
+  }
+
+  /**
+   * Click, type, select, key, scroll or focus an element by ref, through ultra-instinct's ticketed
+   * guard. A click or key on a label like `Pay*`, or an Enter that would send a form whose submit
+   * button is one, is refused with `409 confirm_required` until `confirm` brings back
+   * `error.details.confirm`.
+   */
+  async browserAct(request: BrowserActRequest, display?: string): Promise<BrowserActResponse> {
+    return this.authJson("POST", onScreen(`${this.execUrl}/v1/browser/act`, display), request, BROWSER_CALL_MS);
+  }
+
+  async browserNavigate(
+    request: { url: string; allow_domains?: AllowDomains },
+    display?: string,
+  ): Promise<{ ok: boolean; url: string }> {
+    return this.authJson("POST", onScreen(`${this.execUrl}/v1/browser/navigate`, display), request, BROWSER_CALL_MS);
+  }
+
+  async browserTabs(request: BrowserTabsRequest, display?: string): Promise<BrowserTabsResponse> {
+    return this.authJson("POST", onScreen(`${this.execUrl}/v1/browser/tabs`, display), request, BROWSER_CALL_MS);
+  }
+
+  async browserWait(
+    request: BrowserWaitRequest = {},
+    display?: string,
+  ): Promise<{ seen: boolean; after_ms: number; url: string | null }> {
+    return this.authJson(
+      "POST",
+      onScreen(`${this.execUrl}/v1/browser/wait`, display),
+      request,
+      (request.timeout_ms ?? 10_000) + 20_000,
+    );
+  }
+
+  async browserShot(display?: string): Promise<BrowserShotResponse> {
+    return this.authJson("POST", onScreen(`${this.execUrl}/v1/browser/shot`, display), {}, BROWSER_CALL_MS);
+  }
+
+  /** Instinct runs the goal until it's done, blocked or abstains, or a bound runs out. */
+  async browserRun(request: BrowserRunRequest, display?: string): Promise<BrowserRunResponse> {
+    return this.authJson(
+      "POST",
+      onScreen(`${this.execUrl}/v1/browser/run`, display),
+      request,
+      (request.timeout_ms ?? 120_000) + 20_000,
+    );
+  }
+
+  /** Save or load this screen's login (a 0600 file only box-exec can read). */
+  async browserState(
+    request: { op: "save" | "load"; name?: string },
+    display?: string,
+  ): Promise<BrowserStateResponse> {
+    return this.authJson("POST", onScreen(`${this.execUrl}/v1/browser/state`, display), request, BROWSER_CALL_MS);
   }
 
   private async publicJson(url: string): Promise<unknown> {

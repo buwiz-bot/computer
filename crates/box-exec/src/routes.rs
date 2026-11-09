@@ -6,7 +6,7 @@ use axum::Router;
 use serde::Serialize;
 
 use crate::middleware::require_token;
-use crate::{a11y, control, cua, exec, files, screens, AppState};
+use crate::{a11y, browser, control, cua, exec, files, screens, AppState};
 
 #[derive(Serialize)]
 struct HealthResponse {
@@ -47,6 +47,14 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/cua/record/stop", post(cua::record_stop_handler))
         .route("/v1/cua/tree", post(a11y::tree_handler))
         .route("/v1/cua/element", post(a11y::element_handler))
+        .route("/v1/browser/snap", post(browser::snap_handler))
+        .route("/v1/browser/act", post(browser::act_handler))
+        .route("/v1/browser/navigate", post(browser::navigate_handler))
+        .route("/v1/browser/tabs", post(browser::tabs_handler))
+        .route("/v1/browser/wait", post(browser::wait_handler))
+        .route("/v1/browser/shot", post(browser::shot_handler))
+        .route("/v1/browser/run", post(browser::run_handler))
+        .route("/v1/browser/state", post(browser::state_handler))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_token));
 
     Router::new()

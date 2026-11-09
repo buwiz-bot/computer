@@ -29,6 +29,8 @@ tags:
     description: box-exec — commands and workspace files
   - name: cua
     description: box-exec — Computer Use against DISPLAY=:1 (1280x800)
+  - name: browser
+    description: box-exec — each screen's Chromium over its DevTools pipe, through ultra-instinct
   - name: host
     description: box-host — identity and readiness
   - name: desktop
@@ -58,6 +60,12 @@ components:
             code: { type: string, examples: [unauthorized, path_escape] }
             message: { type: string }
             status: { type: integer }
+            details:
+              type: object
+              description: |
+                What a caller needs to act on this error, for the few that have any. `confirm_required`:
+                `{label, confirm}`, the label a person approves and the token sent back as `confirm`.
+                `domain_not_allowed`: `{host}`. Absent otherwise.
     Health:
       type: object
       required: [status]
@@ -350,6 +358,188 @@ components:
         skipped: { type: integer, description: Nodes whose application failed to answer, left out with what's under them }
         reason: { type: string, description: "Why nodes is empty, when it is: nothing publishes a tree, or no window is focused" }
         elapsed_ms: { type: integer }
+    AllowDomains:
+      type: array
+      maxItems: 64
+      items: { type: string, examples: [shop.example, "*.shop.example"] }
+      description: |
+        The Bot's allowed hosts, sent with each call. Off the list, a page gets no input and isn't
+        navigated to. Absent or empty is no restriction.
+    BrowserRect:
+      type: object
+      required: [x, y, width, height]
+      description: The page's viewport, in CSS pixels
+      properties:
+        x: { type: number }
+        y: { type: number }
+        width: { type: number }
+        height: { type: number }
+    BrowserElement:
+      type: object
+      required: [ref, role, label, actions, rect]
+      properties:
+        ref: { type: string, examples: ["@e5"], description: Good for this snapshot alone }
+        role: { type: string, maxLength: 161 }
+        label: { type: string, maxLength: 161 }
+        actions:
+          type: array
+          maxItems: 8
+          items: { type: string }
+        rect: { $ref: "#/components/schemas/BrowserRect" }
+        sensitive: { type: boolean, description: "A password field, or one that may be: its text never comes" }
+        value: { type: string, maxLength: 401, description: "A field's text, only when its input type is known and isn't password or hidden" }
+    BrowserSnapRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        max_nodes: { type: integer, minimum: 1, maximum: 1000, default: 200 }
+    BrowserSnapResponse:
+      type: object
+      required: [snapshot, display, url, title, elements, total, truncated, text, elapsed_ms]
+      properties:
+        snapshot: { type: integer, description: "Its refs are good while this is the current tab's latest snapshot" }
+        display: { type: string }
+        url: { type: [string, "null"] }
+        title: { type: [string, "null"] }
+        elements:
+          type: array
+          maxItems: 1000
+          items: { $ref: "#/components/schemas/BrowserElement" }
+        total: { type: integer, description: Interactive elements on the page }
+        truncated: { type: boolean }
+        text: { type: string, maxLength: 65540, description: "One line per element: `@eN role \"label\"`" }
+        elapsed_ms: { type: integer }
+    BrowserActRequest:
+      type: object
+      additionalProperties: false
+      required: [ref, action]
+      properties:
+        ref: { type: string, examples: ["@e5", "48213:@e5"] }
+        snapshot: { type: integer, description: The snapshot the ref is from; anything but the latest is stale_ref }
+        action: { type: string, enum: [click, type, select, key, scroll, focus] }
+        text: { type: string, maxLength: 65536, description: "type: the text; select: the option; key: the key (Enter, Escape, ArrowDown, …)" }
+        confirm: { type: string, description: "click, key, type: the token a confirm_required answer gave, once a person approved its label" }
+        allow_domains: { $ref: "#/components/schemas/AllowDomains" }
+    BrowserActResponse:
+      type: object
+      required: [ok, ref, action]
+      properties:
+        ok: { type: boolean }
+        ref: { type: string }
+        action: { type: string }
+        ticket: { type: integer, description: The guard's one-shot ticket the action ran under }
+    BrowserNavigateRequest:
+      type: object
+      additionalProperties: false
+      required: [url]
+      properties:
+        url: { type: string, maxLength: 8192, description: "http, https or about:blank" }
+        allow_domains: { $ref: "#/components/schemas/AllowDomains" }
+    BrowserTabsRequest:
+      type: object
+      additionalProperties: false
+      required: [op]
+      properties:
+        op: { type: string, enum: [list, open, close, switch] }
+        tab_id: { type: string, maxLength: 128, description: "close, switch" }
+        url: { type: string, description: "open (default about:blank)" }
+        allow_domains: { $ref: "#/components/schemas/AllowDomains" }
+    BrowserTabsResponse:
+      type: object
+      required: [op]
+      properties:
+        op: { type: string }
+        tabs:
+          type: array
+          maxItems: 100
+          items:
+            type: object
+            required: [tab_id, url, title]
+            properties:
+              tab_id: { type: string }
+              url: { type: string }
+              title: { type: string }
+        tab_id: { type: string }
+    BrowserWaitRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        text: { type: string, maxLength: 1024, description: "The page's visible text contains this (case-insensitive)" }
+        url: { type: string, maxLength: 1024, description: The address contains this }
+        control: { type: string, maxLength: 1024, description: "A control's label contains this (case-insensitive)" }
+        gone: { type: string, maxLength: 1024, description: No control is labelled exactly this }
+        load: { type: string, enum: [domcontentloaded, load] }
+        timeout_ms: { type: integer, minimum: 1, maximum: 60000, default: 10000 }
+    BrowserWaitResponse:
+      type: object
+      required: [seen, after_ms, url]
+      properties:
+        seen: { type: boolean }
+        after_ms: { type: integer }
+        url: { type: [string, "null"] }
+    BrowserShotResponse:
+      type: object
+      required: [format, data, bytes, width, height]
+      properties:
+        format: { type: string, enum: [png, jpeg], description: "png, or jpeg when the PNG was over 8 MiB and the shot was taken again" }
+        data: { type: string, description: "The picture, base64; at most 8 MiB decoded" }
+        bytes: { type: integer }
+        width: { type: integer }
+        height: { type: integer }
+    BrowserRunRequest:
+      type: object
+      additionalProperties: false
+      required: [goal]
+      properties:
+        goal: { type: string, maxLength: 2000 }
+        max_steps: { type: integer, minimum: 1, maximum: 50, default: 20 }
+        timeout_ms: { type: integer, minimum: 1000, maximum: 300000, default: 120000 }
+        allow_domains: { $ref: "#/components/schemas/AllowDomains" }
+        confirm: { type: string, description: "The token a blocked run gave, once a person approved its confirm_label" }
+    BrowserRunResponse:
+      type: object
+      required: [outcome, steps, elapsed_ms]
+      properties:
+        outcome: { type: string, enum: [done, blocked, abstained, failed] }
+        reason: { type: string, description: "blocked: why" }
+        confirm_label: { type: string, description: "blocked on a confirm: the label a person may approve" }
+        confirm: { type: string, description: "blocked on a confirm: the token to send back as confirm" }
+        code: { type: string, enum: [needs_confirm, domain_not_allowed], description: "blocked: what stopped it. Absent: the run stopped itself." }
+        host: { type: string, description: "blocked on domain_not_allowed: the host off the list, when it could be read" }
+        why: { type: string, description: "abstained, failed: why. After an abstain the caller's model may take over." }
+        steps:
+          type: array
+          maxItems: 50
+          items:
+            type: object
+            required: [action, target, effect]
+            properties:
+              action: { type: string }
+              target: { type: string }
+              effect: { type: string, examples: [success, no-effect, navigation] }
+        elapsed_ms: { type: integer }
+    BrowserStateRequest:
+      type: object
+      additionalProperties: false
+      required: [op]
+      properties:
+        op: { type: string, enum: [save, load] }
+        name: { type: string, pattern: "^[A-Za-z0-9_-]{1,64}$", default: default }
+    BrowserStateResponse:
+      type: object
+      required: [op, name, cookies]
+      properties:
+        op: { type: string }
+        name: { type: string }
+        cookies: { type: integer, description: "Counts only: never a value" }
+        origins: { type: array, items: { type: string } }
+        pending_origins: { type: array, items: { type: string }, description: "load: origins the tab isn't on; navigate there and load again" }
+    NavigateResponse:
+      type: object
+      required: [ok, url]
+      properties:
+        ok: { type: boolean }
+        url: { type: string }
     ElementRequest:
       type: object
       additionalProperties: false
@@ -1614,6 +1804,561 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "503":
           description: cua_disabled, display_unavailable or a11y_unavailable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/browser/snap:
+    post:
+      tags: [browser]
+      summary: The current tab's controls, each with an @eN ref
+      description: |
+        The current tab's interactive elements in reading order, read by ultra-instinct (DOM and
+        accessibility tree), each with an `@eN` ref good while this is the tab's latest snapshot. A
+        password field's text never comes. With no body, the first 200.
+      security: [{ bearer: [] }]
+      parameters:
+        - name: display
+          in: query
+          required: false
+          description: Another of the box's screens (`:N`). Without it, the box's own.
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BrowserSnapRequest" }
+      responses:
+        "200":
+          description: Done
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BrowserSnapResponse" }
+        "400":
+          description: invalid_request, a field out of range, unknown, or a display that isn't `:N`
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401":
+          description: Missing or wrong token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: target_gone, the tab is gone; dialog_open, a JavaScript dialog holds the tab
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "429":
+          description: busy, more calls wait for this screen's browser than it takes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: internal, box-exec asked ultra-instinct for a tool it may not use (a bug in box-exec)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "502":
+          description: browser_backend, the browser answered badly, too much, or not at all
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: browser_disabled (BOX_BROWSER, BOX_CHROME or BOX_DESKTOP is off), browser_unavailable (the screen has no browser box-exec can use), display_unavailable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "504":
+          description: browser_timeout
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/browser/act:
+    post:
+      tags: [browser]
+      summary: Click, type, select, key, scroll or focus an element by ref
+      description: |
+        On the element `ref` names in the tab's latest snapshot, where it is now, through
+        ultra-instinct's gate and one-shot ticket. A click or key on a label matching
+        BOX_BROWSER_CONFIRM_PRESS (default `Pay*`, `Delete*`, `Buy*`, `Place order*`), or an Enter or
+        Space that would send a form whose submit button matches, is 409 confirm_required with
+        `error.details.{label, confirm}` until `confirm` brings the token back.
+      security: [{ bearer: [] }]
+      parameters:
+        - name: display
+          in: query
+          required: false
+          description: Another of the box's screens (`:N`). Without it, the box's own.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BrowserActRequest" }
+      responses:
+        "200":
+          description: Done
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BrowserActResponse" }
+        "400":
+          description: invalid_request, a field out of range, unknown, or a display that isn't `:N`
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          description: domain_not_allowed, the page's host isn't on allow_domains; `error.details.host`
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: stale_ref, the ref is from an older snapshot, or its element is gone, moved, or now shows another label; confirm_required, a person must approve `error.details.label`; target_gone, the tab is gone; dialog_open, a JavaScript dialog holds the tab
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "422":
+          description: action_refused, ultra-instinct's guard refused (covered, disabled, drifted)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401":
+          description: Missing or wrong token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "429":
+          description: busy, more calls wait for this screen's browser than it takes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: internal, box-exec asked ultra-instinct for a tool it may not use (a bug in box-exec)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "502":
+          description: browser_backend, the browser answered badly, too much, or not at all
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: browser_disabled (BOX_BROWSER, BOX_CHROME or BOX_DESKTOP is off), browser_unavailable (the screen has no browser box-exec can use), display_unavailable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "504":
+          description: browser_timeout
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/browser/navigate:
+    post:
+      tags: [browser]
+      summary: Send the current tab to an address
+      description: |
+        http, https or about:blank, and on allow_domains when it's given. Ends the tab's snapshot.
+      security: [{ bearer: [] }]
+      parameters:
+        - name: display
+          in: query
+          required: false
+          description: Another of the box's screens (`:N`). Without it, the box's own.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BrowserNavigateRequest" }
+      responses:
+        "200":
+          description: Done
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/NavigateResponse" }
+        "400":
+          description: invalid_request, a field out of range, unknown, or a display that isn't `:N`
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          description: domain_not_allowed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401":
+          description: Missing or wrong token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: target_gone, the tab is gone; dialog_open, a JavaScript dialog holds the tab
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "429":
+          description: busy, more calls wait for this screen's browser than it takes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: internal, box-exec asked ultra-instinct for a tool it may not use (a bug in box-exec)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "502":
+          description: browser_backend, the browser answered badly, too much, or not at all
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: browser_disabled (BOX_BROWSER, BOX_CHROME or BOX_DESKTOP is off), browser_unavailable (the screen has no browser box-exec can use), display_unavailable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "504":
+          description: browser_timeout
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/browser/tabs:
+    post:
+      tags: [browser]
+      summary: List, open, close or switch tabs
+      description: |
+        `open` and `switch` make that tab the one every other call drives, and end the snapshot.
+      security: [{ bearer: [] }]
+      parameters:
+        - name: display
+          in: query
+          required: false
+          description: Another of the box's screens (`:N`). Without it, the box's own.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BrowserTabsRequest" }
+      responses:
+        "200":
+          description: Done
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BrowserTabsResponse" }
+        "400":
+          description: invalid_request, a field out of range, unknown, or a display that isn't `:N`
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          description: domain_not_allowed, for open
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401":
+          description: Missing or wrong token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: target_gone, the tab is gone; dialog_open, a JavaScript dialog holds the tab
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "429":
+          description: busy, more calls wait for this screen's browser than it takes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: internal, box-exec asked ultra-instinct for a tool it may not use (a bug in box-exec)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "502":
+          description: browser_backend, the browser answered badly, too much, or not at all
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: browser_disabled (BOX_BROWSER, BOX_CHROME or BOX_DESKTOP is off), browser_unavailable (the screen has no browser box-exec can use), display_unavailable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "504":
+          description: browser_timeout
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/browser/wait:
+    post:
+      tags: [browser]
+      summary: Until the page shows text, an address or a control, a control goes, or it loads
+      description: |
+        Every given condition must hold. With none, it waits out `timeout_ms`.
+      security: [{ bearer: [] }]
+      parameters:
+        - name: display
+          in: query
+          required: false
+          description: Another of the box's screens (`:N`). Without it, the box's own.
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BrowserWaitRequest" }
+      responses:
+        "200":
+          description: Done
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BrowserWaitResponse" }
+        "400":
+          description: invalid_request, a field out of range, unknown, or a display that isn't `:N`
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401":
+          description: Missing or wrong token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: target_gone, the tab is gone; dialog_open, a JavaScript dialog holds the tab
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "429":
+          description: busy, more calls wait for this screen's browser than it takes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: internal, box-exec asked ultra-instinct for a tool it may not use (a bug in box-exec)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "502":
+          description: browser_backend, the browser answered badly, too much, or not at all
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: browser_disabled (BOX_BROWSER, BOX_CHROME or BOX_DESKTOP is off), browser_unavailable (the screen has no browser box-exec can use), display_unavailable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "504":
+          description: browser_timeout
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/browser/shot:
+    post:
+      tags: [browser]
+      summary: The current tab's viewport as a PNG
+      description: |
+        Returned in the answer, written nowhere.
+      security: [{ bearer: [] }]
+      parameters:
+        - name: display
+          in: query
+          required: false
+          description: Another of the box's screens (`:N`). Without it, the box's own.
+          schema: { type: string }
+      responses:
+        "200":
+          description: Done
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BrowserShotResponse" }
+        "400":
+          description: invalid_request, a field out of range, unknown, or a display that isn't `:N`
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401":
+          description: Missing or wrong token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: target_gone, the tab is gone; dialog_open, a JavaScript dialog holds the tab
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "429":
+          description: busy, more calls wait for this screen's browser than it takes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: internal, box-exec asked ultra-instinct for a tool it may not use (a bug in box-exec)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "502":
+          description: browser_backend, the browser answered badly, too much, or not at all
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: browser_disabled (BOX_BROWSER, BOX_CHROME or BOX_DESKTOP is off), browser_unavailable (the screen has no browser box-exec can use), display_unavailable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "504":
+          description: browser_timeout
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/browser/run:
+    post:
+      tags: [browser]
+      summary: Let Instinct run a goal
+      description: |
+        ultra-instinct's loop, observe, Instinct, gate, ticket, execute, verify, on the current tab,
+        under allow_domains and the confirm globs, until it's done, blocked, abstains, or max_steps or
+        timeout_ms runs out. No model runs in the box: after an abstain the caller's may. A blocked
+        run carries a confirm token only when its label matches BOX_BROWSER_CONFIRM_PRESS.
+      security: [{ bearer: [] }]
+      parameters:
+        - name: display
+          in: query
+          required: false
+          description: Another of the box's screens (`:N`). Without it, the box's own.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BrowserRunRequest" }
+      responses:
+        "200":
+          description: Done
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BrowserRunResponse" }
+        "400":
+          description: invalid_request, a field out of range, unknown, or a display that isn't `:N`
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "403":
+          description: domain_not_allowed
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401":
+          description: Missing or wrong token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: target_gone, the tab is gone; dialog_open, a JavaScript dialog holds the tab
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "429":
+          description: busy, more calls wait for this screen's browser than it takes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: internal, box-exec asked ultra-instinct for a tool it may not use (a bug in box-exec)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "502":
+          description: browser_backend, the browser answered badly, too much, or not at all
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: browser_disabled (BOX_BROWSER, BOX_CHROME or BOX_DESKTOP is off), browser_unavailable (the screen has no browser box-exec can use), display_unavailable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "504":
+          description: browser_timeout
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/browser/state:
+    post:
+      tags: [browser]
+      summary: Save or load this screen's login
+      description: |
+        Cookies and the tab's storage, in a 0600 file in this screen's own folder of saved logins,
+        which only box-exec can read. Counts come back, never values.
+      security: [{ bearer: [] }]
+      parameters:
+        - name: display
+          in: query
+          required: false
+          description: Another of the box's screens (`:N`). Without it, the box's own.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BrowserStateRequest" }
+      responses:
+        "200":
+          description: Done
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BrowserStateResponse" }
+        "400":
+          description: invalid_request, a field out of range, unknown, or a display that isn't `:N`
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: not_found, no Bot holds this screen
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401":
+          description: Missing or wrong token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: target_gone, the tab is gone; dialog_open, a JavaScript dialog holds the tab
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "429":
+          description: busy, more calls wait for this screen's browser than it takes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: internal, box-exec asked ultra-instinct for a tool it may not use (a bug in box-exec)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "502":
+          description: browser_backend, the browser answered badly, too much, or not at all
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: browser_disabled (BOX_BROWSER, BOX_CHROME or BOX_DESKTOP is off), browser_unavailable (the screen has no browser box-exec can use), display_unavailable
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "504":
+          description: browser_timeout
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }

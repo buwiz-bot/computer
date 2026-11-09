@@ -1127,3 +1127,239 @@ async fn element_refs_are_checked_before_the_bus() {
         assert_eq!(body["error"]["code"], code, "{payload}");
     }
 }
+
+mod browser_routes {
+    use super::*;
+    use box_browser::seam::{GoalBounds, GoalReport, PolicyLists, ToolFailure};
+    use box_browser::{BrowserError, Browsers, Opener, Rules, Tools};
+    use std::sync::Arc;
+
+    const ROUTES: [&str; 8] = [
+        "/v1/browser/snap",
+        "/v1/browser/act",
+        "/v1/browser/navigate",
+        "/v1/browser/tabs",
+        "/v1/browser/wait",
+        "/v1/browser/shot",
+        "/v1/browser/run",
+        "/v1/browser/state",
+    ];
+
+    /// A page with a search button and a pay button, as ultra-instinct would read it.
+    struct Shop;
+    impl Tools for Shop {
+        fn call(&mut self, name: &str, args: &Value) -> Result<Value, ToolFailure> {
+            Ok(match name {
+                "browser_get_state" => json!({"url": "https://shop.example/", "title": "Shop",
+                    "interactive_elements": 2, "elements": [
+                    {"index": 1, "region": "n1", "role": "button", "label": "Search",
+                     "actions": ["click"], "rect": {"x": 0, "y": 0, "w": 10, "h": 10}},
+                    {"index": 2, "region": "n2", "role": "button", "label": "Pay $18",
+                     "actions": ["click"], "rect": {"x": 0, "y": 20, "w": 10, "h": 10}}],
+                    "snapshot": "s1"}),
+                "browser_click" => {
+                    // a press names the state it was read in
+                    assert_eq!(args["snapshot"], "s1");
+                    json!({"acted": "click", "index": args["index"], "region": format!("n{}", args["index"]), "ticket": 3})
+                }
+                other => return Err(ToolFailure::Invalid(format!("not faked: {other}"))),
+            })
+        }
+        fn set_policy(&mut self, _policy: &PolicyLists) -> Result<(), ToolFailure> {
+            Ok(())
+        }
+        fn run_goal(&mut self, _goal: &str, _b: &GoalBounds) -> Result<GoalReport, ToolFailure> {
+            Err(ToolFailure::Unavailable("not faked".into()))
+        }
+        fn tabs(&mut self) -> Result<Vec<box_browser::seam::TabInfo>, ToolFailure> {
+            Ok(Vec::new())
+        }
+        fn open_tab(&mut self, _url: &str) -> Result<String, ToolFailure> {
+            Ok("T1".into())
+        }
+        fn switch_tab(&mut self, _id: &str) -> Result<(), ToolFailure> {
+            Ok(())
+        }
+        fn close_tab(&mut self, _id: &str) -> Result<(), ToolFailure> {
+            Ok(())
+        }
+    }
+    struct ShopOpener;
+    impl Opener for ShopOpener {
+        fn open(&self, _display: &str) -> Result<Box<dyn Tools>, BrowserError> {
+            Ok(Box::new(Shop))
+        }
+    }
+
+    fn with(dir: &TempDir, opener: Arc<dyn Opener>) -> AppState {
+        let mut s = state(dir);
+        s.browser = Browsers::new(true, Rules::default(), opener, dir.path().join("state"));
+        s
+    }
+
+    #[tokio::test]
+    async fn browser_routes_take_the_token() {
+        let dir = TempDir::new().unwrap();
+        for uri in ROUTES {
+            let (status, body) =
+                send(state(&dir), auth_json("POST", uri, "wrong", json!({}))).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{uri}");
+            assert_eq!(body["error"]["code"], "unauthorized");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_off_browser_layer_says_so() {
+        let dir = TempDir::new().unwrap();
+        let (status, body) = send(
+            state(&dir),
+            auth_json("POST", "/v1/browser/snap", "secret-token", json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"]["code"], "browser_disabled");
+    }
+
+    #[tokio::test]
+    async fn a_screen_whose_launcher_offers_no_pipe_is_unavailable() {
+        let dir = TempDir::new().unwrap();
+        let s = with(&dir, Arc::new(box_browser::pipe::PipeOpener));
+        let (status, body) = send(
+            s,
+            auth_json("POST", "/v1/browser/snap", "secret-token", json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"]["code"], "browser_unavailable");
+    }
+
+    #[tokio::test]
+    async fn a_goal_run_is_503_until_ultra_instinct_has_one() {
+        let dir = TempDir::new().unwrap();
+        let s = with(&dir, Arc::new(ShopOpener));
+        let (status, body) = send(
+            s,
+            auth_json(
+                "POST",
+                "/v1/browser/run",
+                "secret-token",
+                json!({"goal": "Click Search"}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"]["code"], "browser_unavailable");
+    }
+
+    #[tokio::test]
+    async fn the_display_and_the_limits_are_checked() {
+        let dir = TempDir::new().unwrap();
+        let s = with(&dir, Arc::new(ShopOpener));
+        let (status, _) = send(
+            s.clone(),
+            auth_json(
+                "POST",
+                "/v1/browser/snap?display=nope",
+                "secret-token",
+                json!({}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, body) = send(
+            s.clone(),
+            auth_json(
+                "POST",
+                "/v1/browser/snap",
+                "secret-token",
+                json!({"max_nodes": 0}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], "invalid_request");
+        let (status, body) = send(
+            s,
+            auth_json(
+                "POST",
+                "/v1/browser/run",
+                "secret-token",
+                json!({"goal": "x", "max_steps": 500}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_pay_click_is_409_confirm_required_until_its_token_comes_back() {
+        let dir = TempDir::new().unwrap();
+        let s = with(&dir, Arc::new(ShopOpener));
+        let (status, body) = send(
+            s.clone(),
+            auth_json(
+                "POST",
+                "/v1/browser/act",
+                "secret-token",
+                json!({"ref": "@e2", "action": "click"}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"]["code"], "stale_ref");
+
+        let (status, snap) = send(
+            s.clone(),
+            auth_json(
+                "POST",
+                "/v1/browser/snap?display=:1",
+                "secret-token",
+                json!({}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{snap}");
+        assert_eq!(snap["elements"][1]["ref"], "@e2");
+        assert_eq!(snap["elements"][1]["label"], "Pay $18");
+
+        let click = |confirm: Option<&str>| {
+            let mut body = json!({"ref": "@e2", "action": "click", "snapshot": snap["snapshot"]});
+            if let Some(token) = confirm {
+                body["confirm"] = json!(token);
+            }
+            auth_json("POST", "/v1/browser/act", "secret-token", body)
+        };
+        let (status, body) = send(s.clone(), click(None)).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"]["code"], "confirm_required");
+        assert_eq!(body["error"]["details"]["label"], "Pay $18");
+        let token = body["error"]["details"]["confirm"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let (status, body) = send(s.clone(), click(Some(&token))).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["ticket"], 3);
+    }
+
+    #[tokio::test]
+    async fn off_the_allow_list_is_403() {
+        let dir = TempDir::new().unwrap();
+        let s = with(&dir, Arc::new(ShopOpener));
+        let (status, body) = send(
+            s,
+            auth_json(
+                "POST",
+                "/v1/browser/navigate",
+                "secret-token",
+                json!({"url": "https://evil.example/", "allow_domains": ["shop.example"]}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error"]["code"], "domain_not_allowed");
+        assert_eq!(body["error"]["details"]["host"], "evil.example");
+    }
+}

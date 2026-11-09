@@ -11,3 +11,7 @@ publish = false
 [dependencies]
 box-common = { workspace = true }
 serde = { workspace = true }
+libc = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

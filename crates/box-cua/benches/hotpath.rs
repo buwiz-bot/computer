@@ -30,14 +30,11 @@ const H: u32 = 800;
 fn sample_bgra_flat() -> Vec<u8> {
     // Solid-ish desktop: mostly one colour with a dock stripe.
     let mut v = vec![0u8; (W * H * 4) as usize];
-    for px in v.chunks_exact_mut(4) {
-        px[0] = 0x3a;
-        px[1] = 0x4a;
-        px[2] = 0x2a;
-        px[3] = 0x00;
+    for px in v.as_chunks_mut::<4>().0 {
+        *px = [0x3a, 0x4a, 0x2a, 0x00];
     }
     let stripe = ((H - 48) * W * 4) as usize;
-    for px in v[stripe..].chunks_exact_mut(4) {
+    for px in v[stripe..].as_chunks_mut::<4>().0 {
         px[0] = 0x40;
         px[1] = 0x40;
         px[2] = 0xe0;
