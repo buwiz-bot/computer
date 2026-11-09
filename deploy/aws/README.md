@@ -67,7 +67,8 @@ so the key is made in the IAM console and pasted into Buwiz Bot.
 3. **Acknowledge** the IAM capability prompt (`CAPABILITY_NAMED_IAM`): the broker's policy and user,
    and the optional role, have fixed names, because the broker's policy passes only `buwiz-computer*`
    roles.
-4. **Read the outputs.** `BrokerEnv` has the lines `broker_env` prints. `BrokerAccessKeyConsole` opens
+4. **Read the outputs.** `BrokerEnv` has the lines `broker_env` prints, and `BrokerPolicyJson` the policy
+   `broker_policy_json` prints. `BrokerAccessKeyConsole` opens
    the IAM console for `buwiz-computer-broker`: create one access key there, once, and paste it into
    Buwiz Bot.
 

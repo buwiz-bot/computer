@@ -148,6 +148,14 @@ else:
     check("broker policy is broker-policy.json", json.loads(cf_policy_text) == tf_policy,
           "statements differ between broker-policy.json and the template")
 
+cf_out_policy = cf.split("  BrokerPolicyJson:", 1)[1]
+cf_out_policy = cfn_block(cf_out_policy, "Value: !Sub |")
+if cf_out_policy is None:
+    check("broker policy as an output", False, "no BrokerPolicyJson output")
+else:
+    check("broker policy output is broker-policy.json", json.loads(cf_out_policy.replace("${AWS::AccountId}", "<ACCOUNT_ID>").replace("${AWS::Region}", "<REGION>")) == tf_policy,
+          "the BrokerPolicyJson output differs from broker-policy.json")
+
 # ---- the broker's env lines ----
 tf_env = re.search(r"<<-EOT\n(.*?)\n\s*EOT", tf_outputs, re.S).group(1)
 tf_keys = [l.strip().split("=", 1)[0] for l in tf_env.splitlines() if l.strip()]
