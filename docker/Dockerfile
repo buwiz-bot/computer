@@ -63,6 +63,9 @@ RUN apt-get update \
         xfce4-settings \
         thunar \
         dbus-x11 \
+        # Each screen's accessibility bus and registry (box-a11y-bus): what POST /v1/cua/tree reads.
+        # GTK and Chromium already bring the bridge that publishes their widgets on it.
+        at-spi2-core \
         x11-utils \
         xfonts-base \
         fonts-liberation \
@@ -73,6 +76,9 @@ RUN apt-get update \
         ffmpeg \
         chromium \
     && rm -rf /var/lib/apt/lists/* \
+    # One accessibility bus per screen, box-a11y-bus's. at-spi-bus-launcher would start another in
+    # the desktop's private runtime folder, where box-exec can't read it, and point apps at it.
+    && rm -f /etc/xdg/autostart/at-spi-dbus-bus.desktop /usr/share/dbus-1/services/org.a11y.Bus.service \
     # Who runs what (docs/USERS.md). box: the main screen's desktop. boxsvc: box-exec, box-host and
     # voxl. agent: a command no Bot asked for. boxx: the desktops, the only ones who may make an X
     # socket. Each Bot gets two users of its own from box-screen, from 20000 up.
@@ -114,6 +120,9 @@ COPY docker/box-chromium /usr/local/bin/box-chromium
 # profile's old extension worker that the shared screen and every own screen run.
 COPY docker/box-screen /usr/local/bin/box-screen
 COPY docker/box-refresh-extension /usr/local/bin/box-refresh-extension
+# Each screen's accessibility bus, for POST /v1/cua/tree: see box-a11y-bus and docs/ARCHITECTURE.md.
+COPY docker/box-a11y-bus /usr/local/bin/box-a11y-bus
+COPY docker/a11y-bus.conf /etc/box/a11y-bus.conf
 # What a new desktop's home starts from, with the Chromium / Files launchers, so xfce4-panel never
 # shows its first-run wizard and the dock is there from the first frame. box-screen and box-prepare
 # copy it in: a home is on a volume, and the desktop's alone.
@@ -131,9 +140,10 @@ RUN chmod 755 /usr/local/bin/entrypoint.sh /usr/local/bin/box-prepare \
         /usr/local/bin/box-reset-desktop /usr/local/bin/box-chromium \
         /usr/local/bin/box-active-tab \
         /usr/local/bin/box-screen /usr/local/bin/box-refresh-extension \
+        /usr/local/bin/box-a11y-bus \
     # COPY keeps the mode each file has on the machine building, and git keeps only the exec bit,
     # so a checkout under umask 077 would leave these unreadable to the box user.
-    && chmod -R a+rX /opt/box /etc/chromium /etc/opt/chrome /etc/xdg/xfce4/kiosk /usr/share/backgrounds
+    && chmod -R a+rX /opt/box /etc/box /etc/chromium /etc/opt/chrome /etc/xdg/xfce4/kiosk /usr/share/backgrounds
 
 ENV WORKSPACE_ROOT=/workspace \
     BOX_EXEC_BIND=0.0.0.0:1337 \
