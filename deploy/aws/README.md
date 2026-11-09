@@ -30,6 +30,19 @@ RunInstances. It allows start, stop, terminate and reboot only on instances tagg
 `buwiz:managed=true`, and PassRole only on `buwiz-computer*` roles. The broker uses nothing else:
 it imports no key pairs and adds no tags after launch.
 
+The checked-in file has `<ACCOUNT_ID>` and `<REGION>` where the account and region go, because each
+client runs this in their own AWS account. `tofu output -raw broker_policy_json` prints it filled in
+for the account you apply as (`aws_caller_identity`) and the module's `region`. Give that to the
+broker's IAM user, for example:
+
+```sh
+AWS_PROFILE=buwiz tofu output -raw broker_policy_json > /tmp/broker-policy.json
+AWS_PROFILE=buwiz aws iam create-policy --policy-name buwiz-computer-broker \
+  --policy-document file:///tmp/broker-policy.json
+AWS_PROFILE=buwiz aws iam attach-user-policy --user-name buwiz-computer-broker \
+  --policy-arn "arn:aws:iam::$(AWS_PROFILE=buwiz aws sts get-caller-identity --query Account --output text):policy/buwiz-computer-broker"
+```
+
 ## How the broker uses it
 
 1. **Launch.** The broker makes an ed25519 key pair for the computer, kept in that computer's
@@ -61,7 +74,7 @@ You need OpenTofu (`brew install opentofu`) and the two AWS profiles on this Mac
 - `buwiz`: the IAM user `buwiz-admin`, signed in with `aws login`. It's an administrator with a
   short-lived session. This is the profile that applies the module, and the broker never uses it.
 - `buwiz-broker`: the IAM user `buwiz-computer-broker`, with a static access key in
-  `~/.aws/credentials`, limited by `broker-policy.json`. This is the profile the broker signs with.
+  `~/.aws/credentials`, limited by the policy `broker_policy_json` prints. This is the profile the broker signs with.
 
 ```sh
 cd deploy/aws
@@ -70,6 +83,7 @@ AWS_PROFILE=buwiz tofu init
 AWS_PROFILE=buwiz tofu plan         # read it: it creates no instance
 AWS_PROFILE=buwiz tofu apply
 tofu output broker_env
+tofu output -raw broker_policy_json  # the broker user's policy, for this account
 ```
 
 If `allowed_ssh_cidrs` is left empty, SSH is open to the public address you apply from, as

@@ -204,3 +204,6 @@ resource "aws_launch_template" "computer" {
 
   depends_on = [aws_route_table_association.computers]
 }
+
+# The account tofu runs as, for the broker's policy (`broker_policy_json`).
+data "aws_caller_identity" "current" {}

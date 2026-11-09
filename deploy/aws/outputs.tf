@@ -36,3 +36,12 @@ output "broker_env" {
     BUWIZ_EC2_PROFILE=buwiz-broker
   EOT
 }
+
+# broker-policy.json with this account and region filled in: the broker user's managed policy.
+output "broker_policy_json" {
+  value = replace(
+    replace(file("${path.module}/broker-policy.json"), "<ACCOUNT_ID>", data.aws_caller_identity.current.account_id),
+    "<REGION>",
+    var.region,
+  )
+}
