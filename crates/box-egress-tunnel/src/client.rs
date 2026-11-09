@@ -21,6 +21,10 @@ use crate::protocol::{decode_data, encode_data, ControlMsg, PROTOCOL_NAME};
 
 const CHUNK: usize = 32 * 1024;
 
+/// Longest dialling a destination may take, over all of its vetted addresses. Below the server's
+/// `OPEN_TIMEOUT` (15 s), so the guest hears why a stream failed rather than giving up on it.
+const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
+
 enum WsOut {
     Control(ControlMsg),
     Data { id: u32, payload: Vec<u8> },
@@ -263,15 +267,7 @@ async fn handle_open(
     // again -- resolving a second time is what lets a DNS rebind swap in the
     // address just refused. Trying each keeps the multi-record fallback that
     // `connect((host, port))` used to give for free.
-    let mut dial: Result<TcpStream, std::io::Error> =
-        Err(std::io::Error::other("no vetted address"));
-    for addr in vetted {
-        dial = TcpStream::connect(addr).await;
-        if dial.is_ok() {
-            break;
-        }
-    }
-    match dial {
+    match dial(vetted, DIAL_TIMEOUT).await {
         Ok(stream) => {
             let _ = stream.set_nodelay(true);
             let (from_tx, from_rx) = mpsc::channel(32);
@@ -295,6 +291,26 @@ async fn handle_open(
                 .await;
         }
     }
+}
+
+/// Connect to the first of `addrs` that answers, all within `budget`.
+async fn dial(addrs: Vec<std::net::SocketAddr>, budget: Duration) -> std::io::Result<TcpStream> {
+    let attempts = async {
+        let mut last = std::io::Error::other("no vetted address");
+        for addr in addrs {
+            match TcpStream::connect(addr).await {
+                Ok(stream) => return Ok(stream),
+                Err(err) => last = err,
+            }
+        }
+        Err(last)
+    };
+    tokio::time::timeout(budget, attempts).await.map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("connect timed out after {}s", budget.as_secs()),
+        )
+    })?
 }
 
 async fn copy_outbound(
@@ -338,4 +354,31 @@ async fn copy_outbound(
     let _ = outgoing
         .send(WsOut::Control(ControlMsg::close(id, Some("eof"))))
         .await;
+}
+
+#[cfg(test)]
+mod dial_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_dead_address_falls_through_to_the_next() {
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let closed_addr = closed.local_addr().unwrap();
+        drop(closed);
+        let open = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let open_addr = open.local_addr().unwrap();
+        let stream = dial(vec![closed_addr, open_addr], DIAL_TIMEOUT)
+            .await
+            .unwrap();
+        assert_eq!(stream.peer_addr().unwrap(), open_addr);
+    }
+
+    #[tokio::test]
+    async fn a_destination_that_never_answers_stops_at_the_budget() {
+        // TEST-NET-1: nothing routes there, so the connect either hangs or fails at once.
+        let started = std::time::Instant::now();
+        let dead = "192.0.2.1:9".parse().unwrap();
+        assert!(dial(vec![dead], Duration::from_millis(200)).await.is_err());
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
 }
