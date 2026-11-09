@@ -291,6 +291,7 @@ components:
         max_nodes: { type: integer, minimum: 1, maximum: 2000, default: 400 }
         timeout_ms: { type: integer, minimum: 1, maximum: 10000, default: 3000, description: The walk's budget; what's read by then is returned }
         include_hidden: { type: boolean, default: false, description: Also nodes that are neither showing nor visible, and what's under them }
+        compact: { type: boolean, default: true, description: "Nameless containers with nothing to act on (panel, filler, section, …) give their place to their children" }
     A11yBounds:
       type: object
       description: Screen pixels, the space /v1/cua/click takes
@@ -324,7 +325,7 @@ components:
           type: array
           maxItems: 8
           items: { type: string }
-          description: AT-SPI action names (`click`, `press`, `activate`, …). An unnamed first action is `default`.
+          description: AT-SPI action names (`click`, `press`, `activate`, …). Unnamed actions (all of Chromium's) aren't listed; `press` runs an unnamed first one.
         children:
           type: array
           items: { $ref: "#/components/schemas/A11yNode" }

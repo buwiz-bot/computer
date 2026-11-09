@@ -21,6 +21,7 @@ Imported from `hexuria/box` at `64f2b13` with its history, as `buwiz-bot/compute
 | Chromium has no DevTools port: `/v1/chrome` reads its process, `BOX_CDP_PORT` and `cdp` are gone, and each screen's page comes from its own extension report | `crates/box-chrome`, `crates/box-cua`, `docker/entrypoint.sh` |
 | Multi-arch publish to `ghcr.io/buwiz-bot/computer` on native runners, and an image smoke on PRs | `.github/workflows/` |
 | Removed: the frozen `ensurebox/` and `l1/` demos, `docker/Dockerfile.remasure`, `box-release-keys` (voxl lets go of held keys when a viewer leaves) | history keeps them |
+| `POST /v1/cua/tree` and `POST /v1/cua/element`: a screen's widgets as text over AT-SPI, Chromium's own included, and press, click, focus or set text on one by `ref`. Each screen has its own accessibility bus that only its desktop and `box-exec` can reach | `crates/box-a11y`, `crates/box-exec`, `docker/box-a11y-bus` |
 
 Compose's `pids_limit` is 2048. Measured per screen with Chromium: about 510 MiB and 180 processes and threads.
 

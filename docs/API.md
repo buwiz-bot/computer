@@ -356,12 +356,13 @@ Cost, so a caller can decide rather than be surprised. `input` forks nothing: it
 A screen's accessibility tree, over AT-SPI: native apps' buttons, fields, menus and tabs as text, Chromium's own toolbar and pages included, so an agent can read what's on the screen and act on it by name instead of by pixels. `?display=:N` for another screen. Every field is optional, and no body is the focused window with the defaults:
 
 ```json
-{ "scope": "focused_window", "max_depth": 12, "max_nodes": 400, "timeout_ms": 3000, "include_hidden": false }
+{ "scope": "focused_window", "max_depth": 12, "max_nodes": 400, "timeout_ms": 3000, "include_hidden": false, "compact": true }
 ```
 
 - `scope`: `focused_window` (default) is the window with the keyboard focus, as X names it (its title), else the one AT-SPI calls active. `desktop` is every application with its windows.
 - `max_depth` 0–40 (levels below the top nodes), `max_nodes` 1–2000, `timeout_ms` 1–10000. Out of range is `400 invalid_request`.
 - `include_hidden`: nodes that are neither showing nor visible (a closed menu, a tab behind another) are left out, with what's under them, unless this is true.
+- `compact`: nameless containers with nothing to act on (`panel`, `filler`, `section`, …) give their place to their children, unless this is false. Chromium wraps each control in a few of them. `max_nodes` and `max_depth` count the nodes read, compacted ones included.
 
 ```json
 {
@@ -386,7 +387,7 @@ A screen's accessibility tree, over AT-SPI: native apps' buttons, fields, menus 
 - `ref` is `<snapshot>:<n>`, good for this tree only: `POST /v1/cua/element` takes refs from the screen's **latest** tree and refuses older ones.
 - `role` is AT-SPI's in snake case (`push_button`, `entry`, `page_tab`, `document_web`). `name` is always there and may be empty; `description` and `text` only when they say something new. `text` is a text node's contents, clipped; a password field's never comes.
 - `states` is the useful subset: `active`, `checked`, `editable`, `enabled`, `expanded`, `focusable`, `focused`, `pressed`, `selected` and a few more ([`openapi.yaml`](openapi.yaml)).
-- `bounds` are screen pixels, the space `/v1/cua/click` takes; absent when the element takes no space. `actions` are AT-SPI's action names; Chromium names none of its, and its first, the default action, is sent as `default`.
+- `bounds` are screen pixels, the space `/v1/cua/click` takes; absent when the element takes no space. `actions` are AT-SPI's action names. Chromium names none of its, so its buttons list none, and `press` still runs their first, the default action.
 - Bounded everywhere: names and descriptions at 160 characters, text at 400, 8 actions. The walk is breadth first, so a cut tree still has the top of every window. A cut sets `truncated`, lists the limits in `truncated_by` (`max_nodes`, `max_depth`, `time`), and puts `children_omitted` on each node that lost children. An application that hangs costs the time budget and no more. `skipped` counts nodes whose application answered with an error.
 - An empty tree is not an error: it comes with a `reason` ("no application on this screen publishes an accessibility tree", or no window is focused).
 
@@ -401,7 +402,7 @@ An action on a node of the screen's latest tree, by `ref`. `?display=:N` must be
 { "ref": "48213:57", "action": "set_text", "text": "hello" }
 ```
 
-- `press`: the element's own AT-SPI action, the first of `click`, `press`, `activate`, `jump`, `toggle`, `open`, else its only or unnamed default one. The application says whether it took it, not whether anything happened, and some widgets only act on a real click (xfce's panel launchers are one): look again, or use `click`.
+- `press`: the element's own AT-SPI action, the first of `click`, `press`, `activate`, `jump`, `toggle`, `open`, else its only one, or its first when that has no name (Chromium's default action, reported as `performed: "default"`). The application says whether it took it, not whether anything happened, and some widgets only act on a real click (xfce's panel launchers are one): look again, or use `click`.
 - `click`: a real click (XTEST, as `/v1/cua/click`) in the middle of the element where it is **now**, so a window that moved since the tree is still hit. The answer has `at: {x, y}`.
 - `focus`: the keyboard focus, through AT-SPI.
 - `set_text`: replaces an editable field's text, up to 64 KiB. Only for fields with AT-SPI's EditableText (GTK entries; not Chromium's address bar): otherwise `focus` or `click`, then `/v1/cua/type`.
