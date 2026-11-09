@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+| Item | Where |
+| --- | --- |
+| Rust 1.99.0 everywhere (toolchain, MSRV, the image's builder, CI), clean under its lints. The lock moved: uuid 1.26.1 → 1.29.2, zbus 5.13.2 → 5.14.0, zvariant 5.9.2 → 5.15.1 (atspi 0.30 holds zbus below 5.15) | `rust-toolchain.toml`, `Cargo.toml`, `docker/Dockerfile`, `.github/workflows/ci.yml` |
+| Each screen's Chromium runs on a DevTools pipe, through `box-chrome-pipe`, whose other end only `box-exec` gets: offered once in the screen's run folder, to a `boxsvc` peer, still with no port | `crates/box-chrome`, `docker/entrypoint.sh`, `docker/box-chromium`, `docs/USERS.md`, `docs/ARCHITECTURE.md` |
+| `/v1/browser/*` (snap, act, navigate, tabs, wait, shot, run, state) through ultra-instinct, with snapshot-scoped `@eN` refs, no password text, confirm tokens for `Pay*`-like clicks, per-call allow-lists and saved logins at 0600. Answers `503 browser_unavailable` until the ultra-instinct pipe transport is linked. In the Rust client and CLI (`browser …`), both SDKs, the API doc, the OpenAPI spec and the image smoke | `crates/box-browser`, `crates/box-exec`, `crates/buwiz-computer`, `sdk/`, `docs/`, `scripts/smoke.sh` |
+| An error may carry `error.details` (`confirm_required`'s label and token, `domain_not_allowed`'s host) | `crates/box-common` |
+
 ## 0.1.0 (2026-11-09)
 
 | Item | Where |

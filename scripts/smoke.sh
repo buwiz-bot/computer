@@ -457,6 +457,77 @@ a11y_exec="$(curl -fsS \
 echo "${a11y_exec}"
 echo "${a11y_exec}" | grep -q A11Y_WALLED
 
+echo "==> the browser's DevTools pipe: on a pipe, no port, out of a command's reach"
+# As a command sees it: Chromium is on a pipe and has no port, the pipe's socket is behind a
+# folder it can't enter, and nothing listens on TCP but the box's own ports (127.0.0.11 is Docker's
+# own resolver, in every container). Chromium's lines are picked by name, so this command's own
+# words aren't read as Chromium's, and printed whole: ps cuts them at 80 columns otherwise.
+# shellcheck disable=SC2016 # expanded by the box's shell, not this one
+pipe_exec="$(curl -fsS \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{"command":["sh","-c","args=$(ps -ww -eo comm=,args= | awk '\''$1 == \"chromium\"'\''); case \"$args\" in *remote-debugging-pipe*) echo ON_PIPE;; esac; case \"$args\" in *remote-debugging-port*) echo HAS_PORT;; esac; if [ -e /run/box/x/1/run/cdp.sock ]; then echo PIPE_REACHED; else echo PIPE_WALLED; fi; for f in /proc/net/tcp /proc/net/tcp6; do awk '\''$4 == \"0A\" && $2 !~ /^0B00007F:/ { split($2, a, \":\"); print a[2] }'\'' \"$f\"; done | sort -u | while read -r hex; do echo \"LISTEN $((0x$hex))\"; done"]}' \
+  "${EXEC_URL}/v1/exec")"
+echo "${pipe_exec}"
+echo "${pipe_exec}" | grep -q ON_PIPE
+echo "${pipe_exec}" | grep -q PIPE_WALLED
+if echo "${pipe_exec}" | grep -q HAS_PORT; then
+  echo "a Chromium in the box has a DevTools port" >&2
+  exit 1
+fi
+for port in $(printf '%s' "${pipe_exec}" | grep -o 'LISTEN [0-9]*' | cut -d' ' -f2); do
+  case "${port}" in
+    1337 | 1340 | 690[1-5] | 879[0-2]) ;;
+    *)
+      echo "something listens on TCP ${port}" >&2
+      exit 1
+      ;;
+  esac
+done
+# As the desktop user, who owns Chromium: its fds 3 and 4 are one socket, the launcher is
+# undumpable, and the socket it offers is in the screen's run folder.
+# shellcheck disable=SC2016 # expanded by the box's shell, not this one
+pipe_desk="$("${COMPOSE[@]}" exec -T -u box box sh -c '
+  launcher=$(pgrep -u box -o -x box-chrome-pipe)
+  chrome=$(pgrep -u box -o -P "${launcher:-0}" -x chromium)
+  [ -n "${chrome}" ] && [ -n "${launcher}" ] || { echo NO_PIPE_CHROME; exit 0; }
+  three=$(readlink "/proc/${chrome}/fd/3"); four=$(readlink "/proc/${chrome}/fd/4")
+  case "${three}" in socket:*) [ "${three}" = "${four}" ] && echo FDS_ONE_SOCKET;; esac
+  ls "/proc/${launcher}/fd" >/dev/null 2>&1 || echo LAUNCHER_UNDUMPABLE
+  [ -S /run/box/x/1/run/cdp.sock ] && echo SOCKET_OFFERED
+  true')"
+echo "${pipe_desk}"
+echo "${pipe_desk}" | grep -q FDS_ONE_SOCKET
+echo "${pipe_desk}" | grep -q LAUNCHER_UNDUMPABLE
+
+echo "==> POST /v1/browser/* (pending the ultra-instinct pipe transport)"
+snap_code="$(curl -sS -o /tmp/buwiz-browser-snap.json -w '%{http_code}' \
+  -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+  -d '{}' "${EXEC_URL}/v1/browser/snap")"
+snap="$(cat /tmp/buwiz-browser-snap.json)"
+rm -f /tmp/buwiz-browser-snap.json
+if [[ "${snap_code}" == "503" ]] && printf '%s' "${snap}" | grep -q 'no DevTools pipe transport yet'; then
+  # Nothing took the pipe: the launcher still offers it.
+  echo "${pipe_desk}" | grep -q SOCKET_OFFERED
+  echo "PENDING: box-exec has no DevTools pipe transport yet; the browser routes answer 503 browser_unavailable"
+else
+  echo "${snap}"
+  [[ "${snap_code}" == "200" ]]
+  printf '%s' "${snap}" | grep -q '"snapshot"'
+  printf '%s' "${snap}" | grep -q '"elements"'
+  # box-exec took the pipe, and the launcher no longer offers it.
+  "${COMPOSE[@]}" exec -T -u box box sh -c '[ ! -e /run/box/x/1/run/cdp.sock ]'
+  tabs="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+    -d '{"op":"list"}' "${EXEC_URL}/v1/browser/tabs")"
+  echo "${tabs}"
+  printf '%s' "${tabs}" | grep -q '"tabs"'
+  denied="$(curl -sS -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+    -d '{"url":"https://example.org/","allow_domains":["example.com"]}' \
+    "${EXEC_URL}/v1/browser/navigate")"
+  [[ "${denied}" == "403" ]]
+fi
+
 echo "==> BOX_DESKTOP=0 still serves exec+host"
 "${COMPOSE[@]}" down --remove-orphans >/dev/null 2>&1 || true
 if [[ "${COMPOSE[0]}" == "sudo" ]]; then
