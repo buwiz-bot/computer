@@ -390,7 +390,9 @@ name = "box-chrome"
 version = "0.1.0"
 dependencies = [
  "box-common",
+ "libc",
  "serde",
+ "tempfile",
 ]
 
 [[package]]

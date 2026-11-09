@@ -15,7 +15,7 @@ buwiz-computer guest (this image)
     ├── box-exec :1337   exec + files + /v1/cua/*
     ├── box-egress-tunnel :8790  optional laptop CONNECT mux (proxy 127.0.0.1:8791)
     ├── Xvfb :1 1280×800 + xfce + voxl :6901 (a Bot's own screen: :N and 6900+N)
-    └── Chromium (profile volume; no DevTools port; optional --proxy-server)
+    └── Chromium (profile volume; no DevTools port; a DevTools pipe only box-exec holds; optional --proxy-server)
 ```
 
 The TypeScript / Python / Rust SDKs never call `docker run` and never treat `/v1/info.endpoints` as the URLs to dial. Those endpoints are **container-local listen addresses** so operators can see what the processes bound.
@@ -83,7 +83,8 @@ tini
       ├── entrypoint.sh                    the desktop; holds no secret
       │    ├── Xvfb :1  (1280x800x24)      if BOX_DESKTOP=1
       │    ├── xfce4-session
-      │    ├── chromium (profile volume; no DevTools port)
+      │    ├── box-chrome-pipe → chromium (profile volume; no DevTools port; --remote-debugging-pipe,
+      │    │     the other end offered once at /run/box/x/<slot>/run/cdp.sock, to box-exec alone)
       │    │     optional --proxy-server=http://127.0.0.1:8791 when BOX_EGRESS_TUNNEL=1
       │    │     not in the death-watch — closing the browser must not kill the box
       │    └── box-egress-tunnel  (WS 8790, CONNECT 127.0.0.1:8791, admin 127.0.0.1:8792)
@@ -109,6 +110,7 @@ Small programs in the image that the daemons and the entrypoint start. None list
 | --- | --- | --- |
 | `box-active-tab` | Chromium, as its native-messaging host (`docker/active-tab` extension) | Keeps the front tab's URL, the kind of box focused and a report count in `/run/box/x/<slot>/run/active-tab.json`, and removes the file when Chromium closes the port. `GET /v1/chrome/active-tab` reads it back. |
 | `box-refresh-extension` | the entrypoint before the main screen's Chromium, `box-screen` before a Bot's | Clears the profile's service workers once when the extension's files changed, so Chromium does not keep running the old worker. On a new profile it also sets the download folder to the screen's own (`BOX_SCREEN_WORKSPACE`). |
+| `box-chrome-pipe` | the entrypoint's restart loop, `box-chromium` | Starts a screen's Chromium as its desktop user with `--remote-debugging-pipe` on one end of a socket pair, and hands the other end once, over `cdp.sock` in the screen's run folder, to a `boxsvc` peer: [Browser](#browser-devtools-pipe). Lives as long as Chromium and exits as it does. |
 | `box-screen` | `box-keeper`, as root, for `POST /v1/screen` | `up`, `down`, `forget`, `open` and `list` for a Bot's own screen: its users, X server, session, voxl and Chromium. See [USERS.md](USERS.md). |
 
 `GET /v1/info` `capabilities`:
@@ -162,6 +164,16 @@ CUA is first-party in this image:
 **Coordinates.** `bounds` are AT-SPI's screen coordinates. Each screen is its own X server at 0,0, so they are the pixels `/v1/cua/click` takes, and `element` `click` clicks the middle of an element's bounds as they are when it's asked.
 
 **The focused window.** X knows which window has the keyboard focus better than AT-SPI does: Chromium never marks its frame `active`, and xfwm4 keeps an offscreen helper window that always is. So `focused_window` is the window named like the focused X window's title (read as recipes' `observe` reads it), then one AT-SPI calls active, and never a window off the screen.
+
+## Browser (DevTools pipe)
+
+**Who holds the pipe.** Every screen's Chromium is started through `box-chrome-pipe`: by the entrypoint's restart loop for the main screen, and by `box-chromium` (the dock, `box-screen open`) for any screen. It runs as the screen's desktop user, makes a socket pair, and starts Chromium with `--remote-debugging-pipe` and one end on fds 3 and 4. It keeps the other end and listens at `/run/box/x/<slot>/run/cdp.sock`, in the folder only the desktop and `boxsvc` may enter. The first peer the kernel says is `boxsvc` gets the end (`SCM_RIGHTS`). The launcher then closes its own copy and removes the socket. Anyone else is hung up on. A lock next to the socket (`cdp.lock`) makes one launcher per screen: a second start, which Chromium turns into a window of the running instance, gets no pipe and touches nothing.
+
+**Who takes it.** `box-exec` connects when a `/v1/browser/*` call first needs the screen. It checks that the listener is that screen's desktop user (`SO_PEERCRED`) before it reads, and takes exactly one fd. The fd goes to the screen's own thread in `box-browser`, which owns it, and everything spoken over it, for as long as Chromium runs. When Chromium exits, the pipe closes. The next call connects again and gets the new Chromium's pipe from its launcher. Chromium is expected to exit when `box-exec` closes its end, as browsers driven over a pipe do; the image smoke's browser step is what will check it.
+
+**What it respects.** Every flag the entrypoint and `box-chromium` already pass stays: the profile, the active-tab extension, the egress proxy flags, `--force-renderer-accessibility`. The restart loop and `chrome.pid` see the launcher, which passes on signals and exits with Chromium's status. `BOX_CHROME=0` starts no Chromium. `BOX_BROWSER=0` starts the main screen's Chromium with no pipe. The launcher fails closed: if the run folder is open to others, or there is no `boxsvc` user, Chromium starts as before, with no pipe.
+
+What's a wall here and what isn't: [USERS.md](USERS.md).
 
 ## Clients
 

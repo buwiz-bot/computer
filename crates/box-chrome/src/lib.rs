@@ -6,6 +6,10 @@
 //! It has no DevTools port. One on loopback has no login, and every user in the box shares that
 //! loopback, so any command could read the browser's cookies and drive it. Readiness is the
 //! process the entrypoint recorded, in a folder only its own user writes.
+//!
+//! It has a DevTools pipe instead, whose other end only `box-exec` holds: [`pipe`].
+
+pub mod pipe;
 
 use box_common::env_bool;
 use serde::{Deserialize, Serialize};

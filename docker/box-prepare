@@ -51,6 +51,11 @@ chmod 0711 /home/box
 install -d -o root -g root -m 0755 "${STATE}" "${STATE}/bots" "${STATE}/slots"
 install -d -o root -g root -m 0711 /home/box/agents /home/box/desktops
 install -d -o agent -g agent -m 0700 /home/box/agents/shared
+# Saved browser logins (POST /v1/browser/state), a folder per screen inside: box-exec's alone. Not a
+# Bot's folder, which its commands can read, and not a desktop's home, which box-exec can't write.
+# A link an older volume left here is removed, never followed.
+[[ ! -L /home/box/browser-state ]] || unlink /home/box/browser-state
+install -d -o boxsvc -g boxsvc -m 0700 /home/box/browser-state
 # Compose may mount a profile in here, so the folder can be there with nothing else. What's in it is
 # the desktop's to change, so the desktop does the copying: root follows no link of its.
 install -d -o box -g box -m 0700 /home/box/desktops/main

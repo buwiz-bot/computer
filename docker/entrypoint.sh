@@ -153,8 +153,16 @@ start_chrome() {
   # Do not pass --disable-setuid-sandbox: Chromium names that flag on the yellow
   # infobar. managed policy + --test-type hide the remaining --no-sandbox warning
   # so CUA screenshots are a usable desktop, not a banner.
-  # No DevTools port: it has no login, and every user in the box shares this loopback.
+  # No DevTools port: it has no login, and every user in the box shares this loopback. A DevTools
+  # pipe instead, through box-chrome-pipe: Chromium gets one end as fds 3 and 4, and the other is
+  # handed once, at ${BOX_SCREEN_RUN}/cdp.sock, to box-exec alone (docs/USERS.md). BOX_BROWSER=0
+  # starts it with no pipe. box-chrome-pipe lives as long as Chromium, passes signals on and exits
+  # as it does, so chrome.pid and this loop see what they always did.
   # Closing/crashing the browser must not take the box down — restart it.
+  local launcher=()
+  if flag_on "${BOX_BROWSER:-1}" && [[ -x /usr/local/bin/box-chrome-pipe ]]; then
+    launcher=(/usr/local/bin/box-chrome-pipe "${BOX_SCREEN_RUN}/cdp.sock" --)
+  fi
   local proxy_args=()
   if flag_on "${BOX_EGRESS_TUNNEL}"; then
     echo "chromium proxy=http://127.0.0.1:${BOX_EGRESS_PROXY_PORT} (box-egress-tunnel)"
@@ -175,7 +183,7 @@ start_chrome() {
       # Chromium on this profile, so before each start the lock is stale by definition.
       rm -f "${BOX_CHROME_PROFILE}/SingletonLock" "${BOX_CHROME_PROFILE}/SingletonSocket" \
         "${BOX_CHROME_PROFILE}/SingletonCookie"
-      "${bin}" \
+      "${launcher[@]}" "${bin}" \
         --user-data-dir="${BOX_CHROME_PROFILE}" \
         --no-first-run \
         --no-default-browser-check \
