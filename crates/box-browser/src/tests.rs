@@ -26,6 +26,8 @@ struct World {
     /// The region the next press lands on, instead of the one at its index.
     drift_to: Option<String>,
     shot: Vec<u8>,
+    /// The next call panics, once.
+    panic_next: bool,
     /// Labels the fake guard wants confirmed besides the policy's.
     extra_confirm: Vec<String>,
 }
@@ -45,6 +47,10 @@ impl Tools for Fake {
         w.calls.push((name.to_string(), args.clone()));
         if let Some(fail) = w.fail_next.take() {
             return Err(fail);
+        }
+        if std::mem::take(&mut w.panic_next) {
+            drop(w);
+            panic!("the fake panics, as asked");
         }
         let at = |w: &World| -> Result<Value, ToolFailure> {
             let index = args["index"].as_u64().unwrap();
@@ -841,6 +847,23 @@ async fn a_confirm_covers_its_press_and_nothing_after() {
         .unwrap()
         .confirmed
         .is_empty());
+}
+
+#[tokio::test]
+async fn a_call_that_panics_keeps_the_screen_s_pipe() {
+    let h = harness();
+    h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    h.world.lock().unwrap().panic_next = true;
+    assert!(h.browsers.snap(":1", SnapRequest::default()).await.is_err());
+    // The snapshot went; the tools, and so the pipe, did not.
+    assert!(matches!(
+        h.browsers
+            .act(":1", act("@e1", ActAction::Click, None))
+            .await,
+        Err(BrowserError::Stale(_))
+    ));
+    h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    assert_eq!(h.opener.1.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

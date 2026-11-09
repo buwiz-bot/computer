@@ -67,8 +67,11 @@ pub(crate) fn serve(mut screen: Screen, jobs: Receiver<Job>) {
     while let Ok(job) = jobs.recv() {
         let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&mut screen)));
         if ran.is_err() {
-            // What the tools were in the middle of is unknown: start them again next time.
-            screen.reset();
+            // What the call was in the middle of is unknown, so its snapshot and policy go. The
+            // pipe stays: Chromium quits, with status 0, as soon as box-exec's end closes, and the
+            // restart loop takes a 0 for a person closing it, so dropping the pipe here would close
+            // the screen's browser for good.
+            screen.forget();
         }
     }
 }
@@ -86,8 +89,14 @@ impl Screen {
         }
     }
 
+    /// The pipe is gone, or is being let go: so are the tools on it.
     fn reset(&mut self) {
         self.tools = None;
+        self.forget();
+    }
+
+    /// Everything but the pipe.
+    fn forget(&mut self) {
         self.policy = None;
         self.latest = None;
     }
