@@ -1,16 +1,18 @@
 //! The page in front of Chromium, as the box's own extension reports it.
 //!
-//! The box's own Chromium has a DevTools port on the box's loopback (`BOX_CDP_PORT`), which
-//! anything in the box can reach. A Bot's own Chromium has none, so that nothing else in the box
-//! can drive it or read its cookies. To know which page is in front on every screen, the image
-//! loads a small extension (`docker/active-tab`) with only the `tabs`
-//! permission. It sends the front tab's URL over native messaging to `box-active-tab`, which
-//! keeps the latest in [`file_for`]; `GET /v1/chrome/active-tab` reads it back.
+//! No Chromium in the box has a DevTools port, so that nothing else in the box can drive it or
+//! read its cookies. To know which page is in front on every screen, the image loads a small
+//! extension (`docker/active-tab`) with only the `tabs` permission. It sends the front tab's URL
+//! over native messaging to `box-active-tab`, which keeps the latest in [`file_for`]: that
+//! screen's `/run/box/x/<slot>/run/active-tab.json`, in a run folder its desktop user owns, the
+//! services may read and a command can't reach. `GET /v1/chrome/active-tab` reads it back with
+//! [`read_screen`], which follows no link, waits on no fifo and, when `BOX_RUN_AS=agents`, takes
+//! the file only if that screen's desktop user owns it.
 //!
 //! The server asks before it types a saved login, and types nothing when the page in front is
-//! not the login's own site. The file is written by the box user, so a process in the box
-//! could write it too. It answers "which page is in front", not "prove no one lied", and
-//! is no weaker than the box itself, whose user can already read the browser's profile.
+//! not the login's own site. The file is written by the screen's desktop user, so anything
+//! running as that user (its Chromium included) could write it too. It answers "which page is
+//! in front", not "prove no one lied".
 
 use std::io::{self, Read, Write};
 use std::path::Path;
