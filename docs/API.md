@@ -22,7 +22,7 @@ Auth: `Authorization: Bearer <BOX_TOKEN>` unless noted. `GET /v1/health` is the 
 }
 ```
 
-Common codes: `unauthorized`, `invalid_request`, `path_escape`, `not_found`, `payload_too_large`, `exec_failed`, `io_error`, `internal`, `not_ready`, `cua_disabled`, `display_unavailable`, `out_of_range`, `cua_backend`.
+Common codes: `unauthorized`, `invalid_request`, `path_escape`, `not_found`, `payload_too_large`, `exec_failed`, `io_error`, `internal`, `not_ready`, `busy` (429, every exec slot is taken), `cua_disabled`, `display_unavailable` (503, the X server is down), `viewer_unavailable` (503, that screen's voxl is down), `out_of_range`, `cua_backend` (502), `keeper_failed` (502, `POST /v1/screen` could not reach `box-keeper`).
 
 CUA coordinate space is the X framebuffer **1280×800** (`BOX_DISPLAY_GEOM=1280x800x24`). Origin is top-left. Clicks outside that range return `400 out_of_range`.
 
@@ -79,7 +79,7 @@ On timeout: `timed_out: true`; the process group gets **SIGTERM**, then **SIGKIL
 A backgrounded process inherits the write ends of stdout and stderr, so those pipes never reach EOF. Once the direct child exits, the daemon collects what is already buffered and stops reading; it does not wait for an EOF that is not coming.
 
 - `output_complete: false` — a process the command left running still holds the pipes. Everything the foreground wrote is in `stdout` / `stderr`; anything written **after** the foreground exited was not captured.
-- `truncated` is `true` whenever `output_complete` is `false`, so a caller that only looks at `truncated` is not told the output is whole when it is not.
+- `truncated` is `true` when `output_complete` is `false` for a finished command, so a caller that only looks at `truncated` is not told the output is whole when it is not. It is also `true` when a cap hit. There are two exceptions where `output_complete` is `false` and `truncated` is `false`, because nothing was read at all: polling a detached exec that is still running, and a stream whose command failed to start (its `exit` event follows an `exec failed:` line on stderr).
 
 ```bash
 curl -fsS "$EXEC/v1/exec" -H "Authorization: Bearer $BOX_TOKEN" \
@@ -366,8 +366,10 @@ Cost, so a caller can decide rather than be surprised. `input` forks nothing: it
 `200` when `box-exec` answers `/v1/health`, and (when `BOX_DESKTOP_REQUIRED=1`) the X display is up. Otherwise `503` with `error.code = not_ready`. Chrome is not required for ready. Missing or invalid Bearer is `401`.
 
 ```json
-{ "status": "ready", "service": "box-host", "exec_ready": true, "desktop_ready": true }
+{ "status": "ready", "service": "box-host", "exec_ready": true, "desktop_ready": true, "viewer_ready": true }
 ```
+
+`viewer_ready` is whether the main screen's voxl takes connections. It never holds up ready: the box works unwatched. The X probe has a time limit, and a box without `xdpyinfo` is not ready when the desktop is required.
 
 ### `GET /v1/info` (bearer)
 
@@ -387,6 +389,7 @@ Uses `BOX_HOST_TOKEN` if set, else `BOX_TOKEN`.
     "exec": { "enabled": true, "ready": true },
     "files": { "enabled": true, "ready": true },
     "desktop": { "enabled": true, "ready": true },
+    "viewer": { "kind": "voxl", "port": 6901, "enabled": true, "ready": true },
     "chrome": { "enabled": true, "ready": true },
     "cua": { "enabled": true, "ready": true },
     "egress_tunnel": { "enabled": false, "ready": false }
@@ -480,6 +483,20 @@ Answer: `{"changed": true, "timed_out": false, "seq": 813, "waited_ms": 340}`. T
 ```
 
 `ready` and `running` mean the process the entrypoint started is alive. There is no DevTools port: [`USERS.md`](USERS.md).
+
+### `GET /v1/chrome/active-tab` (bearer)
+
+The page in front of Chromium, as the box's own extension last reported it. `?display=:N` asks for a Bot's own screen; without it, the box's own.
+
+```json
+{ "url": "https://example.com/login", "atMs": 1794000000000, "focus": "password", "seq": 7 }
+```
+
+`url` is `null` (and the other fields are absent) when nothing has reported: no Chromium on that screen, or one started without the extension. `focus` is the kind of box focused on the page, as the page said: `password`, `text`, `other` or `none`. `seq` counts that browser's reports, so a reader that clicked a field can wait for it to move before it trusts `focus`. The report is dropped when Chromium closes its port.
+
+A caller reads this before typing a saved login, and types nothing when the page in front is not the login's own site.
+
+Trust limit. The report is a file in that screen's run folder (`/run/box/x/<slot>/run/active-tab.json`), written by `box-active-tab` as the screen's desktop user. A command (an agent user) cannot write it, and `box-host` refuses a file that is not that desktop user's own. But anything running as that desktop user, the browser included, could write it. It answers "which page is in front", not "prove no one lied", and is no weaker than the desktop user itself, who can already read the browser's profile. A box not run with separate users (`BOX_RUN_AS` not `agents`) has no owner check, and any process of the box user could write the file.
 
 ### `GET /v1/egress` (bearer)
 
