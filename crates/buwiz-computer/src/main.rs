@@ -22,8 +22,9 @@ struct Cli {
     /// Guest bearer token (BOX_TOKEN).
     #[arg(long, env = "BUWIZ_COMPUTER_TOKEN")]
     token: String,
-    /// Bound on each request's whole round trip, in seconds. An exec with --timeout-ms and a
-    /// cua wait get at least their own wait plus a margin.
+    /// Bound on each request's whole round trip, in seconds. An exec with --timeout-ms, a cua
+    /// wait and a cua tree get at least their own wait plus a margin; a file read or write gets
+    /// time for its size too.
     #[arg(
         long,
         env = "BUWIZ_COMPUTER_REQUEST_TIMEOUT_SECS",

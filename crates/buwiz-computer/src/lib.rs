@@ -16,6 +16,15 @@
 //!   answers at once, and [`BuwizComputer::exec_status`] never waits for the job.
 //! - [`BuwizComputer::cua_wait`] waits for the screen, so it is bounded by the larger of the
 //!   client timeout and the wait's own `timeout` (voxl's default 10 s) plus [`WAIT_MARGIN`].
+//! - [`BuwizComputer::cua_tree`] waits for the walk, so it is bounded by the larger of the client
+//!   timeout and its `timeout_ms` (the guest's default 3 s) plus [`TREE_MARGIN`].
+//!
+//! The file calls ([`BuwizComputer::files_get`], [`BuwizComputer::files_put`],
+//! [`BuwizComputer::files_get_raw`], [`BuwizComputer::files_put_raw`]) move bytes, so their bound
+//! grows with them: the client timeout plus one second for every [`TRANSFER_FLOOR`] bytes sent,
+//! and, once the answer's `content-length` is known, one more for every [`TRANSFER_FLOOR`] bytes
+//! of it. An answer with no `content-length` is bounded instead by an idle bound: each piece of
+//! it must come within the client timeout of the last.
 //!
 //! A long [`BuwizComputer::recipe`] is bounded by the client timeout like any other call: raise
 //! it with [`BuwizComputer::with_timeout`] for a recipe with many waits.
@@ -46,6 +55,30 @@ pub const EXEC_MARGIN: Duration = Duration::from_secs(35);
 
 /// Added to a `cua_wait`'s own `timeout`, as the guest adds to it before giving up on voxl.
 pub const WAIT_MARGIN: Duration = Duration::from_secs(5);
+
+/// Added to a `cua_tree`'s own `timeout_ms`: connecting to the screen's bus and the reply.
+pub const TREE_MARGIN: Duration = Duration::from_secs(5);
+
+/// The slowest rate a file transfer is given time for, in bytes a second (64 KiB/s): a 10 MiB
+/// file gets 160 s on top of the client timeout.
+pub const TRANSFER_FLOOR: u64 = 64 * 1024;
+
+/// The guest's tree walk when the request names no `timeout_ms`.
+const DEFAULT_TREE: Duration = Duration::from_millis(3000);
+
+/// How long `bytes` take at [`TRANSFER_FLOOR`].
+fn transfer_time(bytes: u64) -> Duration {
+    Duration::from_millis(bytes.saturating_mul(1000) / TRANSFER_FLOOR)
+}
+
+/// How a request's time is bounded.
+#[derive(Clone, Copy, Debug)]
+enum Bound {
+    /// The whole round trip.
+    Whole(Duration),
+    /// A file transfer: see the crate docs, §Timeouts.
+    Transfer,
+}
 
 /// voxl's wait when the request names none.
 const DEFAULT_WAIT: Duration = Duration::from_secs(10);
@@ -188,7 +221,7 @@ impl BuwizComputer {
     /// Bounded by the client timeout, or by `timeout_ms` plus [`EXEC_MARGIN`] if that is longer.
     pub async fn exec(&self, request: &ExecRequest) -> Result<ExecResponse, Error> {
         self.send_json_within(
-            self.exec_bound(request),
+            Bound::Whole(self.exec_bound(request)),
             "POST",
             &format!("{}/v1/exec", self.exec_url),
             Some(json!(request)),
@@ -224,11 +257,13 @@ impl BuwizComputer {
             url.push_str("&encoding=");
             url.push_str(&urlencoding(encoding));
         }
-        self.send_json("GET", &url, None, true).await
+        self.send_json_within(Bound::Transfer, "GET", &url, None, true)
+            .await
     }
 
     pub async fn files_put(&self, request: &FilePutRequest) -> Result<FilePutResponse, Error> {
-        self.send_json(
+        self.send_json_within(
+            Bound::Transfer,
             "PUT",
             &format!("{}/v1/files", self.exec_url),
             Some(json!(request)),
@@ -272,7 +307,14 @@ impl BuwizComputer {
     pub async fn files_get_raw(&self, path: &str) -> Result<Vec<u8>, Error> {
         let url = format!("{}/v1/files/raw?path={}", self.exec_url, urlencoding(path));
         let (status, bytes, _) = self
-            .send("GET", &url, None, true, "application/octet-stream")
+            .send_within(
+                Bound::Transfer,
+                "GET",
+                &url,
+                None,
+                true,
+                "application/octet-stream",
+            )
             .await?;
         if !(200..300).contains(&status) {
             let text = String::from_utf8_lossy(&bytes);
@@ -314,7 +356,7 @@ impl BuwizComputer {
             .and_then(Value::as_u64)
             .map_or(DEFAULT_WAIT, Duration::from_millis);
         let bound = self.timeout.max(wait.saturating_add(WAIT_MARGIN));
-        self.send_json_within(bound, "POST", &url, Some(body), true)
+        self.send_json_within(Bound::Whole(bound), "POST", &url, Some(body), true)
             .await
     }
 
@@ -398,7 +440,7 @@ impl BuwizComputer {
     pub async fn exec_stream(&self, request: &ExecRequest) -> Result<String, Error> {
         let (status, bytes, _) = self
             .send_within(
-                self.exec_bound(request),
+                Bound::Whole(self.exec_bound(request)),
                 "POST",
                 &format!("{}/v1/exec/stream", self.exec_url),
                 Some(json!(request)),
@@ -561,10 +603,26 @@ impl BuwizComputer {
     /// `POST /v1/cua/tree`: the screen's accessibility tree (AT-SPI), each node with a `ref`,
     /// role, name, states, bounds in screen pixels and actions. `body` takes `scope`
     /// (`focused_window`, the default, or `desktop`), `max_depth`, `max_nodes`, `timeout_ms`,
-    /// `include_hidden` and `compact`; `{}` for the defaults.
+    /// `include_hidden` and `compact`; `{}` for the defaults. Bounded by the client timeout, or by
+    /// `timeout_ms` plus [`TREE_MARGIN`] if that is longer.
     pub async fn cua_tree(&self, body: Value) -> Result<Value, Error> {
-        self.send_json("POST", &self.cua("tree"), Some(body), true)
-            .await
+        let bound = self.tree_bound(&body);
+        self.send_json_within(
+            Bound::Whole(bound),
+            "POST",
+            &self.cua("tree"),
+            Some(body),
+            true,
+        )
+        .await
+    }
+
+    fn tree_bound(&self, body: &Value) -> Duration {
+        let walk = body
+            .get("timeout_ms")
+            .and_then(Value::as_u64)
+            .map_or(DEFAULT_TREE, Duration::from_millis);
+        self.timeout.max(walk.saturating_add(TREE_MARGIN))
     }
 
     /// `POST /v1/cua/element`: `action` (`press`, `click`, `focus` or `set_text`, with `text`) on
@@ -591,13 +649,13 @@ impl BuwizComputer {
         body: Option<Value>,
         auth: bool,
     ) -> Result<T, Error> {
-        self.send_json_within(self.timeout, method, url, body, auth)
+        self.send_json_within(Bound::Whole(self.timeout), method, url, body, auth)
             .await
     }
 
     async fn send_json_within<T: for<'de> Deserialize<'de>>(
         &self,
-        limit: Duration,
+        limit: Bound,
         method: &str,
         url: &str,
         body: Option<Value>,
@@ -621,13 +679,13 @@ impl BuwizComputer {
         auth: bool,
         accept: &str,
     ) -> Result<(u16, Bytes, String), Error> {
-        self.send_within(self.timeout, method, url, body, auth, accept)
+        self.send_within(Bound::Whole(self.timeout), method, url, body, auth, accept)
             .await
     }
 
     async fn send_within(
         &self,
-        limit: Duration,
+        limit: Bound,
         method: &str,
         url: &str,
         body: Option<Value>,
@@ -680,39 +738,74 @@ impl BuwizComputer {
         let request = builder
             .body(Full::new(Bytes::from(payload)))
             .map_err(|err| Error::Transport(err.to_string()))?;
-        self.round_trip(request, self.timeout).await
+        self.round_trip(request, Bound::Transfer).await
     }
 
-    /// Send `request` and read the whole answer, all within `limit`.
+    /// Send `request` and read the whole answer within `limit`.
     async fn round_trip(
         &self,
         request: Request<Full<Bytes>>,
-        limit: Duration,
+        limit: Bound,
     ) -> Result<(u16, Bytes, String), Error> {
-        let exchange = async {
-            let response = self
-                .http
-                .request(request)
-                .await
-                .map_err(|err| Error::Transport(err.to_string()))?;
-            let status = response.status().as_u16();
-            let content_type = response
+        use hyper::body::Body;
+        use tokio::time::{timeout_at, Instant};
+
+        let started = Instant::now();
+        let mut deadline = started
+            + match limit {
+                Bound::Whole(limit) => limit,
+                Bound::Transfer => self
+                    .timeout
+                    .saturating_add(transfer_time(request.body().size_hint().lower())),
+            };
+        let out_of_time = |deadline: Instant| Error::Timeout(deadline - started);
+        let response = timeout_at(deadline, self.http.request(request))
+            .await
+            .map_err(|_| out_of_time(deadline))?
+            .map_err(|err| Error::Transport(err.to_string()))?;
+        let status = response.status().as_u16();
+        let header = |name: &str| {
+            response
                 .headers()
-                .get("content-type")
+                .get(name)
                 .and_then(|v| v.to_str().ok())
-                .unwrap_or("")
-                .to_string();
-            let bytes = response
-                .into_body()
-                .collect()
+                .map(str::to_string)
+        };
+        let content_type = header("content-type").unwrap_or_default();
+        let length = header("content-length").and_then(|v| v.parse::<u64>().ok());
+        let mut body = response.into_body();
+        let idle = match (limit, length) {
+            (Bound::Whole(_), _) => None,
+            (Bound::Transfer, Some(length)) => {
+                deadline += transfer_time(length);
+                None
+            }
+            (Bound::Transfer, None) => Some(self.timeout),
+        };
+        let Some(idle) = idle else {
+            let bytes = timeout_at(deadline, body.collect())
                 .await
+                .map_err(|_| out_of_time(deadline))?
                 .map_err(|err| Error::Transport(err.to_string()))?
                 .to_bytes();
-            Ok((status, bytes, content_type))
+            return Ok((status, bytes, content_type));
         };
-        tokio::time::timeout(limit, exchange)
-            .await
-            .map_err(|_| Error::Timeout(limit))?
+        let mut bytes = Vec::new();
+        loop {
+            let frame = tokio::time::timeout(idle, body.frame())
+                .await
+                .map_err(|_| Error::Timeout(idle))?;
+            match frame {
+                None => break,
+                Some(frame) => {
+                    let frame = frame.map_err(|err| Error::Transport(err.to_string()))?;
+                    if let Some(data) = frame.data_ref() {
+                        bytes.extend_from_slice(data);
+                    }
+                }
+            }
+        }
+        Ok((status, Bytes::from(bytes), content_type))
     }
 }
 
@@ -888,6 +981,136 @@ mod tests {
             }
         });
         url
+    }
+
+    /// A server that reads each whole request and then writes `steps`: each is a pause, then
+    /// bytes. The connection closes after the last.
+    async fn scripted_server(steps: Vec<(Duration, Vec<u8>)>) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let steps = steps.clone();
+                tokio::spawn(async move {
+                    let mut seen = Vec::new();
+                    let mut buf = [0u8; 65536];
+                    loop {
+                        let text = String::from_utf8_lossy(&seen).to_ascii_lowercase();
+                        if let Some(end) = text.find("\r\n\r\n") {
+                            let length = text
+                                .lines()
+                                .find_map(|l| l.strip_prefix("content-length:"))
+                                .map_or(0, |v| v.trim().parse::<usize>().unwrap());
+                            if seen.len() >= end + 4 + length {
+                                break;
+                            }
+                        }
+                        match stream.read(&mut buf).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => seen.extend_from_slice(&buf[..n]),
+                        }
+                    }
+                    for (pause, bytes) in steps {
+                        tokio::time::sleep(pause).await;
+                        if stream.write_all(&bytes).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        url
+    }
+
+    const PUT_ANSWER: &[u8] = br#"{"path":"/f","bytes_written":131072}"#;
+
+    fn answer_with_length(body: &[u8]) -> Vec<u8> {
+        let mut out =
+            format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n", body.len()).into_bytes();
+        out.extend_from_slice(body);
+        out
+    }
+
+    #[test]
+    fn a_transfer_gets_a_second_for_every_64_kib() {
+        assert_eq!(transfer_time(0), Duration::ZERO);
+        assert_eq!(transfer_time(32 * 1024), Duration::from_millis(500));
+        assert_eq!(transfer_time(10 * 1024 * 1024), Duration::from_secs(160));
+    }
+
+    #[tokio::test]
+    async fn a_large_upload_outlives_a_short_client_bound() {
+        // 128 KiB gets two more seconds; the answer comes after 600 ms.
+        let url = scripted_server(vec![(
+            Duration::from_millis(600),
+            answer_with_length(PUT_ANSWER),
+        )])
+        .await;
+        let client = BuwizComputer::connect(&url, &url, "tok")
+            .unwrap()
+            .with_timeout(Duration::from_millis(200));
+        let put = client.files_put_raw("/f", vec![7; 128 * 1024]).await;
+        assert!(put.is_ok(), "{put:?}");
+        // A small upload has only the client's bound.
+        let err = client.files_put_raw("/f", vec![7; 16]).await.unwrap_err();
+        assert!(matches!(err, Error::Timeout(_)), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_large_download_gets_time_for_its_length() {
+        let body = vec![b'x'; 128 * 1024];
+        let head = format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n", body.len());
+        let url = scripted_server(vec![
+            (Duration::ZERO, head.into_bytes()),
+            (Duration::from_millis(600), body.clone()),
+        ])
+        .await;
+        let client = BuwizComputer::connect(&url, &url, "tok")
+            .unwrap()
+            .with_timeout(Duration::from_millis(200));
+        assert_eq!(client.files_get_raw("/f").await.unwrap(), body);
+    }
+
+    #[tokio::test]
+    async fn a_download_of_unknown_length_is_bounded_by_idle_time() {
+        let head = b"HTTP/1.1 200 OK\r\nconnection: close\r\n\r\n".to_vec();
+        let pace = |pause: u64| {
+            let mut steps = vec![(Duration::ZERO, head.clone())];
+            for _ in 0..5 {
+                steps.push((Duration::from_millis(pause), b"abc".to_vec()));
+            }
+            steps
+        };
+        // Five pieces 120 ms apart: 600 ms in all, past the 300 ms bound, but never idle that long.
+        let url = scripted_server(pace(120)).await;
+        let client = BuwizComputer::connect(&url, &url, "tok")
+            .unwrap()
+            .with_timeout(Duration::from_millis(300));
+        assert_eq!(client.files_get_raw("/f").await.unwrap(), b"abc".repeat(5));
+        // A piece that is late by more than the bound is a timeout.
+        let url = scripted_server(pace(600)).await;
+        let client = BuwizComputer::connect(&url, &url, "tok")
+            .unwrap()
+            .with_timeout(Duration::from_millis(300));
+        let err = client.files_get_raw("/f").await.unwrap_err();
+        assert!(matches!(err, Error::Timeout(_)), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_tree_read_outlives_a_short_client_bound() {
+        let url = slow_server(Duration::from_millis(400)).await;
+        let client = BuwizComputer::connect(&url, &url, "tok")
+            .unwrap()
+            .with_timeout(Duration::from_millis(100));
+        assert_eq!(
+            client.tree_bound(&json!({ "timeout_ms": 10_000 })),
+            Duration::from_secs(15)
+        );
+        assert_eq!(
+            client.cua_tree(json!({ "timeout_ms": 100 })).await.unwrap(),
+            json!({})
+        );
     }
 
     #[test]

@@ -86,7 +86,7 @@ cargo run -p buwiz-computer -- \
   exec -- echo ok
 ```
 
-Every subcommand and flag is in [CLI.md](docs/CLI.md). Each request has a bound on its whole round trip: `DEFAULT_TIMEOUT`, 120 s, unless the CLI's global `--request-timeout-secs` (env `BUWIZ_COMPUTER_REQUEST_TIMEOUT_SECS`) or the library's `BuwizComputer::with_timeout(Duration)` sets another. An exec with `timeout_ms` gets at least that plus `EXEC_MARGIN` (35 s), and a `cua wait` at least its own wait plus `WAIT_MARGIN` (5 s). A request that runs out of time is `Error::Timeout`.
+Every subcommand and flag is in [CLI.md](docs/CLI.md). Each request has a bound on its whole round trip: `DEFAULT_TIMEOUT`, 120 s, unless the CLI's global `--request-timeout-secs` (env `BUWIZ_COMPUTER_REQUEST_TIMEOUT_SECS`) or the library's `BuwizComputer::with_timeout(Duration)` sets another. An exec with `timeout_ms` gets at least that plus `EXEC_MARGIN` (35 s), a `cua wait` at least its own wait plus `WAIT_MARGIN` (5 s), and a `cua tree` at least its `timeout_ms` plus `TREE_MARGIN` (5 s). A file read or write gets one more second for every `TRANSFER_FLOOR` (64 KiB) it sends and, from its `content-length`, receives; a read with no `content-length` is bounded instead by the timeout between pieces of the answer. A request that runs out of time is `Error::Timeout`.
 
 Workspace packages (not published):
 

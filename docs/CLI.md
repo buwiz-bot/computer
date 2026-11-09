@@ -4,7 +4,7 @@
 
 The global flags have environment forms (`BUWIZ_COMPUTER_EXEC_URL`, `BUWIZ_COMPUTER_HOST_URL`, `BUWIZ_COMPUTER_TOKEN`, `BUWIZ_COMPUTER_REQUEST_TIMEOUT_SECS`). Prefer the environment for the token: argv shows in `ps`.
 
-`--request-timeout-secs` (default 120) bounds each request's whole round trip; an `exec` with `--timeout-ms` gets at least that plus 35 s, and a `cua wait` at least its own wait plus 5 s. In the library these are `BuwizComputer::with_timeout(Duration)`, `DEFAULT_TIMEOUT`, `EXEC_MARGIN` and `WAIT_MARGIN`, and running out is `Error::Timeout`.
+`--request-timeout-secs` (default 120) bounds each request's whole round trip; an `exec` with `--timeout-ms` gets at least that plus 35 s, a `cua wait` at least its own wait plus 5 s, and a `cua tree` at least its `--timeout-ms` plus 5 s. A `files` read or write gets one more second for every 64 KiB it sends and, by its `content-length`, receives; a read with no `content-length` is bounded by the time between pieces instead. In the library these are `BuwizComputer::with_timeout(Duration)`, `DEFAULT_TIMEOUT`, `EXEC_MARGIN`, `WAIT_MARGIN`, `TREE_MARGIN` and `TRANSFER_FLOOR`, and running out is `Error::Timeout`.
 
 ## `buwiz-computer`
 
@@ -40,7 +40,7 @@ Options:
       --token <TOKEN>
           Guest bearer token (BOX_TOKEN) [env: BUWIZ_COMPUTER_TOKEN=]
       --request-timeout-secs <REQUEST_TIMEOUT_SECS>
-          Bound on each request's whole round trip, in seconds. An exec with --timeout-ms and a cua wait get at least their own wait plus a margin [env: BUWIZ_COMPUTER_REQUEST_TIMEOUT_SECS=] [default: 120]
+          Bound on each request's whole round trip, in seconds. An exec with --timeout-ms, a cua wait and a cua tree get at least their own wait plus a margin; a file read or write gets time for its size too [env: BUWIZ_COMPUTER_REQUEST_TIMEOUT_SECS=] [default: 120]
   -h, --help
           Print help
   -V, --version
