@@ -296,7 +296,12 @@ impl Screen {
             ActAction::Scroll => ("browser_scroll_to", json!({"index": index})),
             ActAction::Focus => ("browser_focus", json!({"index": index})),
         };
-        let done = self.call(tool, args, Some(&region))?;
+        let done = self.call(tool, args, Some(&region));
+        if !confirmed.is_empty() {
+            // The confirm was for this press alone: the next call gets the policy without it.
+            self.policy = None;
+        }
+        let done = done?;
         // ultra-instinct finds the index again on its own fresh look. If that was another element,
         // the page moved under the call, and the caller must know, not be told it went well.
         if let Some(acted_on) = done.get("region").and_then(Value::as_str) {
@@ -330,6 +335,8 @@ impl Screen {
         })
     }
 
+    /// Tabs go through the pipe's own `Target.*`, not a tool: ultra-instinct's tab tools speak
+    /// DevTools' HTTP endpoints, which a pipe has none of.
     pub fn tabs(
         &mut self,
         req: &TabsRequest,
@@ -342,33 +349,47 @@ impl Screen {
         };
         match req.op {
             TabsOp::List => {
-                let answer = self.call("browser_list_tabs", json!({}), None)?;
-                out.tabs = Some(shape::tabs(&answer)?);
+                let tabs = self.tools()?.tabs();
+                let tabs = tabs.map_err(|f| self.failed(f, None))?;
+                out.tabs = Some(
+                    tabs.into_iter()
+                        .take(shape::MAX_TABS)
+                        .map(|t| crate::Tab {
+                            tab_id: shape::clip(&t.id, 128),
+                            url: shape::clip(&t.url, shape::MAX_URL_CHARS),
+                            title: shape::clip(&t.title, shape::MAX_LABEL_CHARS),
+                        })
+                        .collect(),
+                );
             }
             TabsOp::Open => {
                 let url = req.url.as_deref().unwrap_or("about:blank");
                 allow.check(Some(url))?;
-                self.apply(allow, Vec::new())?;
                 self.latest = None;
-                let answer = self.call("browser_new_tab", json!({"url": url}), None)?;
-                out.tab_id = answer
-                    .get("tab_id")
-                    .and_then(Value::as_str)
-                    .map(|s| shape::clip(s, 128));
+                let id = self.tools()?.open_tab(url);
+                out.tab_id = Some(shape::clip(&id.map_err(|f| self.failed(f, None))?, 128));
             }
             TabsOp::Close | TabsOp::Switch => {
                 let tab_id = req.tab_id.clone().unwrap_or_default();
-                let tool = if req.op == TabsOp::Close {
-                    "browser_close_tab"
-                } else {
-                    "browser_switch_tab"
-                };
                 self.latest = None;
-                self.call(tool, json!({"tab_id": tab_id}), None)?;
+                let done = if req.op == TabsOp::Close {
+                    self.tools()?.close_tab(&tab_id)
+                } else {
+                    self.tools()?.switch_tab(&tab_id)
+                };
+                done.map_err(|f| self.failed(f, None))?;
                 out.tab_id = Some(tab_id);
             }
         }
         Ok(out)
+    }
+
+    /// Asks the browser to quit, for a shutdown, and lets go of the pipe.
+    pub fn close(&mut self) {
+        if let Some(mut tools) = self.tools.take() {
+            tools.close();
+        }
+        self.reset();
     }
 
     pub fn wait(

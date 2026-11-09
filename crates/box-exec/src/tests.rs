@@ -1168,6 +1168,18 @@ mod browser_routes {
         fn run_goal(&mut self, _goal: &str, _b: &GoalBounds) -> Result<GoalReport, ToolFailure> {
             Err(ToolFailure::Unavailable("not faked".into()))
         }
+        fn tabs(&mut self) -> Result<Vec<box_browser::seam::TabInfo>, ToolFailure> {
+            Ok(Vec::new())
+        }
+        fn open_tab(&mut self, _url: &str) -> Result<String, ToolFailure> {
+            Ok("T1".into())
+        }
+        fn switch_tab(&mut self, _id: &str) -> Result<(), ToolFailure> {
+            Ok(())
+        }
+        fn close_tab(&mut self, _id: &str) -> Result<(), ToolFailure> {
+            Ok(())
+        }
     }
     struct ShopOpener;
     impl Opener for ShopOpener {
@@ -1206,12 +1218,30 @@ mod browser_routes {
     }
 
     #[tokio::test]
-    async fn with_no_pipe_transport_no_pipe_is_taken() {
+    async fn a_screen_whose_launcher_offers_no_pipe_is_unavailable() {
         let dir = TempDir::new().unwrap();
         let s = with(&dir, Arc::new(box_browser::pipe::PipeOpener));
         let (status, body) = send(
             s,
             auth_json("POST", "/v1/browser/snap", "secret-token", json!({})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"]["code"], "browser_unavailable");
+    }
+
+    #[tokio::test]
+    async fn a_goal_run_is_503_until_ultra_instinct_has_one() {
+        let dir = TempDir::new().unwrap();
+        let s = with(&dir, Arc::new(ShopOpener));
+        let (status, body) = send(
+            s,
+            auth_json(
+                "POST",
+                "/v1/browser/run",
+                "secret-token",
+                json!({"goal": "Click Search"}),
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);

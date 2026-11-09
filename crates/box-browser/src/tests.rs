@@ -134,6 +134,61 @@ impl Tools for Fake {
         w.goals.push((goal.to_string(), bounds.max_steps));
         Ok(w.goal.clone().expect("a goal report"))
     }
+
+    fn tabs(&mut self) -> Result<Vec<seam::TabInfo>, ToolFailure> {
+        let w = self.0.lock().unwrap();
+        w.calls.len(); // the tab list doesn't go through a tool
+        Ok(vec![
+            seam::TabInfo {
+                id: "T1".into(),
+                url: w.url.clone(),
+                title: "Shop".into(),
+            },
+            seam::TabInfo {
+                id: "T2".into(),
+                url: "about:blank".into(),
+                title: String::new(),
+            },
+        ])
+    }
+
+    fn open_tab(&mut self, url: &str) -> Result<String, ToolFailure> {
+        self.0
+            .lock()
+            .unwrap()
+            .calls
+            .push(("open_tab".into(), json!(url)));
+        Ok("T3".into())
+    }
+
+    fn switch_tab(&mut self, id: &str) -> Result<(), ToolFailure> {
+        self.0
+            .lock()
+            .unwrap()
+            .calls
+            .push(("switch_tab".into(), json!(id)));
+        match id {
+            "T1" | "T2" | "T3" => Ok(()),
+            _ => Err(ToolFailure::TargetGone(format!("there is no tab {id}"))),
+        }
+    }
+
+    fn close_tab(&mut self, id: &str) -> Result<(), ToolFailure> {
+        self.0
+            .lock()
+            .unwrap()
+            .calls
+            .push(("close_tab".into(), json!(id)));
+        Ok(())
+    }
+
+    fn close(&mut self) {
+        self.0
+            .lock()
+            .unwrap()
+            .calls
+            .push(("close".into(), json!(null)));
+    }
 }
 
 struct FakeOpener(Shared, AtomicUsize);
@@ -668,9 +723,19 @@ async fn tabs_and_waits_come_back_in_box_browser_s_shapes() {
         allow_domains: None,
     };
     let tabs = h.browsers.tabs(":1", list).await.unwrap();
-    let wire = serde_json::to_string(&tabs).unwrap();
-    assert!(!wire.contains("ws://"), "{wire}");
     assert_eq!(tabs.tabs.unwrap().len(), 2);
+    // Tabs never go through ultra-instinct's HTTP-backed tab tools.
+    assert!(calls_of(&h, "browser_list_tabs").is_empty());
+    let gone = TabsRequest {
+        op: TabsOp::Switch,
+        tab_id: Some("T9".into()),
+        url: None,
+        allow_domains: None,
+    };
+    assert!(matches!(
+        h.browsers.tabs(":1", gone).await,
+        Err(BrowserError::TargetGone(_))
+    ));
     let switch = TabsRequest {
         op: TabsOp::Switch,
         tab_id: Some("T2".into()),
@@ -723,6 +788,59 @@ async fn a_closed_pipe_opens_again_on_the_next_call() {
     // Another screen has a thread and tools of its own.
     h.browsers.snap(":2", SnapRequest::default()).await.unwrap();
     assert_eq!(h.opener.1.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn shutting_down_asks_each_browser_to_quit_and_lets_go() {
+    let h = harness();
+    h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    h.browsers.snap(":2", SnapRequest::default()).await.unwrap();
+    h.browsers
+        .close_all(std::time::Duration::from_secs(2))
+        .await;
+    assert_eq!(calls_of(&h, "close").len(), 2);
+    // A call after that opens the screen again.
+    h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    assert_eq!(h.opener.1.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn a_confirm_covers_its_press_and_nothing_after() {
+    let h = harness();
+    h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    let Err(BrowserError::ConfirmRequired { token, .. }) = h
+        .browsers
+        .act(":1", act("@e4", ActAction::Click, None))
+        .await
+    else {
+        panic!("no confirm asked");
+    };
+    let mut confirmed = act("@e4", ActAction::Click, None);
+    confirmed.confirm = Some(token);
+    h.browsers.act(":1", confirmed).await.unwrap();
+    // The very next press on the same label, with no token, is refused again before it's sent.
+    let before = calls_of(&h, "browser_click").len();
+    assert!(matches!(
+        h.browsers
+            .act(":1", act("@e4", ActAction::Click, None))
+            .await,
+        Err(BrowserError::ConfirmRequired { .. })
+    ));
+    assert_eq!(calls_of(&h, "browser_click").len(), before);
+    // And the policy the guard holds for the next press has nothing confirmed.
+    h.browsers
+        .act(":1", act("@e1", ActAction::Click, None))
+        .await
+        .unwrap();
+    assert!(h
+        .world
+        .lock()
+        .unwrap()
+        .policies
+        .last()
+        .unwrap()
+        .confirmed
+        .is_empty());
 }
 
 #[tokio::test]

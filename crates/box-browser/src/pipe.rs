@@ -135,7 +135,7 @@ mod tests {
     }
 
     #[test]
-    fn nothing_is_taken_while_no_transport_is_linked() {
+    fn a_screen_whose_launcher_offers_nothing_is_unavailable() {
         assert!(matches!(
             PipeOpener.open(":1"),
             Err(BrowserError::Unavailable(_))

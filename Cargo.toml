@@ -29,11 +29,12 @@ box-cua = { path = "crates/box-cua" }
 box-a11y = { path = "crates/box-a11y" }
 box-browser = { path = "crates/box-browser" }
 # ultra-instinct (hexuria/ultra-instinct, MIT): the observe -> gate -> ticket -> execute loop that
-# box-browser drives a screen's Chromium through. Pinned to a rev of main; the rev that adds its
-# DevTools pipe transport replaces this one, and box-browser's `seam` is what it plugs into.
-ultra-instinct-mcp = { git = "https://github.com/hexuria/ultra-instinct", rev = "f506686", default-features = false }
-ultra-instinct-guard = { git = "https://github.com/hexuria/ultra-instinct", rev = "f506686", default-features = false }
-ultra-instinct-cdp = { git = "https://github.com/hexuria/ultra-instinct", rev = "f506686", default-features = false }
+# box-browser drives a screen's Chromium through, and its DevTools pipe transport. Pinned to
+# f4cfa1b on the feature branch feat/browser-pipe, which isn't on ultra-instinct's main yet: it
+# must move to a main rev before this repo's PR merges. box-browser's `seam` is what it plugs into.
+ultra-instinct-mcp = { git = "https://github.com/hexuria/ultra-instinct", rev = "f4cfa1bca25310b6742ef6acf8ac911404e23bfc", default-features = false }
+ultra-instinct-guard = { git = "https://github.com/hexuria/ultra-instinct", rev = "f4cfa1bca25310b6742ef6acf8ac911404e23bfc", default-features = false }
+ultra-instinct-cdp = { git = "https://github.com/hexuria/ultra-instinct", rev = "f4cfa1bca25310b6742ef6acf8ac911404e23bfc", default-features = false }
 box-egress-tunnel = { path = "crates/box-egress-tunnel" }
 tokio-tungstenite = { version = "0.26", features = ["connect", "rustls-tls-webpki-roots"] }
 axum = { version = "0.8", features = ["json", "macros"] }

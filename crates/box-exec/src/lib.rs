@@ -156,6 +156,7 @@ pub async fn serve(config: BoxConfig) -> Result<(), Box<dyn std::error::Error + 
     let bind = config.exec_bind;
     let state = AppState::from_config(&config);
     let shutdown = state.shutdown.clone();
+    let browsers = state.browser.clone();
     let app = router(state);
     tracing::info!(
         %bind,
@@ -168,9 +169,13 @@ pub async fn serve(config: BoxConfig) -> Result<(), Box<dyn std::error::Error + 
     tokio::spawn(async move {
         box_cua::warmup_pointer(&warmup_cfg).await;
     });
-    axum::serve(listener, app)
+    let served = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal(shutdown))
-        .await?;
+        .await;
+    // Each screen's Chromium is asked to quit over its pipe, which then closes; its launcher
+    // ends whatever of it is left.
+    browsers.close_all(Duration::from_secs(3)).await;
+    served?;
     Ok(())
 }
 

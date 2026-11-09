@@ -226,6 +226,29 @@ impl Browsers {
         Ok(sender)
     }
 
+    /// Asks every screen's browser to quit and lets go of its pipe, within `grace`: for
+    /// box-exec's shutdown. Each launcher ends what's left of its Chromium after that.
+    pub async fn close_all(&self, grace: Duration) {
+        let senders: Vec<SyncSender<Job>> = self.lock().drain().map(|(_, s)| s).collect();
+        let mut waits = Vec::new();
+        for sender in senders {
+            let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+            let job: Job = Box::new(move |screen: &mut Screen| {
+                screen.close();
+                let _ = tx.send(());
+            });
+            if sender.try_send(job).is_ok() {
+                waits.push(rx);
+            }
+        }
+        let all = async {
+            for wait in waits {
+                let _ = wait.await;
+            }
+        };
+        let _ = tokio::time::timeout(grace, all).await;
+    }
+
     pub async fn snap(
         &self,
         display: &str,

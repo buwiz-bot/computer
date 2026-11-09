@@ -6,36 +6,86 @@
 //! (`crate::screen`), so it need not be `Send`: ultra-instinct's pipe and server are not.
 //!
 //! [`open`] is the seam. It takes the screen's end of Chromium's DevTools pipe, a unix socket
-//! `box-exec` was handed (`box_chrome::pipe`), and gives back the screen's tools. Until the
-//! ultra-instinct rev with a pipe transport is linked, [`LINKED`] is false, and box-browser never
-//! takes a pipe it couldn't use: a pipe end taken and dropped would close the screen's Chromium.
+//! `box-exec` was handed (`box_chrome::pipe`), and gives back the screen's tools: an
+//! `ultra_instinct_cdp::PipeBrowser` on it, and an `ultra_instinct_mcp::Server` whose connector
+//! attaches to a tab of that browser.
 
 use std::os::fd::OwnedFd;
-use std::time::Instant;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
+use ultra_instinct_cdp::{CdpError, CdpTransport, PipeBrowser, PipeLimits};
 use ultra_instinct_guard::Policy;
 use ultra_instinct_mcp::{Server, ToolError};
 
-/// Whether [`open`] can speak over a pipe in this build.
-pub const LINKED: bool = false;
+/// Whether [`open`] can speak over a pipe in this build. While it can't, box-browser never takes
+/// a pipe: one taken and dropped would close the screen's Chromium.
+pub const LINKED: bool = true;
+
+/// The largest frame the pipe takes: a screenshot at box-browser's cap, base64, with room.
+pub const MAX_FRAME_BYTES: usize = 16 << 20;
+/// How long one CDP call on the pipe waits for its answer.
+pub const CALL_DEADLINE: Duration = Duration::from_secs(20);
+
+/// The `cdp` key a tool call names a tab by. Every tool call goes to the current tab this way, so
+/// ultra-instinct's server keeps one session per tab, each attached over the one pipe.
+const KEY_PREFIX: &str = "pipe:";
 
 /// The screen's tools on `pipe`, its end of Chromium's DevTools pipe.
 ///
 /// `box-chrome-pipe` gives Chromium one end of a socket pair as both fd 3 (Chromium reads) and
 /// fd 4 (Chromium writes), so `pipe`, the other end, is both directions: what Chromium writes on
-/// fd 4 is read here, and what's written here Chromium reads on fd 3. So for ultra-instinct's
-/// `PipeBrowser::new(reader, writer)` (reader is Chromium's fd 4, writer its fd 3) both are this
-/// socket: `PipeBrowser::new(pipe.try_clone()?, pipe)`.
-///
-/// The ultra-instinct pipe rev goes here: that `PipeBrowser`, an `ultra_instinct_mcp::Server`
-/// whose tab tools use its `Target.*` (with `Target.setDiscoverTargets` on), [`ServerTools`]
-/// around it, and `run_goal` on the same pipe. Then [`LINKED`] is true.
+/// fd 4 is read here, and what's written here Chromium reads on fd 3. ultra-instinct's
+/// `PipeBrowser::new(reader, writer)` takes Chromium's fd 4 side as the reader and its fd 3 side
+/// as the writer, so both are this socket. The socket counts as closed for Chromium only once
+/// every copy of this end is: both live in the `PipeBrowser`, and go with it.
 pub fn open(pipe: OwnedFd) -> Result<Box<dyn Tools>, ToolFailure> {
-    drop(pipe);
-    Err(ToolFailure::Unavailable(
-        "this box-exec has no DevTools pipe transport yet".into(),
-    ))
+    let reader = pipe
+        .try_clone()
+        .map_err(|err| ToolFailure::Unavailable(format!("the pipe can't be shared: {err}")))?;
+    let limits = PipeLimits {
+        max_frame_bytes: MAX_FRAME_BYTES,
+        call_deadline: CALL_DEADLINE,
+    };
+    let browser = Rc::new(PipeBrowser::with_limits(reader, pipe, limits));
+    // Tabs come and go: their `Target.targetDestroyed` is how a page learns its tab is gone.
+    browser
+        .call("Target.setDiscoverTargets", r#"{"discover":true}"#)
+        .map_err(failure_of)?;
+    let tabs = browser.clone();
+    let server = Server::with_connector(move |key: &str| {
+        let target = key.strip_prefix(KEY_PREFIX).unwrap_or(key);
+        tabs.page(target)
+            .map(|page| Box::new(page) as Box<dyn CdpTransport>)
+    });
+    Ok(Box::new(ServerTools::on_pipe(server, browser)))
+}
+
+/// A pipe error as a tool failure.
+pub fn failure_of(err: CdpError) -> ToolFailure {
+    let message = err.to_string();
+    match err {
+        CdpError::PipeClosed { .. } | CdpError::FrameTooLarge { .. } => {
+            ToolFailure::Closed(message)
+        }
+        CdpError::TargetGone { .. } => ToolFailure::TargetGone(message),
+        CdpError::DialogOpened { .. } => ToolFailure::DialogOpen(message),
+        CdpError::Transport { .. }
+            if message.contains("timed out") || message.contains("deadline") =>
+        {
+            ToolFailure::Timeout(message)
+        }
+        _ => ToolFailure::Browser(message),
+    }
+}
+
+/// A tab, as box-browser lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TabInfo {
+    pub id: String,
+    pub url: String,
+    pub title: String,
 }
 
 /// What box-browser asks of ultra-instinct, for one screen.
@@ -48,6 +98,15 @@ pub trait Tools {
     /// Instinct's loop on the current tab, under the policy last set, until it's done, blocked or
     /// abstains, or a bound runs out.
     fn run_goal(&mut self, goal: &str, bounds: &GoalBounds) -> Result<GoalReport, ToolFailure>;
+    /// The browser's page tabs.
+    fn tabs(&mut self) -> Result<Vec<TabInfo>, ToolFailure>;
+    /// A new tab on `url`, which every later call drives; its id.
+    fn open_tab(&mut self, url: &str) -> Result<String, ToolFailure>;
+    /// Brings tab `id` to the front, and every later call drives it.
+    fn switch_tab(&mut self, id: &str) -> Result<(), ToolFailure>;
+    fn close_tab(&mut self, id: &str) -> Result<(), ToolFailure>;
+    /// Asks the browser to quit (`Browser.close`), for a shutdown. Best effort.
+    fn close(&mut self) {}
 }
 
 /// A policy, as the lists it's made from.
@@ -167,6 +226,16 @@ impl From<ToolError> for ToolFailure {
         {
             return failure;
         }
+        // Until those codes come, a pipe error reaches here as its text.
+        if message.contains("CDP pipe closed") || message.contains("pipe frame exceeds") {
+            return Self::Closed(message);
+        }
+        if message.contains("detached or was destroyed") {
+            return Self::TargetGone(message);
+        }
+        if message.contains("a JavaScript dialog opened") {
+            return Self::DialogOpen(message);
+        }
         match err.variant() {
             "TicketInvalid" => refusal(&message),
             "InvalidArguments" | "UnknownTool" | "EmptyText" | "UnknownRole" | "UnknownAction"
@@ -223,15 +292,29 @@ fn refusal(message: &str) -> ToolFailure {
     ToolFailure::Refused(message.to_string())
 }
 
-/// [`Tools`] on an `ultra_instinct_mcp::Server`.
+/// [`Tools`] on an `ultra_instinct_mcp::Server`, and on the pipe its tabs are attached over.
 pub struct ServerTools {
     server: Option<Server>,
+    pipe: Option<Rc<PipeBrowser>>,
+    /// The tab every tool call drives, once one is chosen.
+    current: Option<String>,
 }
 
 impl ServerTools {
+    /// Tools on a server that finds its own pages (a replay, in tests): no tabs.
     pub fn new(server: Server) -> Self {
         Self {
             server: Some(server),
+            pipe: None,
+            current: None,
+        }
+    }
+
+    fn on_pipe(server: Server, pipe: Rc<PipeBrowser>) -> Self {
+        Self {
+            server: Some(server),
+            pipe: Some(pipe),
+            current: None,
         }
     }
 
@@ -240,16 +323,49 @@ impl ServerTools {
             .as_mut()
             .ok_or_else(|| ToolFailure::Closed("the browser's server is gone".into()))
     }
+
+    fn pipe(&self) -> Result<Rc<PipeBrowser>, ToolFailure> {
+        self.pipe
+            .clone()
+            .ok_or_else(|| ToolFailure::Unavailable("this browser has no tabs to list".into()))
+    }
+
+    /// The tab tool calls go to: the one chosen, else the browser's first page tab, else a new
+    /// blank one.
+    fn current(&mut self) -> Result<String, ToolFailure> {
+        if let Some(id) = &self.current {
+            return Ok(id.clone());
+        }
+        let pipe = self.pipe()?;
+        let first = pipe.targets().map_err(failure_of)?.into_iter().next();
+        let id = match first {
+            Some(tab) => tab.target_id,
+            None => pipe.create_target("about:blank").map_err(failure_of)?,
+        };
+        self.current = Some(id.clone());
+        Ok(id)
+    }
 }
 
 impl Tools for ServerTools {
     fn call(&mut self, name: &str, args: &Value) -> Result<Value, ToolFailure> {
-        self.server()?
-            .call_tool(name, args)
-            .map_err(ToolFailure::from)
+        let mut args = args.clone();
+        if self.pipe.is_some() {
+            args["cdp"] = Value::String(format!("{KEY_PREFIX}{}", self.current()?));
+        }
+        let answer = self
+            .server()?
+            .call_tool(name, &args)
+            .map_err(ToolFailure::from);
+        if matches!(answer, Err(ToolFailure::TargetGone(_))) {
+            // The next call picks a tab that is there.
+            self.current = None;
+        }
+        answer
     }
 
     fn set_policy(&mut self, policy: &PolicyLists) -> Result<(), ToolFailure> {
+        // No runtime setter yet: the same server, its sessions and ledgers, under a new policy.
         let policy = policy.to_policy()?;
         let server = self
             .server
@@ -260,10 +376,72 @@ impl Tools for ServerTools {
     }
 
     fn run_goal(&mut self, _goal: &str, _bounds: &GoalBounds) -> Result<GoalReport, ToolFailure> {
-        // ultra-instinct's goal loop needs the pipe's own transport: it lands with the pipe rev.
         Err(ToolFailure::Unavailable(
-            "goal runs come with the DevTools pipe transport".into(),
+            "goal runs aren't in this box-exec yet: they come with ultra-instinct's run_goal"
+                .into(),
         ))
+    }
+
+    fn tabs(&mut self) -> Result<Vec<TabInfo>, ToolFailure> {
+        let tabs = self.pipe()?.targets().map_err(failure_of)?;
+        Ok(tabs
+            .into_iter()
+            .map(|t| TabInfo {
+                id: t.target_id,
+                url: t.url,
+                title: t.title,
+            })
+            .collect())
+    }
+
+    fn open_tab(&mut self, url: &str) -> Result<String, ToolFailure> {
+        let id = self.pipe()?.create_target(url).map_err(failure_of)?;
+        self.current = Some(id.clone());
+        Ok(id)
+    }
+
+    fn switch_tab(&mut self, id: &str) -> Result<(), ToolFailure> {
+        let pipe = self.pipe()?;
+        if !pipe
+            .targets()
+            .map_err(failure_of)?
+            .iter()
+            .any(|t| t.target_id == id)
+        {
+            return Err(ToolFailure::TargetGone(format!("there is no tab {id}")));
+        }
+        pipe.activate_target(id).map_err(failure_of)?;
+        self.current = Some(id.to_string());
+        Ok(())
+    }
+
+    fn close_tab(&mut self, id: &str) -> Result<(), ToolFailure> {
+        let pipe = self.pipe()?;
+        if !pipe
+            .targets()
+            .map_err(failure_of)?
+            .iter()
+            .any(|t| t.target_id == id)
+        {
+            return Err(ToolFailure::TargetGone(format!("there is no tab {id}")));
+        }
+        if !pipe.close_target(id).map_err(failure_of)? {
+            return Err(ToolFailure::Browser(format!(
+                "the browser kept tab {id} open"
+            )));
+        }
+        if self.current.as_deref() == Some(id) {
+            self.current = None;
+        }
+        Ok(())
+    }
+
+    fn close(&mut self) {
+        // The server's sessions go first, so their detaches don't race the browser going away.
+        self.server = None;
+        if let Some(pipe) = self.pipe.take() {
+            let _ = pipe.call("Browser.close", "{}");
+        }
     }
 }
 
@@ -343,8 +521,33 @@ mod tests {
     }
 
     #[test]
-    fn nothing_is_opened_without_a_transport() {
-        let (a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
-        assert!(matches!(open(a.into()), Err(ToolFailure::Unavailable(_))));
+    fn a_pipe_whose_browser_is_gone_is_closed() {
+        let (a, b) = std::os::unix::net::UnixStream::pair().unwrap();
+        drop(b);
+        assert!(matches!(open(a.into()), Err(ToolFailure::Closed(_))));
+    }
+
+    #[test]
+    fn pipe_errors_keep_their_kind() {
+        let closed = CdpError::PipeClosed {
+            message: "eof".into(),
+        };
+        assert!(matches!(failure_of(closed), ToolFailure::Closed(_)));
+        let gone = CdpError::TargetGone {
+            target_id: "T".into(),
+        };
+        assert!(matches!(failure_of(gone), ToolFailure::TargetGone(_)));
+        let dialog = CdpError::DialogOpened {
+            method: "Input.dispatchMouseEvent".into(),
+        };
+        assert!(matches!(failure_of(dialog), ToolFailure::DialogOpen(_)));
+        // And the same errors as a tool's text.
+        let tool = ToolError::Browser("CDP pipe closed: eof".into());
+        assert!(matches!(ToolFailure::from(tool), ToolFailure::Closed(_)));
+        let tool = ToolError::Browser("CDP target T detached or was destroyed".into());
+        assert!(matches!(
+            ToolFailure::from(tool),
+            ToolFailure::TargetGone(_)
+        ));
     }
 }
