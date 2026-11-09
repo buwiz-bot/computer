@@ -210,8 +210,9 @@ where
         .map_err(gone)
 }
 
-/// An error from an application: a node or an application that is no longer there is stale, the
-/// rest is the backend's.
+/// An error from an application. A node or an application that is no longer there is stale; a
+/// method the element doesn't have is unsupported, since the element is still there and a fresh
+/// tree would give the same ref; the rest is the backend's.
 fn gone(err: zbus::Error) -> A11yError {
     let name = match &err {
         zbus::Error::MethodError(name, _, _) => Some(name.as_str().to_string()),
@@ -224,18 +225,16 @@ fn gone(err: zbus::Error) -> A11yError {
         },
         _ => None,
     };
-    let stale = name.is_some_and(|name| {
-        [
-            "ServiceUnknown",
-            "NameHasNoOwner",
-            "UnknownObject",
-            "UnknownMethod",
-        ]
-        .iter()
-        .any(|gone| name.ends_with(gone))
-    });
-    if stale {
+    let is = |what: &[&str]| {
+        name.as_deref()
+            .is_some_and(|name| what.iter().any(|w| name.ends_with(w)))
+    };
+    if is(&["ServiceUnknown", "NameHasNoOwner", "UnknownObject"]) {
         A11yError::Stale("the element is gone: read the tree again".into())
+    } else if is(&["UnknownMethod"]) {
+        A11yError::Unsupported(format!(
+            "the element's application doesn't do this: {err}; try action \"click\""
+        ))
     } else {
         A11yError::Backend(format!("the application did not answer: {err}"))
     }
@@ -395,5 +394,46 @@ mod tests {
         assert!(essentials(name(), states(), interfaces(), Ok(2)).is_ok());
         assert!(essentials(name(), failed(), interfaces(), Ok(2)).is_err());
         assert!(essentials(name(), states(), interfaces(), failed()).is_err());
+    }
+
+    #[test]
+    fn only_a_missing_node_or_application_is_stale() {
+        let fdo = |err: zbus::fdo::Error| gone(zbus::Error::FDO(Box::new(err)));
+        let named = |name: &str| {
+            let name = zbus::names::OwnedErrorName::try_from(name.to_string()).unwrap();
+            let reply = zbus::Message::method_call("/", "Get")
+                .unwrap()
+                .build(&())
+                .unwrap();
+            gone(zbus::Error::MethodError(name, None, reply))
+        };
+        assert!(matches!(
+            fdo(zbus::fdo::Error::UnknownObject("x".into())),
+            A11yError::Stale(_)
+        ));
+        assert!(matches!(
+            fdo(zbus::fdo::Error::ServiceUnknown("x".into())),
+            A11yError::Stale(_)
+        ));
+        assert!(matches!(
+            fdo(zbus::fdo::Error::NameHasNoOwner("x".into())),
+            A11yError::Stale(_)
+        ));
+        assert!(matches!(
+            fdo(zbus::fdo::Error::UnknownMethod("x".into())),
+            A11yError::Unsupported(_)
+        ));
+        assert!(matches!(
+            named("org.freedesktop.DBus.Error.UnknownMethod"),
+            A11yError::Unsupported(_)
+        ));
+        assert!(matches!(
+            named("org.freedesktop.DBus.Error.UnknownObject"),
+            A11yError::Stale(_)
+        ));
+        assert!(matches!(
+            fdo(zbus::fdo::Error::Failed("x".into())),
+            A11yError::Backend(_)
+        ));
     }
 }
