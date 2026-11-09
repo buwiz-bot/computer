@@ -159,9 +159,13 @@ impl Screen {
         };
         let answer = self.tools()?.call(name, &args);
         let answer = answer.map_err(|f| self.failed(f, target))?;
-        let size = serde_json::to_vec(&answer)
-            .map(|v| v.len())
-            .unwrap_or(usize::MAX);
+        // a shot is its base64, already a string: measured as it is, not written out again
+        let size = match answer.get("base64").and_then(Value::as_str) {
+            Some(data) if name == "browser_screenshot" => data.len(),
+            _ => serde_json::to_vec(&answer)
+                .map(|v| v.len())
+                .unwrap_or(usize::MAX),
+        };
         if size > cap {
             return Err(BrowserError::Backend(format!(
                 "the browser's answer to {name} is {size} bytes, more than {cap}"
@@ -235,7 +239,7 @@ impl Screen {
         allow: &AllowList,
     ) -> Result<ActResponse, BrowserError> {
         let (n, named) = parse_ref(&req.reference)?;
-        let latest = self.latest.clone().ok_or_else(|| {
+        let latest = self.latest.as_ref().ok_or_else(|| {
             BrowserError::Stale(format!(
                 "no snapshot of {}'s current tab to act on: take one with POST /v1/browser/snap",
                 self.display
@@ -250,11 +254,11 @@ impl Screen {
                 )));
             }
         }
-        let (_, region, snapped_label) = latest
+        let (region, snapped_label) = latest
             .elements
             .iter()
             .find(|(index, _, _)| *index == n)
-            .cloned()
+            .map(|(_, region, label)| (region.clone(), label.clone()))
             .ok_or_else(|| BrowserError::Invalid(format!("snapshot {} has no @e{n}", latest.id)))?;
 
         // The page as it is now: the address for the allow-list, and where the element went.
@@ -270,10 +274,7 @@ impl Screen {
             })?;
 
         let mut confirmed = Vec::new();
-        let label = here.label.clone();
-        if req.action == ActAction::Click
-            && (self.rules.needs_confirm(&label) || self.rules.needs_confirm(&snapped_label))
-        {
+        if let Some(label) = self.gate(req, &here.label, &snapped_label, &now) {
             let redeemed = req
                 .confirm
                 .as_deref()
@@ -335,6 +336,38 @@ impl Screen {
             action: req.action,
             ticket: done.get("ticket").and_then(Value::as_u64),
         })
+    }
+
+    /// The label a person must confirm before `req`, if any. A click or a key on an element the
+    /// confirm rules name; and a key that activates or submits (Enter, Space), or typed text that
+    /// ends a line, while the page shows any element they name, since that key may press it: a
+    /// focused Pay button, or a field whose form's default button is Pay. ultra-instinct's guard
+    /// gates clicks alone, so a key is box-browser's to stop.
+    fn gate(
+        &self,
+        req: &ActRequest,
+        label: &str,
+        snapped_label: &str,
+        page: &shape::Page,
+    ) -> Option<String> {
+        let named = |l: &str| self.rules.needs_confirm(l);
+        let presses = matches!(req.action, ActAction::Click | ActAction::Key);
+        if presses && (named(label) || named(snapped_label)) {
+            return Some(label.to_string());
+        }
+        let text = req.text.as_deref().unwrap_or_default();
+        let submits = match req.action {
+            ActAction::Key => activates(text),
+            ActAction::Type => text.contains(['\n', '\r']),
+            _ => false,
+        };
+        if !submits {
+            return None;
+        }
+        page.elements
+            .iter()
+            .find(|e| named(&e.label))
+            .map(|e| e.label.clone())
     }
 
     pub fn navigate(
@@ -486,6 +519,8 @@ impl Screen {
         folder: &Path,
         name: &str,
     ) -> Result<StateResponse, BrowserError> {
+        // no list another Bot's call left: a save or load goes nowhere, so it needs none
+        self.apply(&AllowList::parse(None)?, Vec::new())?;
         let path = folder.join(format!("{name}.json"));
         let mut out = StateResponse {
             op,
@@ -534,10 +569,12 @@ impl Screen {
         allow: &AllowList,
     ) -> Result<RunResponse, BrowserError> {
         let started = Instant::now();
+        // a run's token is for that goal alone, as an act's is for its element
+        let goal_key = run_key(&req.goal);
         let confirmed: Vec<String> = req
             .confirm
             .as_deref()
-            .and_then(|token| self.confirms.redeem(token, None))
+            .and_then(|token| self.confirms.redeem(token, Some(&goal_key)))
             .into_iter()
             .collect();
         if req.confirm.is_some() && confirmed.is_empty() {
@@ -583,7 +620,7 @@ impl Screen {
                 let confirm_label = label.filter(|l| self.rules.needs_confirm(l));
                 if let Some(label) = confirm_label {
                     let label = shape::clip(&label, shape::MAX_LABEL_CHARS);
-                    out.confirm = Some(self.confirms.issue(&label, None)?);
+                    out.confirm = Some(self.confirms.issue(&label, Some(&run_key(&req.goal)))?);
                     out.confirm_label = Some(label);
                 }
             }
@@ -599,6 +636,25 @@ impl Screen {
         out.elapsed_ms = started.elapsed().as_millis() as u64;
         Ok(out)
     }
+}
+
+/// What a goal run's confirm token is bound to: its goal. Element regions never start `run:`.
+fn run_key(goal: &str) -> String {
+    format!("run:{}", goal.trim())
+}
+
+/// Whether `key` activates or submits what has focus: Enter or Space, alone or with modifiers.
+fn activates(key: &str) -> bool {
+    let last = key
+        .rsplit('+')
+        .next()
+        .unwrap_or(key)
+        .trim()
+        .to_ascii_lowercase();
+    matches!(
+        last.as_str(),
+        "enter" | "return" | "numpadenter" | "space" | "spacebar" | "" | "\n" | "\r"
+    ) || key.ends_with(' ')
 }
 
 /// `@e5`, `e5` or `5`, alone or after `<snapshot>:`.

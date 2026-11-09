@@ -4,7 +4,7 @@
 
 use serde_json::Value;
 
-use crate::{BrowserError, Rect, Tab};
+use crate::{BrowserError, Rect};
 
 /// Characters kept of a label, a role, a title or an address.
 pub const MAX_LABEL_CHARS: usize = 160;
@@ -18,7 +18,7 @@ const MAX_ACTION_CHARS: usize = 32;
 pub const MAX_READ: usize = 5000;
 pub const MAX_TABS: usize = 100;
 /// The text rendering of a snapshot.
-pub const MAX_TEXT_BYTES: usize = 64 * 1024;
+pub const MAX_RENDER_BYTES: usize = 64 * 1024;
 
 pub fn clip(s: &str, chars: usize) -> String {
     match s.char_indices().nth(chars) {
@@ -154,7 +154,7 @@ pub fn page(answer: &Value) -> Result<Page, BrowserError> {
 }
 
 /// The lines a model reads: `@eN role "label"`, a field's value when it may be shown, and
-/// `[sensitive]` for a password field. Cut at [`MAX_TEXT_BYTES`].
+/// `[sensitive]` for a password field. Cut at [`MAX_RENDER_BYTES`].
 pub fn render(elements: &[crate::Element]) -> String {
     let mut out = String::new();
     for el in elements {
@@ -165,32 +165,13 @@ pub fn render(elements: &[crate::Element]) -> String {
             line.push_str(&format!(" value={value:?}"));
         }
         line.push('\n');
-        if out.len() + line.len() > MAX_TEXT_BYTES {
+        if out.len() + line.len() > MAX_RENDER_BYTES {
             out.push_str("…\n");
             break;
         }
         out.push_str(&line);
     }
     out
-}
-
-/// A `browser_list_tabs` answer.
-pub fn tabs(answer: &Value) -> Result<Vec<Tab>, BrowserError> {
-    let tabs = answer
-        .get("tabs")
-        .and_then(Value::as_array)
-        .ok_or_else(|| BrowserError::Backend("the tab list has no tabs".into()))?;
-    Ok(tabs
-        .iter()
-        .take(MAX_TABS)
-        .filter_map(|t| {
-            Some(Tab {
-                tab_id: text(t, "tab_id", 128)?,
-                url: text(t, "url", MAX_URL_CHARS).unwrap_or_default(),
-                title: text(t, "title", MAX_LABEL_CHARS).unwrap_or_default(),
-            })
-        })
-        .collect())
 }
 
 /// Width and height from a PNG's header, or `None` if it isn't one.

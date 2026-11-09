@@ -115,16 +115,7 @@ pub const DEFAULT_STATE_ROOT: &str = "/home/box/browser-state";
 impl Browsers {
     /// On when `BOX_BROWSER`, `BOX_CHROME` and `BOX_DESKTOP` are, over each screen's real pipe.
     pub fn from_env() -> Self {
-        let on = |name: &str| {
-            !matches!(
-                std::env::var(name)
-                    .unwrap_or_default()
-                    .trim()
-                    .to_ascii_lowercase()
-                    .as_str(),
-                "0" | "false" | "off" | "no"
-            )
-        };
+        let on = |name: &str| box_common::env_bool(name, true);
         let state_root = std::env::var("BOX_BROWSER_STATE_DIR")
             .ok()
             .filter(|s| !s.is_empty())

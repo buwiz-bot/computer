@@ -568,7 +568,7 @@ async fn acts_take_their_text_and_nothing_else() {
         .await
         .unwrap();
     h.browsers
-        .act(":1", act("@e2", ActAction::Key, Some("Enter")))
+        .act(":1", act("@e2", ActAction::Key, Some("Tab")))
         .await
         .unwrap();
     h.browsers
@@ -576,7 +576,7 @@ async fn acts_take_their_text_and_nothing_else() {
         .await
         .unwrap();
     assert_eq!(calls_of(&h, "browser_type")[0]["text"], "kid@example.com");
-    assert_eq!(calls_of(&h, "browser_send_key")[0]["key"], "Enter");
+    assert_eq!(calls_of(&h, "browser_send_key")[0]["key"], "Tab");
     assert_eq!(calls_of(&h, "browser_scroll_to")[0]["index"], 2);
 }
 
@@ -954,4 +954,96 @@ fn a_jpegs_size_is_read_from_its_frame_header() {
     );
     assert_eq!(crate::shape::jpeg_size(b"\x89PNG\r\n\x1a\n"), None);
     assert_eq!(crate::shape::jpeg_size(&jpeg[..24]), None);
+}
+
+#[tokio::test]
+async fn a_key_that_can_press_a_pay_button_needs_its_confirm_too() {
+    let h = harness();
+    h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    // Enter on the Pay button itself
+    let Err(BrowserError::ConfirmRequired { label, .. }) = h
+        .browsers
+        .act(":1", act("@e4", ActAction::Key, Some("Enter")))
+        .await
+    else {
+        panic!("Enter on Pay went through");
+    };
+    assert_eq!(label, "Pay $18");
+    // Enter, or Space, or a line typed, in a field while the page shows a Pay button: it may
+    // submit the form whose default button that is
+    for (action, text) in [
+        (ActAction::Key, "Enter"),
+        (ActAction::Key, "Shift+Enter"),
+        (ActAction::Key, "Space"),
+        (ActAction::Type, "kid@example.com\n"),
+    ] {
+        assert!(
+            matches!(
+                h.browsers.act(":1", act("@e2", action, Some(text))).await,
+                Err(BrowserError::ConfirmRequired { .. })
+            ),
+            "{action:?} {text:?}"
+        );
+    }
+    assert!(calls_of(&h, "browser_send_key").is_empty() && calls_of(&h, "browser_type").is_empty());
+    // a key that submits nothing, and text with no line end, go through
+    h.browsers
+        .act(":1", act("@e2", ActAction::Key, Some("Tab")))
+        .await
+        .unwrap();
+    h.browsers
+        .act(":1", act("@e2", ActAction::Type, Some("kid@example.com")))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn a_goal_runs_confirm_is_for_that_goal_alone() {
+    let h = harness();
+    let run = |goal: &str| RunRequest {
+        goal: goal.into(),
+        max_steps: Some(7),
+        timeout_ms: None,
+        allow_domains: None,
+        confirm: None,
+    };
+    h.world.lock().unwrap().goal = Some(GoalReport {
+        end: GoalEnd::Blocked {
+            reason: "needs-confirm".into(),
+            label: Some("Pay $18".into()),
+        },
+        steps: vec![],
+    });
+    let blocked = h
+        .browsers
+        .run_goal(":1", run("Pay for the cart"))
+        .await
+        .unwrap();
+    let token = blocked.confirm.unwrap();
+    // another goal can't spend it
+    let mut other = run("Pay for everything");
+    other.confirm = Some(token.clone());
+    assert!(matches!(
+        h.browsers.run_goal(":1", other).await,
+        Err(BrowserError::Invalid(_))
+    ));
+    let mut same = run("Pay for the cart");
+    same.confirm = Some(token);
+    h.browsers.run_goal(":1", same).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_saved_login_runs_under_no_list_another_call_left() {
+    let h = harness();
+    h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    let mut press = act("@e1", ActAction::Click, None);
+    press.allow_domains = Some(vec!["shop.example".into()]);
+    h.browsers.act(":1", press).await.unwrap();
+    let save = StateRequest {
+        op: StateOp::Save,
+        name: Some("login".into()),
+    };
+    h.browsers.state(":1", "main", save).await.unwrap();
+    let last = h.world.lock().unwrap().policies.last().cloned().unwrap();
+    assert!(last.allow_domains.is_empty(), "{last:?}");
 }

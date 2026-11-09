@@ -384,7 +384,7 @@ class BuwizComputer:
     def browser_wait(self, display: str | None = None, **fields: Any) -> Any:
         """Until ``text``, ``url``, ``control``, ``gone`` or ``load`` holds, or ``timeout_ms``
         (default 10000, at most 60000) runs out."""
-        wait = float(fields.get("timeout_ms", 10_000)) / 1000
+        wait = float(fields.get("timeout_ms") or 10_000) / 1000
         url = self._on_screen(f"{self.exec_url}/v1/browser/wait", display)
         return self._auth("POST", url, dict(fields), timeout=wait + BROWSER_MARGIN)
 
@@ -395,7 +395,7 @@ class BuwizComputer:
     def browser_run(self, goal: str, display: str | None = None, **fields: Any) -> Any:
         """Instinct runs ``goal`` until it's done, blocked or abstains: ``max_steps``,
         ``timeout_ms`` (default 120000), ``allow_domains``, ``confirm``."""
-        run = float(fields.get("timeout_ms", 120_000)) / 1000
+        run = float(fields.get("timeout_ms") or 120_000) / 1000
         url = self._on_screen(f"{self.exec_url}/v1/browser/run", display)
         return self._auth("POST", url, {"goal": goal, **fields}, timeout=run + BROWSER_MARGIN)
 
