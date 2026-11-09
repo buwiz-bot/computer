@@ -30,6 +30,8 @@ struct World {
     panic_next: bool,
     /// Labels the fake guard wants confirmed besides the policy's.
     extra_confirm: Vec<String>,
+    /// States read so far: the latest is the snapshot a press must name.
+    snapshots: u64,
 }
 
 type Shared = Arc<Mutex<World>>;
@@ -63,8 +65,9 @@ impl Tools for Fake {
         Ok(match name {
             "browser_get_state" => {
                 assert_eq!(args["format"], "json");
+                w.snapshots += 1;
                 json!({"url": w.url, "title": "Shop", "interactive_elements": w.elements.len(),
-                       "elements": w.elements})
+                       "elements": w.elements, "snapshot": format!("s{}", w.snapshots)})
             }
             "browser_click"
             | "browser_type"
@@ -72,6 +75,13 @@ impl Tools for Fake {
             | "browser_send_key"
             | "browser_scroll_to"
             | "browser_focus" => {
+                // `require_snapshot(true)`: a press names the state its index was read in
+                if args["snapshot"] != json!(format!("s{}", w.snapshots)) {
+                    return Err(ToolFailure::NotAllowed(format!(
+                        "snapshot_required: {name} named {}, the latest is s{}",
+                        args["snapshot"], w.snapshots
+                    )));
+                }
                 let el = at(&w)?;
                 // ultra-instinct's own guard, as the fake's: the policy last set decides.
                 if name == "browser_click" {
@@ -600,8 +610,24 @@ async fn goal_runs_end_done_blocked_abstained_or_failed() {
 
     h.world.lock().unwrap().goal = Some(GoalReport {
         end: GoalEnd::Blocked {
+            reason: "domain-not-allowed".into(),
+            label: Some("Open the partner site".into()),
+        },
+        steps: vec![],
+    });
+    // a label no confirm rule names: blocked, and no person is asked, since a confirm can't help
+    let off_list = h
+        .browsers
+        .run_goal(":1", run("Go to the partner"))
+        .await
+        .unwrap();
+    assert_eq!(off_list.outcome, Outcome::Blocked);
+    assert!(off_list.confirm.is_none() && off_list.confirm_label.is_none());
+
+    h.world.lock().unwrap().goal = Some(GoalReport {
+        end: GoalEnd::Blocked {
             reason: "needs-confirm".into(),
-            confirm_label: Some("Place order".into()),
+            label: Some("Place order".into()),
         },
         steps: vec![step.clone()],
     });
@@ -911,4 +937,21 @@ async fn ultra_instinct_s_own_answer_is_read() {
     assert!(labels.contains(&"Email"), "{snap:?}");
     assert_eq!(snap.url.as_deref(), Some("https://shop.example/login"));
     assert!(snap.elements.iter().all(|e| e.reference.starts_with("@e")));
+}
+
+#[test]
+fn a_jpegs_size_is_read_from_its_frame_header() {
+    // SOI, an APP0 of 16 bytes, then a baseline SOF0 of 640x480
+    let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+    jpeg.extend_from_slice(&[0; 14]);
+    jpeg.extend_from_slice(&[0xFF, 0xC0, 0x00, 0x11, 0x08, 0x01, 0xE0, 0x02, 0x80, 0x03]);
+    jpeg.extend_from_slice(&[0; 9]);
+    assert_eq!(crate::shape::jpeg_size(&jpeg), Some((640, 480)));
+    // a scan before any frame header, a PNG, and a cut-off file are not sizes
+    assert_eq!(
+        crate::shape::jpeg_size(&[0xFF, 0xD8, 0xFF, 0xDA, 0x00, 0x02]),
+        None
+    );
+    assert_eq!(crate::shape::jpeg_size(b"\x89PNG\r\n\x1a\n"), None);
+    assert_eq!(crate::shape::jpeg_size(&jpeg[..24]), None);
 }

@@ -138,6 +138,8 @@ impl Screen {
             }
             ToolFailure::DialogOpen(m) => BrowserError::DialogOpen(m),
             ToolFailure::Timeout(m) => BrowserError::Timeout(m),
+            // only this call's answer is lost: the pipe and the other tabs go on
+            ToolFailure::TooLarge(m) => BrowserError::Backend(m),
             ToolFailure::NotAllowed(m) => BrowserError::Internal(m),
             ToolFailure::Browser(m) => BrowserError::Backend(m),
         }
@@ -288,7 +290,10 @@ impl Screen {
         self.apply(allow, confirmed.clone())?;
 
         let index = here.index;
-        let (tool, args) = match req.action {
+        let snapshot = now.snapshot.clone().ok_or_else(|| {
+            BrowserError::Backend("the page's state came with no snapshot to press in".into())
+        })?;
+        let (tool, mut args) = match req.action {
             ActAction::Click => {
                 let mut args = json!({"index": index});
                 if let Some(label) = confirmed.first() {
@@ -305,6 +310,9 @@ impl Screen {
             ActAction::Scroll => ("browser_scroll_to", json!({"index": index})),
             ActAction::Focus => ("browser_focus", json!({"index": index})),
         };
+        // the press is bound to the element this look showed: one that moved or changed since is
+        // refused `stale_ref`, with nothing pressed
+        args["snapshot"] = snapshot;
         let done = self.call(tool, args, Some(&region));
         if !confirmed.is_empty() {
             // The confirm was for this press alone: the next call gets the policy without it.
@@ -344,13 +352,14 @@ impl Screen {
         })
     }
 
-    /// Tabs go through the pipe's own `Target.*`, not a tool: ultra-instinct's tab tools speak
-    /// DevTools' HTTP endpoints, which a pipe has none of.
+    /// The tab tools, over the pipe's own `Target.*`. The call's policy goes first: a new tab is a
+    /// navigation, and ultra-instinct checks it against the allow-list too.
     pub fn tabs(
         &mut self,
         req: &TabsRequest,
         allow: &AllowList,
     ) -> Result<TabsResponse, BrowserError> {
+        self.apply(allow, Vec::new())?;
         let mut out = TabsResponse {
             op: req.op,
             tabs: None,
@@ -445,20 +454,26 @@ impl Screen {
             .get("base64")
             .and_then(Value::as_str)
             .ok_or_else(|| BrowserError::Backend("the screenshot has no picture".into()))?;
-        let png = base64::engine::general_purpose::STANDARD
+        let picture = base64::engine::general_purpose::STANDARD
             .decode(data)
             .map_err(|err| BrowserError::Backend(format!("the screenshot isn't base64: {err}")))?;
-        if png.len() > MAX_SHOT_BYTES {
+        if picture.len() > MAX_SHOT_BYTES {
             return Err(BrowserError::Backend(format!(
                 "the screenshot is {} bytes, more than {MAX_SHOT_BYTES}",
-                png.len()
+                picture.len()
             )));
         }
-        let (width, height) = shape::png_size(&png)
-            .ok_or_else(|| BrowserError::Backend("the screenshot isn't a PNG".into()))?;
+        // a PNG over the cap is taken again as a JPEG
+        let (format, size) = match shape::png_size(&picture) {
+            Some(size) => ("png", Some(size)),
+            None => ("jpeg", shape::jpeg_size(&picture)),
+        };
+        let (width, height) = size.ok_or_else(|| {
+            BrowserError::Backend("the screenshot is neither a PNG nor a JPEG".into())
+        })?;
         Ok(ShotResponse {
-            format: "png",
-            bytes: png.len(),
+            format,
+            bytes: picture.len(),
             data: data.to_string(),
             width,
             height,
@@ -560,12 +575,12 @@ impl Screen {
         };
         match report.end {
             GoalEnd::Done => {}
-            GoalEnd::Blocked {
-                reason,
-                confirm_label,
-            } => {
+            GoalEnd::Blocked { reason, label } => {
                 out.outcome = Outcome::Blocked;
                 out.reason = Some(shape::clip(&reason, 400));
+                // a person is asked only for a label box-browser's own rules want confirmed: a
+                // label off the allow-list gets no token, since a confirm can't let it through
+                let confirm_label = label.filter(|l| self.rules.needs_confirm(l));
                 if let Some(label) = confirm_label {
                     let label = shape::clip(&label, shape::MAX_LABEL_CHARS);
                     out.confirm = Some(self.confirms.issue(&label, None)?);

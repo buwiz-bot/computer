@@ -11,38 +11,62 @@
 //! attaches to a tab of that browser.
 
 use std::os::fd::OwnedFd;
-use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
-use ultra_instinct_cdp::{CdpError, CdpTransport, PipeBrowser, PipeLimits};
+use serde_json::{json, Value};
+use ultra_instinct_cdp::{PipeBrowser, PipeLimits};
 use ultra_instinct_guard::Policy;
-use ultra_instinct_mcp::{Server, ToolError};
+use ultra_instinct_mcp::{Downloads, RunLimits, RunOutcome, Server, ToolError, ToolLimits};
 
 /// Whether [`open`] can speak over a pipe in this build. While it can't, box-browser never takes
 /// a pipe: one taken and dropped would close the screen's Chromium.
 pub const LINKED: bool = true;
 
-/// The largest frame the pipe takes: ultra-instinct's own default. A frame over it closes the
-/// screen's Chromium for good, so it sits well above box-browser's screenshot cap: a full-page
-/// shot comes back base64, a third larger than the PNG, and an answer the shot cap refuses must
-/// still arrive whole to be refused.
+/// The largest frame the pipe takes. A frame over it costs only the call it answers
+/// (`frame_too_large`): the pipe and the screen's other tabs go on. It sits well above the
+/// screenshot cap, since a shot comes back base64, a third larger than the picture.
 pub const MAX_FRAME_BYTES: usize = 64 << 20;
-/// How long one CDP call on the pipe waits for its answer.
+/// How long one CDP call on the pipe waits for its answer, its write included.
 pub const CALL_DEADLINE: Duration = Duration::from_secs(20);
+/// The largest picture ultra-instinct returns: past it, it takes the shot again as a JPEG, and
+/// refuses one still over. box-browser's own cap ([`crate::screen::MAX_SHOT_BYTES`]).
+pub const MAX_SHOT_BYTES: usize = crate::screen::MAX_SHOT_BYTES;
 
-/// The `cdp` key a tool call names a tab by. Every tool call goes to the current tab this way, so
-/// ultra-instinct's server keeps one session per tab, each attached over the one pipe.
-const KEY_PREFIX: &str = "pipe:";
+/// The only tools a screen's server answers: reading and pressing, the tabs, saving and loading
+/// a login, and a goal run. Never a script (`browser_exec`), the DOM, cookies, storage, headers,
+/// the network, a download, an upload or a PDF; and none of the keyboard-only tools, which
+/// don't check the domain allow-list yet. Every key box-browser sends names an element.
+pub const ALLOWED: [&str; 17] = [
+    "browser_navigate",
+    "browser_get_state",
+    "browser_click",
+    "browser_type",
+    "browser_select_dropdown",
+    "browser_send_key",
+    "browser_scroll_to",
+    "browser_focus",
+    "browser_wait",
+    "browser_screenshot",
+    "browser_state_save",
+    "browser_state_load",
+    "browser_new_tab",
+    "browser_list_tabs",
+    "browser_switch_tab",
+    "browser_close_tab",
+    // `Server::run_goal`: not a tool, but the list gates it by this name
+    "run_goal",
+];
 
 /// The screen's tools on `pipe`, its end of Chromium's DevTools pipe.
 ///
 /// `box-chrome-pipe` gives Chromium one end of a socket pair as both fd 3 (Chromium reads) and
 /// fd 4 (Chromium writes), so `pipe`, the other end, is both directions: what Chromium writes on
 /// fd 4 is read here, and what's written here Chromium reads on fd 3. ultra-instinct's
-/// `PipeBrowser::new(reader, writer)` takes Chromium's fd 4 side as the reader and its fd 3 side
-/// as the writer, so both are this socket. The socket counts as closed for Chromium only once
-/// every copy of this end is: both live in the `PipeBrowser`, and go with it.
+/// `PipeBrowser` takes Chromium's fd 4 side as the reader and its fd 3 side as the writer, so
+/// both are this socket. It makes the writer non-blocking, a flag every copy of the socket
+/// shares: both copies are its own, and nothing else here keeps one. The socket counts as
+/// closed for Chromium only once every copy of this end is: both live in the server, and go
+/// with it.
 pub fn open(pipe: OwnedFd) -> Result<Box<dyn Tools>, ToolFailure> {
     let reader = pipe
         .try_clone()
@@ -51,36 +75,22 @@ pub fn open(pipe: OwnedFd) -> Result<Box<dyn Tools>, ToolFailure> {
         max_frame_bytes: MAX_FRAME_BYTES,
         call_deadline: CALL_DEADLINE,
     };
-    let browser = Rc::new(PipeBrowser::with_limits(reader, pipe, limits));
-    // Tabs come and go: their `Target.targetDestroyed` is how a page learns its tab is gone.
-    browser
-        .call("Target.setDiscoverTargets", r#"{"discover":true}"#)
-        .map_err(failure_of)?;
-    let tabs = browser.clone();
-    let server = Server::with_connector(move |key: &str| {
-        let target = key.strip_prefix(KEY_PREFIX).unwrap_or(key);
-        tabs.page(target)
-            .map(|page| Box::new(page) as Box<dyn CdpTransport>)
-    });
-    Ok(Box::new(ServerTools::on_pipe(server, browser)))
-}
-
-/// A pipe error as a tool failure.
-pub fn failure_of(err: CdpError) -> ToolFailure {
-    let message = err.to_string();
-    match err {
-        CdpError::PipeClosed { .. } | CdpError::FrameTooLarge { .. } => {
-            ToolFailure::Closed(message)
-        }
-        CdpError::TargetGone { .. } => ToolFailure::TargetGone(message),
-        CdpError::DialogOpened { .. } => ToolFailure::DialogOpen(message),
-        CdpError::Transport { .. }
-            if message.contains("timed out") || message.contains("deadline") =>
-        {
-            ToolFailure::Timeout(message)
-        }
-        _ => ToolFailure::Browser(message),
-    }
+    let browser = PipeBrowser::with_limits(reader, pipe, limits);
+    // The tab tools speak the pipe's own `Target.*`; a press needs the snapshot its index was
+    // read in, and refuses `stale_ref` when the element it showed has moved or changed.
+    let mut server = Server::with_pipe(browser)
+        .require_snapshot(true)
+        .with_limits(ToolLimits {
+            max_screenshot_bytes: MAX_SHOT_BYTES,
+            ..ToolLimits::default()
+        })
+        .with_downloads(Downloads::Off)
+        .with_tool_allowlist(ALLOWED);
+    // A browser already gone says so now, not on the first real call.
+    server
+        .call_tool("browser_list_tabs", &json!({}))
+        .map_err(ToolFailure::from)?;
+    Ok(Box::new(ServerTools::new(server)))
 }
 
 /// A tab, as box-browser lists it.
@@ -146,10 +156,12 @@ pub struct GoalBounds {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GoalEnd {
     Done,
-    /// The guard or the policy stopped it. `confirm_label` is the label a person may confirm.
+    /// The guard or the policy stopped it. `label` is the target's, when the policy refused it:
+    /// one that needs a confirm, or sits off the allow-list. Which, it doesn't say: box-browser's
+    /// own confirm rules decide whether a person is asked.
     Blocked {
         reason: String,
-        confirm_label: Option<String>,
+        label: Option<String>,
     },
     /// Instinct wouldn't choose: the caller's model may.
     Abstained {
@@ -207,6 +219,9 @@ pub enum ToolFailure {
     /// The browser didn't answer in time.
     #[error("{0}")]
     Timeout(String),
+    /// The answer was more than the pipe or the screenshot cap takes. Only this call is lost.
+    #[error("{0}")]
+    TooLarge(String),
     /// box-browser called a tool ultra-instinct's allow-list doesn't let it: a bug here.
     #[error("{0}")]
     NotAllowed(String),
@@ -220,104 +235,56 @@ pub enum ToolFailure {
 impl From<ToolError> for ToolFailure {
     fn from(err: ToolError) -> Self {
         let message = err.to_string();
-        // ultra-instinct's stable codes, where it gives one; its variant names before that.
         let wire = err.to_value();
-        if let Some(failure) = wire
+        let code = wire
             .get("code")
             .and_then(Value::as_str)
-            .and_then(|code| from_code(code, &message, &wire))
-        {
-            return failure;
-        }
-        // Until those codes come, a pipe error reaches here as its text.
-        if message.contains("CDP pipe closed") || message.contains("pipe frame exceeds") {
-            return Self::Closed(message);
-        }
-        if message.contains("detached or was destroyed") {
-            return Self::TargetGone(message);
-        }
-        if message.contains("a JavaScript dialog opened") {
-            return Self::DialogOpen(message);
-        }
-        match err.variant() {
-            "TicketInvalid" => refusal(&message),
-            "InvalidArguments" | "UnknownTool" | "EmptyText" | "UnknownRole" | "UnknownAction"
-            | "UnsupportedAction" | "MissingToolName" => Self::Invalid(message),
-            _ => Self::Browser(message),
-        }
+            .unwrap_or("browser");
+        from_code(code, message, &wire)
     }
 }
 
-/// One of ultra-instinct's stable error codes, or `None` for one this doesn't know.
-fn from_code(code: &str, message: &str, wire: &Value) -> Option<ToolFailure> {
-    let message = message.to_string();
-    Some(match code {
-        "needs_confirm" => match wire.get("label").and_then(Value::as_str) {
-            Some(label) => ToolFailure::NeedsConfirm {
-                label: label.to_string(),
-            },
+/// One of ultra-instinct's stable error codes. A code this doesn't know is the browser's failure.
+fn from_code(code: &str, message: String, wire: &Value) -> ToolFailure {
+    let field = |key: &str| wire.get(key).and_then(Value::as_str).map(str::to_string);
+    match code {
+        "needs_confirm" => match field("label") {
+            Some(label) => ToolFailure::NeedsConfirm { label },
             // A confirm with no label to show a person is no confirm: refuse.
             None => ToolFailure::Refused(message),
         },
-        "domain_not_allowed" => ToolFailure::DomainNotAllowed(
-            wire.get("host")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        ),
-        "stale_ref" | "unknown_ref" => ToolFailure::Stale(message),
+        "domain_not_allowed" => ToolFailure::DomainNotAllowed(field("host").unwrap_or_default()),
+        // the element isn't what the caller saw, or the snapshot named is no longer kept
+        "stale_ref" | "unknown_ref" | "unknown_snapshot" | "snapshot_evicted" => {
+            ToolFailure::Stale(message)
+        }
         "target_gone" => ToolFailure::TargetGone(message),
         "dialog_open" => ToolFailure::DialogOpen(message),
         "timeout" => ToolFailure::Timeout(message),
         "pipe_closed" => ToolFailure::Closed(message),
-        "tool_not_allowed" => ToolFailure::NotAllowed(message),
+        "frame_too_large" | "output_too_large" => ToolFailure::TooLarge(message),
+        // the hard gate refused (disabled, hidden, covered, a spent ticket), or a capture couldn't
+        // hide a secret, or no more secrets fit: nothing was done
+        "ticket_invalid" | "secret_on_screen" | "secrets_full" => ToolFailure::Refused(message),
         "invalid_arguments" => ToolFailure::Invalid(message),
-        _ => return None,
-    })
+        // what box-browser sends is wrong: a bug here, not the caller's
+        "tool_not_allowed" | "snapshot_required" | "bad_snapshot" | "path_not_absolute"
+        | "path_not_allowed" | "downloads_off" | "unknown_tool" | "missing_tool_name" => {
+            ToolFailure::NotAllowed(message)
+        }
+        _ => ToolFailure::Browser(message),
+    }
 }
 
-/// ultra-instinct's `TicketInvalid` text: `needs-confirm: "<label as JSON>"`,
-/// `domain-not-allowed: <host>`, or another refusal.
-fn refusal(message: &str) -> ToolFailure {
-    let body = message
-        .split_once("needs-confirm: ")
-        .map(|(_, rest)| rest.trim());
-    if let Some(raw) = body {
-        let label = serde_json::from_str::<String>(raw).unwrap_or_else(|_| raw.to_string());
-        return ToolFailure::NeedsConfirm { label };
-    }
-    if let Some((_, host)) = message.split_once("domain-not-allowed: ") {
-        return ToolFailure::DomainNotAllowed(host.trim().to_string());
-    }
-    if message.contains("domain-not-allowed") {
-        return ToolFailure::DomainNotAllowed(String::new());
-    }
-    ToolFailure::Refused(message.to_string())
-}
-
-/// [`Tools`] on an `ultra_instinct_mcp::Server`, and on the pipe its tabs are attached over.
+/// [`Tools`] on an `ultra_instinct_mcp::Server` over the pipe.
 pub struct ServerTools {
     server: Option<Server>,
-    pipe: Option<Rc<PipeBrowser>>,
-    /// The tab every tool call drives, once one is chosen.
-    current: Option<String>,
 }
 
 impl ServerTools {
-    /// Tools on a server that finds its own pages (a replay, in tests): no tabs.
     pub fn new(server: Server) -> Self {
         Self {
             server: Some(server),
-            pipe: None,
-            current: None,
-        }
-    }
-
-    fn on_pipe(server: Server, pipe: Rc<PipeBrowser>) -> Self {
-        Self {
-            server: Some(server),
-            pipe: Some(pipe),
-            current: None,
         }
     }
 
@@ -327,124 +294,113 @@ impl ServerTools {
             .ok_or_else(|| ToolFailure::Closed("the browser's server is gone".into()))
     }
 
-    fn pipe(&self) -> Result<Rc<PipeBrowser>, ToolFailure> {
-        self.pipe
-            .clone()
-            .ok_or_else(|| ToolFailure::Unavailable("this browser has no tabs to list".into()))
+    fn tool(&mut self, name: &str, args: &Value) -> Result<Value, ToolFailure> {
+        self.server()?
+            .call_tool(name, args)
+            .map_err(ToolFailure::from)
     }
+}
 
-    /// The tab tool calls go to: the one chosen, else the browser's first page tab, else a new
-    /// blank one.
-    fn current(&mut self) -> Result<String, ToolFailure> {
-        if let Some(id) = &self.current {
-            return Ok(id.clone());
-        }
-        let pipe = self.pipe()?;
-        let first = pipe.targets().map_err(failure_of)?.into_iter().next();
-        let id = match first {
-            Some(tab) => tab.target_id,
-            None => pipe.create_target("about:blank").map_err(failure_of)?,
-        };
-        self.current = Some(id.clone());
-        Ok(id)
-    }
+/// `key`'s text in a tab tool's answer.
+fn said(answer: &Value, key: &str) -> Result<String, ToolFailure> {
+    answer
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| ToolFailure::Browser(format!("the browser's answer has no {key}")))
 }
 
 impl Tools for ServerTools {
     fn call(&mut self, name: &str, args: &Value) -> Result<Value, ToolFailure> {
-        let mut args = args.clone();
-        if self.pipe.is_some() {
-            args["cdp"] = Value::String(format!("{KEY_PREFIX}{}", self.current()?));
-        }
-        let answer = self
-            .server()?
-            .call_tool(name, &args)
-            .map_err(ToolFailure::from);
-        if matches!(answer, Err(ToolFailure::TargetGone(_))) {
-            // The next call picks a tab that is there.
-            self.current = None;
-        }
-        answer
+        self.tool(name, args)
     }
 
     fn set_policy(&mut self, policy: &PolicyLists) -> Result<(), ToolFailure> {
-        // No runtime setter yet: the same server, its sessions and ledgers, under a new policy.
         let policy = policy.to_policy()?;
-        let server = self
-            .server
-            .take()
-            .ok_or_else(|| ToolFailure::Closed("the browser's server is gone".into()))?;
-        self.server = Some(server.with_policy(policy));
+        self.server()?.set_policy(policy);
         Ok(())
     }
 
-    fn run_goal(&mut self, _goal: &str, _bounds: &GoalBounds) -> Result<GoalReport, ToolFailure> {
-        Err(ToolFailure::Unavailable(
-            "goal runs aren't in this box-exec yet: they come with ultra-instinct's run_goal"
-                .into(),
-        ))
+    fn run_goal(&mut self, goal: &str, bounds: &GoalBounds) -> Result<GoalReport, ToolFailure> {
+        let limits = RunLimits {
+            max_steps: bounds.max_steps,
+            deadline: Some(bounds.deadline),
+        };
+        // `typed` holds what the run typed, secrets too: it goes nowhere.
+        let report = self.server()?.run_goal(goal, limits);
+        let end = match report.outcome {
+            RunOutcome::Done { .. } => GoalEnd::Done,
+            RunOutcome::Blocked { label, reason } => GoalEnd::Blocked {
+                reason,
+                label: Some(label).filter(|l| !l.trim().is_empty()),
+            },
+            RunOutcome::Abstained { why } => GoalEnd::Abstained { why },
+            // a pipe that went is found by the next call, which answers `pipe_closed`
+            RunOutcome::Failed { error } => GoalEnd::Failed { why: error },
+        };
+        Ok(GoalReport {
+            end,
+            steps: report
+                .steps
+                .into_iter()
+                .map(|s| GoalStep {
+                    action: s.action.to_ascii_lowercase(),
+                    target: s.target_label,
+                    effect: s.effect,
+                })
+                .collect(),
+        })
     }
 
     fn tabs(&mut self) -> Result<Vec<TabInfo>, ToolFailure> {
-        let tabs = self.pipe()?.targets().map_err(failure_of)?;
+        let answer = self.tool("browser_list_tabs", &json!({}))?;
+        let tabs = answer
+            .get("tabs")
+            .and_then(Value::as_array)
+            .ok_or_else(|| ToolFailure::Browser("the browser's answer has no tabs".into()))?;
         Ok(tabs
-            .into_iter()
-            .map(|t| TabInfo {
-                id: t.target_id,
-                url: t.url,
-                title: t.title,
+            .iter()
+            .filter_map(|t| {
+                Some(TabInfo {
+                    id: t.get("tab_id")?.as_str()?.to_string(),
+                    url: t
+                        .get("url")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    title: t
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                })
             })
             .collect())
     }
 
     fn open_tab(&mut self, url: &str) -> Result<String, ToolFailure> {
-        let id = self.pipe()?.create_target(url).map_err(failure_of)?;
-        self.current = Some(id.clone());
-        Ok(id)
+        let answer = self.tool("browser_new_tab", &json!({"url": url}))?;
+        said(&answer, "tab_id")
     }
 
     fn switch_tab(&mut self, id: &str) -> Result<(), ToolFailure> {
-        let pipe = self.pipe()?;
-        if !pipe
-            .targets()
-            .map_err(failure_of)?
-            .iter()
-            .any(|t| t.target_id == id)
-        {
-            return Err(ToolFailure::TargetGone(format!("there is no tab {id}")));
-        }
-        pipe.activate_target(id).map_err(failure_of)?;
-        self.current = Some(id.to_string());
-        Ok(())
+        self.tool("browser_switch_tab", &json!({"tab_id": id}))
+            .map(drop)
     }
 
     fn close_tab(&mut self, id: &str) -> Result<(), ToolFailure> {
-        let pipe = self.pipe()?;
-        if !pipe
-            .targets()
-            .map_err(failure_of)?
-            .iter()
-            .any(|t| t.target_id == id)
-        {
-            return Err(ToolFailure::TargetGone(format!("there is no tab {id}")));
-        }
-        if !pipe.close_target(id).map_err(failure_of)? {
+        let answer = self.tool("browser_close_tab", &json!({"tab_id": id}))?;
+        if answer.get("closed").and_then(Value::as_bool) == Some(false) {
             return Err(ToolFailure::Browser(format!(
                 "the browser kept tab {id} open"
             )));
-        }
-        if self.current.as_deref() == Some(id) {
-            self.current = None;
         }
         Ok(())
     }
 
     fn close(&mut self) {
-        // The server's sessions go first, so their detaches don't race the browser going away.
+        // Every handle on the pipe goes with the server: Chromium quits a second later.
         self.server = None;
-        if let Some(pipe) = self.pipe.take() {
-            let _ = pipe.call("Browser.close", "{}");
-        }
     }
 }
 
@@ -453,65 +409,59 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ultra_instinct_refusals_are_named() {
-        assert_eq!(
-            refusal(r#"ticket invalid: needs-confirm: "Pay $18""#),
-            ToolFailure::NeedsConfirm {
-                label: "Pay $18".into()
-            }
-        );
-        assert_eq!(
-            refusal("domain-not-allowed: evil.example"),
-            ToolFailure::DomainNotAllowed("evil.example".into())
-        );
-        assert!(matches!(refusal("target-covered"), ToolFailure::Refused(_)));
-    }
-
-    #[test]
-    fn a_tool_error_maps_by_its_variant() {
-        let err = ToolError::InvalidArguments("no".into());
-        assert!(matches!(ToolFailure::from(err), ToolFailure::Invalid(_)));
-        let err = ToolError::Browser("socket".into());
-        assert!(matches!(ToolFailure::from(err), ToolFailure::Browser(_)));
-        let err = ToolError::TicketInvalid(r#"needs-confirm: "Delete""#.into());
-        assert_eq!(
-            ToolFailure::from(err),
-            ToolFailure::NeedsConfirm {
-                label: "Delete".into()
-            }
-        );
-    }
-
-    #[test]
     fn ultra_instinct_s_codes_map_one_to_one() {
-        let wire = |code: &str| serde_json::json!({"code": code, "message": "m"});
+        let wire = |code: &str| json!({"code": code, "message": "m"});
         let cases = [
             ("stale_ref", "Stale"),
             ("unknown_ref", "Stale"),
+            ("unknown_snapshot", "Stale"),
+            ("snapshot_evicted", "Stale"),
             ("target_gone", "TargetGone"),
             ("dialog_open", "DialogOpen"),
             ("timeout", "Timeout"),
             ("pipe_closed", "Closed"),
-            ("tool_not_allowed", "NotAllowed"),
+            ("frame_too_large", "TooLarge"),
+            ("output_too_large", "TooLarge"),
+            ("ticket_invalid", "Refused"),
+            ("secret_on_screen", "Refused"),
+            ("secrets_full", "Refused"),
             ("invalid_arguments", "Invalid"),
+            ("tool_not_allowed", "NotAllowed"),
+            ("snapshot_required", "NotAllowed"),
+            ("path_not_absolute", "NotAllowed"),
+            ("downloads_off", "NotAllowed"),
+            ("browser", "Browser"),
+            ("something_new", "Browser"),
         ];
         for (code, want) in cases {
-            let got = from_code(code, "m", &wire(code)).unwrap();
+            let got = from_code(code, "m".into(), &wire(code));
             assert!(format!("{got:?}").starts_with(want), "{code} -> {got:?}");
         }
-        let confirm = serde_json::json!({"code": "needs_confirm", "label": "Pay $18"});
+        let confirm = json!({"code": "needs_confirm", "label": "Pay $18"});
         assert_eq!(
-            from_code("needs_confirm", "m", &confirm),
-            Some(ToolFailure::NeedsConfirm {
+            from_code("needs_confirm", "m".into(), &confirm),
+            ToolFailure::NeedsConfirm {
                 label: "Pay $18".into()
-            })
+            }
         );
         // No label is no confirm.
         assert!(matches!(
-            from_code("needs_confirm", "m", &wire("needs_confirm")),
-            Some(ToolFailure::Refused(_))
+            from_code("needs_confirm", "m".into(), &wire("needs_confirm")),
+            ToolFailure::Refused(_)
         ));
-        assert!(from_code("something_new", "m", &wire("x")).is_none());
+        let host = json!({"code": "domain_not_allowed", "host": "evil.example"});
+        assert_eq!(
+            from_code("domain_not_allowed", "m".into(), &host),
+            ToolFailure::DomainNotAllowed("evil.example".into())
+        );
+    }
+
+    #[test]
+    fn a_tool_error_maps_by_its_code() {
+        let err = ToolError::InvalidArguments("no".into());
+        assert!(matches!(ToolFailure::from(err), ToolFailure::Invalid(_)));
+        let err = ToolError::Browser("socket".into());
+        assert!(matches!(ToolFailure::from(err), ToolFailure::Browser(_)));
     }
 
     #[test]
@@ -531,26 +481,22 @@ mod tests {
     }
 
     #[test]
-    fn pipe_errors_keep_their_kind() {
-        let closed = CdpError::PipeClosed {
-            message: "eof".into(),
-        };
-        assert!(matches!(failure_of(closed), ToolFailure::Closed(_)));
-        let gone = CdpError::TargetGone {
-            target_id: "T".into(),
-        };
-        assert!(matches!(failure_of(gone), ToolFailure::TargetGone(_)));
-        let dialog = CdpError::DialogOpened {
-            method: "Input.dispatchMouseEvent".into(),
-        };
-        assert!(matches!(failure_of(dialog), ToolFailure::DialogOpen(_)));
-        // And the same errors as a tool's text.
-        let tool = ToolError::Browser("CDP pipe closed: eof".into());
-        assert!(matches!(ToolFailure::from(tool), ToolFailure::Closed(_)));
-        let tool = ToolError::Browser("CDP target T detached or was destroyed".into());
-        assert!(matches!(
-            ToolFailure::from(tool),
-            ToolFailure::TargetGone(_)
-        ));
+    fn nothing_that_reads_a_field_or_touches_files_is_allowed() {
+        for never in [
+            "browser_exec",
+            "browser_javascript_exec",
+            "browser_get_html",
+            "browser_cookies",
+            "browser_storage",
+            "browser_set",
+            "browser_network",
+            "browser_download",
+            "browser_file_upload",
+            "browser_save_as_pdf",
+            "browser_keyboard",
+            "browser_hold_key",
+        ] {
+            assert!(!ALLOWED.contains(&never), "{never}");
+        }
     }
 }

@@ -572,6 +572,24 @@ bpost wait '{"text":"searched kid@example.com","timeout_ms":10000}'
 echo "wait ${code} ${body}"
 printf '%s' "${body}" | grep -q '"seen":true'
 
+# ultra-instinct marks the password field sensitive, and no field's text comes back.
+bpost snap '{}'
+[[ "${code}" == "200" ]]
+printf '%s' "${body}" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+email = [e for e in d["elements"] if e["label"] == "Email" and e["role"] == "text_field"]
+pw = [e for e in d["elements"] if e["label"] == "Password" and e["role"] == "text_field"]
+assert email and not any(e.get("sensitive") for e in email), email
+assert pw and all(e.get("sensitive") and "value" not in e for e in pw), pw
+print("the password field is sensitive, the email field is not, and neither has text")
+'
+if printf '%s' "${body}" | grep -q 'hunter2-smoke-pw'; then
+  echo "a password field's value came back" >&2
+  exit 1
+fi
+pay="$(ref_of 'Pay $18' button)"
+
 # A Pay click needs a person's confirm, and goes through with the token.
 bpost act "{\"ref\":\"${pay}\",\"action\":\"click\",\"allow_domains\":${allow}}"
 echo "pay ${code} ${body}"
@@ -625,9 +643,31 @@ echo "tabs list ${code}"
 printf '%s' "${body}" | grep -q "${new_tab}"
 bpost tabs "{\"op\":\"close\",\"tab_id\":\"${new_tab}\"}"
 [[ "${code}" == "200" ]]
-bpost run '{"goal":"Click Search"}'
+# A goal run: Instinct's loop on the current tab, under the call's allow-list and confirm rules.
+bpost run "{\"goal\":\"Click Search\",\"max_steps\":4,\"allow_domains\":${allow}}"
 echo "run ${code} ${body}"
-[[ "${code}" == "503" ]]
+[[ "${code}" == "200" ]]
+printf '%s' "${body}" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert d["outcome"] == "done", d
+assert any(s["target"] == "Search" for s in d["steps"]), d["steps"]
+print("run done in", len(d["steps"]), "step(s)")
+'
+# A run that would press Pay stops for a person's confirm, and goes on with the token.
+bpost run "{\"goal\":\"Click Pay \$18\",\"max_steps\":4,\"allow_domains\":${allow}}"
+echo "run pay ${code} ${body}"
+[[ "${code}" == "200" ]]
+run_token="$(printf '%s' "${body}" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert d["outcome"] == "blocked" and d["confirm_label"] == "Pay $18" and d["confirm"], d
+print(d["confirm"])
+')"
+bpost run "{\"goal\":\"Click Pay \$18\",\"max_steps\":4,\"confirm\":\"${run_token}\",\"allow_domains\":${allow}}"
+echo "run pay confirmed ${code} ${body}"
+[[ "${code}" == "200" ]]
+printf '%s' "${body}" | grep -q '"outcome":"done"'
 
 echo "==> a relaunched Chromium offers a fresh pipe, which box-exec takes on its next call"
 "${COMPOSE[@]}" exec -T -u box box sh -c 'kill -KILL "$(pgrep -u box -o -P "$(pgrep -u box -o -x box-chrome-pipe)" -x chromium)"'

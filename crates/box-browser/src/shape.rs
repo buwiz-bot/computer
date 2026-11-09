@@ -44,6 +44,9 @@ pub struct Seen {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Page {
+    /// ultra-instinct's snapshot of this state: an index press names it, and is refused
+    /// `stale_ref` when the element it showed has moved or changed since.
+    pub snapshot: Option<Value>,
     pub url: Option<String>,
     pub title: Option<String>,
     pub elements: Vec<Seen>,
@@ -138,6 +141,7 @@ pub fn page(answer: &Value) -> Result<Page, BrowserError> {
         });
     }
     Ok(Page {
+        snapshot: answer.get("snapshot").filter(|v| !v.is_null()).cloned(),
         url: text(answer, "url", MAX_URL_CHARS),
         title: text(answer, "title", MAX_LABEL_CHARS),
         total: answer
@@ -198,6 +202,48 @@ pub fn png_size(png: &[u8]) -> Option<(u32, u32)> {
     let width = u32::from_be_bytes(png[16..20].try_into().ok()?);
     let height = u32::from_be_bytes(png[20..24].try_into().ok()?);
     Some((width, height))
+}
+
+/// A JPEG's width and height, from its first start-of-frame marker (baseline, progressive or any
+/// other SOFn); `None` for anything that isn't a JPEG whose frame header can be read.
+pub fn jpeg_size(jpeg: &[u8]) -> Option<(u32, u32)> {
+    if jpeg.len() < 4 || jpeg[..2] != [0xFF, 0xD8] {
+        return None;
+    }
+    let mut at = 2;
+    while at + 4 <= jpeg.len() {
+        if jpeg[at] != 0xFF {
+            return None;
+        }
+        let marker = jpeg[at + 1];
+        // fill bytes, and markers with no length
+        if marker == 0xFF {
+            at += 1;
+            continue;
+        }
+        if marker == 0xD8 || marker == 0x01 || (0xD0..=0xD7).contains(&marker) {
+            at += 2;
+            continue;
+        }
+        let len = usize::from(u16::from_be_bytes([jpeg[at + 2], jpeg[at + 3]]));
+        if len < 2 {
+            return None;
+        }
+        // SOF0..SOF15, but not DHT (C4), JPG (C8) or DAC (CC)
+        let sof = (0xC0..=0xCF).contains(&marker) && !matches!(marker, 0xC4 | 0xC8 | 0xCC);
+        if sof {
+            let header = jpeg.get(at + 4..at + 9)?;
+            let height = u32::from(u16::from_be_bytes([header[1], header[2]]));
+            let width = u32::from(u16::from_be_bytes([header[3], header[4]]));
+            return (width > 0 && height > 0).then_some((width, height));
+        }
+        // the frame header comes before the scan's data
+        if marker == 0xDA {
+            return None;
+        }
+        at += 2 + len;
+    }
+    None
 }
 
 /// A list of origin names from an answer's `key`, each either a string or `{origin: …}`.

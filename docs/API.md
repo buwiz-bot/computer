@@ -419,7 +419,9 @@ How box-exec reaches each screen's tree, and why a command can't: [`ARCHITECTURE
 
 Each screen's Chromium, driven over its DevTools pipe through [ultra-instinct](https://github.com/hexuria/ultra-instinct): ultra-instinct reads the page (DOM and accessibility tree), and every press goes through its gate and a one-shot ticket bound to what it saw. All eight routes are `POST` on `box-exec`, take the token, and take `?display=:N` for another screen, as `/v1/cua/*` do. The pipe is `box-exec`'s alone, never a command's: [USERS.md](USERS.md).
 
-**Not yet.** `POST /v1/browser/run` answers `503 browser_unavailable` until ultra-instinct has a goal loop on the pipe. Every other route works. The tabs a call drives are the browser's page tabs: the first one, until `tabs open` or `switch` picks another. A tab a person opens by hand isn't driven until it's switched to.
+**Tabs.** The tabs a call drives are the browser's page tabs: the first one, until `tabs open` or `switch` picks another. A tab a person opens by hand isn't driven until it's switched to.
+
+**Presses are bound to what was seen.** Every `act` presses the element in the state ultra-instinct read just before it: if that element moved, changed or left the page in between, nothing is pressed and the answer is `409 stale_ref`.
 
 **Limits.** Every call has a time budget (45 s; a wait or a run gets its own `timeout_ms` plus 15 s). Past it the answer is `504 browser_timeout`, and calls queue behind the one still running: past 4 waiting, `429 busy`. Every answer is bounded: labels at 160 characters, addresses at 2048, a field's text at 400, 8 actions per element, 100 tabs, a screenshot at 8 MiB, anything else at 4 MiB of JSON.
 
@@ -447,7 +449,7 @@ Each screen's Chromium, driven over its DevTools pipe through [ultra-instinct](h
 
 - **Confirm.** A click on an element whose label matches `BOX_BROWSER_CONFIRM_PRESS` (comma list of globs; default `Pay*,Delete*,Buy*,Place order*`; empty confirms nothing) is refused with `409 confirm_required`, `error.details.label` and a one-time token, `error.details.confirm`. A person approves the label, and the caller sends the token back as `confirm`. A token is good once, for that element, on that screen, for 10 minutes, and only while the label is the one approved.
 - **Allowed domains.** `allow_domains` (`shop.example`, `*.shop.example`), sent with each call that gives input or goes somewhere. Off the list, `navigate` and `tabs open` refuse the address and `act` refuses the page, `403 domain_not_allowed` with `error.details.host`. Absent or empty is no restriction. It's per call, not kept per screen: the broker names the Bot and its list from its own records with every call, as it does `bot`, so nothing a screen kept from one Bot can reach the next one to use it, and a goal run's list covers every step of it.
-- **Passwords.** A password field's text is never returned. `value` comes only for a field whose input type is known and isn't `password` or `hidden`; a field that is, or may be, a password's is `sensitive: true`.
+- **Secrets.** A field is `sensitive: true` when it's a password, hidden or file input, when its label names a secret (password, PIN, CVV, card, one-time code, …), or when its input type can't be read. A sensitive field's text is never returned. `value` would come only for a field whose input type is known and isn't one of those, and ultra-instinct's page state carries no field's text today, so no `value` comes at all. Text typed into a sensitive field is masked as `••••` in every later answer, a page that echoes it included, and `shot` hides sensitive fields' text while it captures, or refuses with `422 action_refused` and captures nothing.
 
 ### `POST /v1/browser/snap`
 
@@ -524,7 +526,7 @@ Instinct runs ultra-instinct's loop on the current tab: observe, choose or absta
   "steps": [ { "action": "type", "target": "Search", "effect": "success" } ], "elapsed_ms": 2310 }
 ```
 
-`outcome` is `done`, `blocked` (`reason`, and `confirm_label` with a `confirm` token when a person may approve it: run again with `confirm`), `abstained` (`why`) or `failed` (`why`). `steps` are the verified ones, at most 50. Within a run the allow-list and the confirm globs are ultra-instinct's guard's to enforce: `box-exec` hands it both, but doesn't see a step before it happens.
+`outcome` is `done`, `blocked` (`reason`, and `confirm_label` with a `confirm` token when a person may approve it: run again with `confirm`), `abstained` (`why`) or `failed` (`why`, which says when `max_steps` or `timeout_ms` ran out). `steps` are the verified ones, at most 50. Within a run the allow-list and the confirm globs are ultra-instinct's guard's to enforce: `box-exec` hands it both, but doesn't see a step before it happens. A blocked run gets a `confirm` only when its label matches `BOX_BROWSER_CONFIRM_PRESS`: one stopped by the allow-list gets none, since a confirm can't let it through. What a run typed is never returned.
 
 ### `POST /v1/browser/state`
 

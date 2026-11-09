@@ -1155,8 +1155,11 @@ mod browser_routes {
                     {"index": 1, "region": "n1", "role": "button", "label": "Search",
                      "actions": ["click"], "rect": {"x": 0, "y": 0, "w": 10, "h": 10}},
                     {"index": 2, "region": "n2", "role": "button", "label": "Pay $18",
-                     "actions": ["click"], "rect": {"x": 0, "y": 20, "w": 10, "h": 10}}]}),
+                     "actions": ["click"], "rect": {"x": 0, "y": 20, "w": 10, "h": 10}}],
+                    "snapshot": "s1"}),
                 "browser_click" => {
+                    // a press names the state it was read in
+                    assert_eq!(args["snapshot"], "s1");
                     json!({"acted": "click", "index": args["index"], "region": format!("n{}", args["index"]), "ticket": 3})
                 }
                 other => return Err(ToolFailure::Invalid(format!("not faked: {other}"))),

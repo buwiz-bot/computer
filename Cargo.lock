@@ -850,7 +850,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1214,7 +1214,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1654,7 +1654,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1939,7 +1939,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2235,7 +2235,7 @@ dependencies = [
 [[package]]
 name = "ultra-instinct-agent"
 version = "0.1.0"
-source = "git+https://github.com/hexuria/ultra-instinct?rev=f4cfa1bca25310b6742ef6acf8ac911404e23bfc#f4cfa1bca25310b6742ef6acf8ac911404e23bfc"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=851536ff8ae12fae7646e065d67004a2871e686d#851536ff8ae12fae7646e065d67004a2871e686d"
 dependencies = [
  "ultra-instinct-browser",
  "ultra-instinct-core",
@@ -2248,7 +2248,7 @@ dependencies = [
 [[package]]
 name = "ultra-instinct-browser"
 version = "0.1.0"
-source = "git+https://github.com/hexuria/ultra-instinct?rev=f4cfa1bca25310b6742ef6acf8ac911404e23bfc#f4cfa1bca25310b6742ef6acf8ac911404e23bfc"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=851536ff8ae12fae7646e065d67004a2871e686d#851536ff8ae12fae7646e065d67004a2871e686d"
 dependencies = [
  "serde",
  "serde_json",
@@ -2260,9 +2260,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ultra-instinct-browser-tools"
+version = "0.1.0"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=851536ff8ae12fae7646e065d67004a2871e686d#851536ff8ae12fae7646e065d67004a2871e686d"
+dependencies = [
+ "base64 0.23.1",
+ "serde_json",
+ "ultra-instinct-agent",
+ "ultra-instinct-browser",
+ "ultra-instinct-cdp",
+ "ultra-instinct-core",
+ "ultra-instinct-guard",
+ "ultra-instinct-observe",
+ "ultra-instinct-policy",
+ "ultra-instinct-protocol",
+]
+
+[[package]]
 name = "ultra-instinct-cdp"
 version = "0.1.0"
-source = "git+https://github.com/hexuria/ultra-instinct?rev=f4cfa1bca25310b6742ef6acf8ac911404e23bfc#f4cfa1bca25310b6742ef6acf8ac911404e23bfc"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=851536ff8ae12fae7646e065d67004a2871e686d#851536ff8ae12fae7646e065d67004a2871e686d"
 dependencies = [
  "rustix",
  "serde_json",
@@ -2272,12 +2289,12 @@ dependencies = [
 [[package]]
 name = "ultra-instinct-core"
 version = "0.1.0"
-source = "git+https://github.com/hexuria/ultra-instinct?rev=f4cfa1bca25310b6742ef6acf8ac911404e23bfc#f4cfa1bca25310b6742ef6acf8ac911404e23bfc"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=851536ff8ae12fae7646e065d67004a2871e686d#851536ff8ae12fae7646e065d67004a2871e686d"
 
 [[package]]
 name = "ultra-instinct-geometry"
 version = "0.1.0"
-source = "git+https://github.com/hexuria/ultra-instinct?rev=f4cfa1bca25310b6742ef6acf8ac911404e23bfc#f4cfa1bca25310b6742ef6acf8ac911404e23bfc"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=851536ff8ae12fae7646e065d67004a2871e686d#851536ff8ae12fae7646e065d67004a2871e686d"
 dependencies = [
  "ultra-instinct-core",
 ]
@@ -2285,7 +2302,7 @@ dependencies = [
 [[package]]
 name = "ultra-instinct-guard"
 version = "0.1.0"
-source = "git+https://github.com/hexuria/ultra-instinct?rev=f4cfa1bca25310b6742ef6acf8ac911404e23bfc#f4cfa1bca25310b6742ef6acf8ac911404e23bfc"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=851536ff8ae12fae7646e065d67004a2871e686d#851536ff8ae12fae7646e065d67004a2871e686d"
 dependencies = [
  "ultra-instinct-core",
  "ultra-instinct-geometry",
@@ -2295,24 +2312,25 @@ dependencies = [
 [[package]]
 name = "ultra-instinct-mcp"
 version = "0.1.0"
-source = "git+https://github.com/hexuria/ultra-instinct?rev=f4cfa1bca25310b6742ef6acf8ac911404e23bfc#f4cfa1bca25310b6742ef6acf8ac911404e23bfc"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=851536ff8ae12fae7646e065d67004a2871e686d#851536ff8ae12fae7646e065d67004a2871e686d"
 dependencies = [
- "base64 0.23.1",
  "serde_json",
  "ultra-instinct-agent",
  "ultra-instinct-browser",
+ "ultra-instinct-browser-tools",
  "ultra-instinct-cdp",
  "ultra-instinct-core",
  "ultra-instinct-geometry",
  "ultra-instinct-guard",
  "ultra-instinct-observe",
+ "ultra-instinct-policy",
  "ultra-instinct-protocol",
 ]
 
 [[package]]
 name = "ultra-instinct-observe"
 version = "0.1.0"
-source = "git+https://github.com/hexuria/ultra-instinct?rev=f4cfa1bca25310b6742ef6acf8ac911404e23bfc#f4cfa1bca25310b6742ef6acf8ac911404e23bfc"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=851536ff8ae12fae7646e065d67004a2871e686d#851536ff8ae12fae7646e065d67004a2871e686d"
 dependencies = [
  "ultra-instinct-core",
 ]
@@ -2320,7 +2338,7 @@ dependencies = [
 [[package]]
 name = "ultra-instinct-policy"
 version = "0.1.0"
-source = "git+https://github.com/hexuria/ultra-instinct?rev=f4cfa1bca25310b6742ef6acf8ac911404e23bfc#f4cfa1bca25310b6742ef6acf8ac911404e23bfc"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=851536ff8ae12fae7646e065d67004a2871e686d#851536ff8ae12fae7646e065d67004a2871e686d"
 dependencies = [
  "instinct-core",
  "instinct-lexicon",
@@ -2331,7 +2349,7 @@ dependencies = [
 [[package]]
 name = "ultra-instinct-protocol"
 version = "0.1.0"
-source = "git+https://github.com/hexuria/ultra-instinct?rev=f4cfa1bca25310b6742ef6acf8ac911404e23bfc#f4cfa1bca25310b6742ef6acf8ac911404e23bfc"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=851536ff8ae12fae7646e065d67004a2871e686d#851536ff8ae12fae7646e065d67004a2871e686d"
 dependencies = [
  "ultra-instinct-core",
 ]
@@ -2516,7 +2534,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
