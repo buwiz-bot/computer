@@ -225,13 +225,38 @@ async fn checked(response: Response<Incoming>) -> Result<Response<Incoming>, Cua
     if status.is_success() {
         return Ok(response);
     }
-    let said = String::from_utf8_lossy(&small_body(response).await?).into_owned();
+    let said = refusal(response).await;
     Err(match status {
         StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND | StatusCode::CONFLICT => {
             CuaError::Invalid(format!("voxl refused: {said}"))
         }
         _ => CuaError::Viewer(format!("voxl answered {status}: {said}")),
     })
+}
+
+/// What a refusal says: at most [`MAX_ANSWER`] bytes of it, with `…` where it was cut. Its status
+/// is what classifies it, so a body too long or broken to read only loses words.
+async fn refusal(response: Response<Incoming>) -> String {
+    let mut body = response.into_body();
+    let mut said = Vec::new();
+    let mut cut = false;
+    while let Some(Ok(frame)) = body.frame().await {
+        let Ok(data) = frame.into_data() else {
+            continue;
+        };
+        let room = MAX_ANSWER - said.len();
+        if data.len() > room {
+            said.extend_from_slice(&data[..room]);
+            cut = true;
+            break;
+        }
+        said.extend_from_slice(&data);
+    }
+    let mut said = String::from_utf8_lossy(&said).into_owned();
+    if cut {
+        said.push('…');
+    }
+    said
 }
 
 /// The whole body, if it is at most [`MAX_ANSWER`] bytes.
@@ -422,6 +447,29 @@ mod tests {
         let (port, _seen) = fake_voxl(reply).await;
         let err = client().record_start_on(port).await.unwrap_err();
         assert!(matches!(err, CuaError::Viewer(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn an_oversize_refusal_keeps_its_status() {
+        let reply: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 404 Not Found\r\ncontent-length: {n}\r\nconnection: close\r\n\r\n{}",
+                "x".repeat(MAX_ANSWER + 10),
+                n = MAX_ANSWER + 10
+            )
+            .into_boxed_str(),
+        );
+        let (port, _seen) = fake_voxl(reply).await;
+        let dir = tempfile::tempdir().unwrap();
+        let err = client()
+            .record_stop_on(port, 9, &dir.path().join("x.mp4"))
+            .await
+            .unwrap_err();
+        let CuaError::Invalid(said) = err else {
+            panic!("{err:?}");
+        };
+        assert!(said.ends_with('…'));
+        assert!(said.len() <= MAX_ANSWER + 64);
     }
 
     #[test]
