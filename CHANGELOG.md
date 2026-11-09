@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+| Item | Where |
+| --- | --- |
+| `hexuria/box` is frozen. `buwiz-bot/computer` is the one name for this repo, the image (`ghcr.io/buwiz-bot/computer`) and the docs | everywhere |
+| Docs match the code: the Compose healthcheck is the public `/v1/health` with no token, `pids_limit` is 2048, `BOX_HOST_TOKEN` replaces `BOX_TOKEN` on every host route, the CLI shows the token as `BUWIZ_COMPUTER_TOKEN` and not in argv, the `connect(...)` examples handle its `Result`, token rotation goes through `scripts/write-secrets.sh`, the deploy doc clones into `computer` | `README.md`, `docs/` |
+| `docs/CLI.md`, generated from `--help` by `scripts/gen-cli-docs.sh`; CI fails when it is stale (`scripts/check-cli-docs.sh`) | `docs/CLI.md`, `scripts/`, `.github/workflows/ci.yml` |
+| `GET /v1/chrome/active-tab` is in the API doc, the OpenAPI spec and both SDKs (`activeTab`, `active_tab`), with its trust limit | `docs/API.md`, `docs/openapi.yaml`, `sdk/` |
+| Documented: `BOX_EGRESS_ALLOW_PRIVATE`, `BOX_EGRESS_RELAY_PORTS` and that the address filter applies to every relay; `BOX_SHARED_DISPLAY`, `BOX_SCREEN_WORKSPACE`, `BOX_VIEWER_CTL`, `BOX_EGRESS_BEARER_STAGED`, `BOX_MAX_OWN_SCREENS` and the exec size and timeout limits; the helpers `box-active-tab`, `box-refresh-extension` and `box-screen` | `README.md`, `docs/EGRESS.md`, `docs/ARCHITECTURE.md` |
+| `docs/review/findings-box30.md` says which findings are fixed and which are open; `docs/REVIEW-STATUS.md` is current | `docs/review/`, `docs/REVIEW-STATUS.md` |
+| Startup refuses a `BOX_TOKEN` or `BOX_VIEWER_PASSWORD` containing `replace-with` (the `.env.example` placeholders), even with `BOX_ALLOW_INSECURE_DEV=1` | `crates/box-common` |
+| The Rust client and the CLI time out a request after 120 s by default; the limit is configurable | `crates/buwiz-computer` |
+| The ready check times out its X probe, and a missing `xdpyinfo` means not ready | `crates/box-desktop`, `crates/box-host` |
+| A malformed `BOX_*_BIND` or numeric `BOX_*` value is a startup error, not a silent default | `crates/box-common` |
+| The egress client has a dial timeout, and `probe_egress` no longer blocks an async handler | `crates/box-egress-tunnel` |
+
 ## The Bot's computer
 
 Imported from `hexuria/box` at `64f2b13` with its history, as `buwiz-bot/computer`.
@@ -32,7 +48,6 @@ Compose's `pids_limit` is 2048. Measured per screen with Chromium: about 510 MiB
 - voxl letting go of held keys when a viewer leaves is read from its source, not tested live.
 - Screens are not a security boundary: exec reaches every screen and folder.
 - A secret on a read-only mount, Compose's included, stays readable to anything running as the box user. Only staging on a writable mount closes that. Moving secrets to another uid would need `CAP_SETUID` and a split between `box-exec` and its children.
-- The box's own Chromium keeps its DevTools port on the box's loopback, open to any exec child.
 
 **Breaking:** `BOX_VNC_PASSWORD` is now `BOX_VIEWER_PASSWORD`, with no fallback; `BOX_VNC_BIND`, `BOX_NOVNC_PORT` and port 6080 are gone; `/v1/desktop` lost `vnc`; the entrypoint is now `box-keeper`, so a start with `_FILE` set and no file there fails; Compose's healthcheck is the public `/v1/health`; default cook folder moved from `.l1/cooks` to `<screen folder>/cooks`.
 
@@ -106,4 +121,3 @@ Guest honesty and wire parity against BOX-REVIEW P0 → P1 (selective P2). Basel
 ## Deferred
 
 - PTY exec (use `/v1/exec/stream`)
-- Moving `ensurebox/` / `l1/` out of this repo (marked frozen demos / non-product)
