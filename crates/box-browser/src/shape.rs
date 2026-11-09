@@ -6,8 +6,11 @@ use serde_json::Value;
 
 use crate::{BrowserError, Rect};
 
-/// Characters kept of a label, a role, a title or an address.
+/// Characters of a label, a role or a title an answer shows.
 pub const MAX_LABEL_CHARS: usize = 160;
+/// Characters of a label kept to check and confirm by: the guard compares the whole label, so one
+/// clipped to what an answer shows could never be confirmed. Past this, a label is clipped too.
+pub const MAX_KEPT_LABEL_CHARS: usize = 4096;
 pub const MAX_URL_CHARS: usize = 2048;
 /// Characters kept of a field's text.
 pub const MAX_VALUE_CHARS: usize = 400;
@@ -35,6 +38,7 @@ pub struct Seen {
     /// ultra-instinct's stable region id: what a ref is checked against.
     pub region: String,
     pub role: String,
+    /// Whole, up to [`MAX_KEPT_LABEL_CHARS`]: clip it to [`MAX_LABEL_CHARS`] to show it.
     pub label: String,
     pub actions: Vec<String>,
     pub rect: Rect,
@@ -118,7 +122,7 @@ pub fn page(answer: &Value) -> Result<Page, BrowserError> {
             index: usize::try_from(index).unwrap_or(usize::MAX),
             region: region.to_string(),
             role,
-            label: text(el, "label", MAX_LABEL_CHARS).unwrap_or_default(),
+            label: text(el, "label", MAX_KEPT_LABEL_CHARS).unwrap_or_default(),
             actions: el
                 .get("actions")
                 .and_then(Value::as_array)
@@ -299,13 +303,16 @@ mod tests {
 
     #[test]
     fn strings_are_clipped_and_lists_cut() {
-        let long = "x".repeat(MAX_LABEL_CHARS * 3);
+        let long = "x".repeat(MAX_KEPT_LABEL_CHARS * 3);
         let answer = json!({
             "elements": [{"index": 1, "region": "n1", "role": "button", "label": long,
                           "actions": ["a","b","c","d","e","f","g","h","i","j"]}]
         });
         let page = page(&answer).unwrap();
-        assert_eq!(page.elements[0].label.chars().count(), MAX_LABEL_CHARS + 1);
+        assert_eq!(
+            page.elements[0].label.chars().count(),
+            MAX_KEPT_LABEL_CHARS + 1
+        );
         assert_eq!(page.elements[0].actions.len(), MAX_ACTIONS);
         assert_eq!(page.total, 1);
     }

@@ -5,6 +5,13 @@
  * Docker and never treats `/v1/info` advertised URLs as the dial address.
  */
 
+/**
+ * How long a browser call (snap, act, navigate, tabs, shot, state) is waited for: box-exec's own
+ * 45 s budget for one, and a margin. A client that gave up sooner could retry a press that still
+ * landed.
+ */
+export const BROWSER_CALL_MS = 60_000;
+
 export class BuwizComputerError extends Error {
   readonly status: number;
   readonly body: unknown;
@@ -705,7 +712,7 @@ export class BuwizComputer {
 
   /** The current tab's controls, each with an `@eN` ref good for this snapshot alone. */
   async browserSnap(request: { max_nodes?: number } = {}, display?: string): Promise<BrowserSnapResponse> {
-    return this.authJson("POST", onScreen(`${this.execUrl}/v1/browser/snap`, display), request);
+    return this.authJson("POST", onScreen(`${this.execUrl}/v1/browser/snap`, display), request, BROWSER_CALL_MS);
   }
 
   /**
@@ -715,18 +722,18 @@ export class BuwizComputer {
    * `error.details.confirm`.
    */
   async browserAct(request: BrowserActRequest, display?: string): Promise<BrowserActResponse> {
-    return this.authJson("POST", onScreen(`${this.execUrl}/v1/browser/act`, display), request);
+    return this.authJson("POST", onScreen(`${this.execUrl}/v1/browser/act`, display), request, BROWSER_CALL_MS);
   }
 
   async browserNavigate(
     request: { url: string; allow_domains?: AllowDomains },
     display?: string,
   ): Promise<{ ok: boolean; url: string }> {
-    return this.authJson("POST", onScreen(`${this.execUrl}/v1/browser/navigate`, display), request);
+    return this.authJson("POST", onScreen(`${this.execUrl}/v1/browser/navigate`, display), request, BROWSER_CALL_MS);
   }
 
   async browserTabs(request: BrowserTabsRequest, display?: string): Promise<BrowserTabsResponse> {
-    return this.authJson("POST", onScreen(`${this.execUrl}/v1/browser/tabs`, display), request);
+    return this.authJson("POST", onScreen(`${this.execUrl}/v1/browser/tabs`, display), request, BROWSER_CALL_MS);
   }
 
   async browserWait(
@@ -742,7 +749,7 @@ export class BuwizComputer {
   }
 
   async browserShot(display?: string): Promise<BrowserShotResponse> {
-    return this.authJson("POST", onScreen(`${this.execUrl}/v1/browser/shot`, display), {});
+    return this.authJson("POST", onScreen(`${this.execUrl}/v1/browser/shot`, display), {}, BROWSER_CALL_MS);
   }
 
   /** Instinct runs the goal until it's done, blocked or abstains, or a bound runs out. */
@@ -760,7 +767,7 @@ export class BuwizComputer {
     request: { op: "save" | "load"; name?: string },
     display?: string,
   ): Promise<BrowserStateResponse> {
-    return this.authJson("POST", onScreen(`${this.execUrl}/v1/browser/state`, display), request);
+    return this.authJson("POST", onScreen(`${this.execUrl}/v1/browser/state`, display), request, BROWSER_CALL_MS);
   }
 
   private async publicJson(url: string): Promise<unknown> {

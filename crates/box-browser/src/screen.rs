@@ -138,7 +138,11 @@ impl Screen {
         match failure {
             ToolFailure::Invalid(m) => BrowserError::Invalid(m),
             ToolFailure::NeedsConfirm { label } => match self.confirms.issue(&label, target) {
-                Ok(token) => BrowserError::ConfirmRequired { label, token },
+                // the token holds the label whole; the answer shows it as a snap does
+                Ok(token) => BrowserError::ConfirmRequired {
+                    label: shape::clip(&label, shape::MAX_LABEL_CHARS),
+                    token,
+                },
                 Err(err) => err,
             },
             ToolFailure::DomainNotAllowed(host) => {
@@ -229,7 +233,7 @@ impl Screen {
             .map(|e| Element {
                 reference: format!("@e{}", e.index),
                 role: e.role.clone(),
-                label: e.label.clone(),
+                label: shape::clip(&e.label, shape::MAX_LABEL_CHARS),
                 actions: e.actions.clone(),
                 rect: e.rect,
                 sensitive: e.sensitive,
@@ -311,12 +315,13 @@ impl Screen {
         match (self.gate(req, &here.label, &snapped_label, &now), redeemed) {
             // A token confirms the label it was given for, and nothing it has turned into.
             (Some(label), Some(approved)) if approved == label => confirmed.push(approved),
-            (Some(label), redeemed) => {
-                if let (Some(token), Some(_)) = (token, redeemed) {
-                    self.confirms.spend(token);
-                }
+            // a token for another label stays as it was: it confirms only that label, here
+            (Some(label), _) => {
                 let token = self.confirms.issue(&label, Some(&region))?;
-                return Err(BrowserError::ConfirmRequired { label, token });
+                return Err(BrowserError::ConfirmRequired {
+                    label: shape::clip(&label, shape::MAX_LABEL_CHARS),
+                    token,
+                });
             }
             // One the guard asked for, on this element: the submit button of the form an Enter
             // would send, say. The guard checks the label again on its own fresh look, and asks

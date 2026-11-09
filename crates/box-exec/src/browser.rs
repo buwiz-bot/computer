@@ -2,6 +2,7 @@
 //! (`box_browser`). `?display=:N` picks the screen, as on `/v1/cua/*`. The pipe's other end is
 //! this process's alone, never a command's: see docs/USERS.md.
 
+use axum::body::Bytes;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::Json;
@@ -62,13 +63,24 @@ fn screen(state: &AppState, on: &OnScreen) -> Result<String, ApiError> {
     Ok(cua.display)
 }
 
+/// A body that may be left out: none, or only whitespace, is the defaults. Anything else must be
+/// the request's JSON, whatever its `Content-Type` says, so a body is never quietly dropped.
+fn optional_body<T: serde::de::DeserializeOwned + Default>(body: &Bytes) -> Result<T, ApiError> {
+    if body.iter().all(u8::is_ascii_whitespace) {
+        return Ok(T::default());
+    }
+    serde_json::from_slice(body).map_err(|err| {
+        ApiError::invalid_request(format!("the body isn't this route's JSON: {err}"))
+    })
+}
+
 pub async fn snap_handler(
     State(state): State<AppState>,
     Query(on): Query<OnScreen>,
-    req: Option<Json<SnapRequest>>,
+    body: Bytes,
 ) -> Result<Json<SnapResponse>, ApiError> {
+    let req: SnapRequest = optional_body(&body)?;
     let display = screen(&state, &on)?;
-    let req = req.map(|Json(req)| req).unwrap_or_default();
     state
         .browser
         .snap(&display, req)
@@ -122,10 +134,10 @@ pub async fn tabs_handler(
 pub async fn wait_handler(
     State(state): State<AppState>,
     Query(on): Query<OnScreen>,
-    req: Option<Json<WaitRequest>>,
+    body: Bytes,
 ) -> Result<Json<WaitResponse>, ApiError> {
+    let req: WaitRequest = optional_body(&body)?;
     let display = screen(&state, &on)?;
-    let req = req.map(|Json(req)| req).unwrap_or_default();
     state
         .browser
         .wait(&display, req)
@@ -189,4 +201,21 @@ fn state_owner(display: &str) -> Result<String, ApiError> {
         .strip_prefix("agents/")
         .map(str::to_string)
         .ok_or_else(|| ApiError::not_found(format!("no Bot holds {display}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_body_is_its_json_or_nothing() {
+        let wait: WaitRequest = optional_body(&Bytes::from_static(b"")).unwrap();
+        assert!(wait.text.is_none());
+        let wait: WaitRequest = optional_body(&Bytes::from_static(b" \n")).unwrap();
+        assert!(wait.text.is_none());
+        let wait: WaitRequest =
+            optional_body(&Bytes::from_static(br#"{"text":"Order placed"}"#)).unwrap();
+        assert_eq!(wait.text.as_deref(), Some("Order placed"));
+        assert!(optional_body::<WaitRequest>(&Bytes::from_static(b"text=Order")).is_err());
+    }
 }

@@ -1193,3 +1193,24 @@ fn no_press_goes_out_without_time_to_answer() {
         .act(&act("@e1", ActAction::Click, None), &allow)
         .unwrap();
 }
+
+#[tokio::test]
+async fn a_long_label_is_confirmed_whole() {
+    let h = harness();
+    let long = format!("Pay {}", "now and forever ".repeat(20));
+    h.world.lock().unwrap().elements[3] = button(4, "n40", &long);
+    let snap = h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    assert!(snap.elements[3].label.chars().count() <= crate::shape::MAX_LABEL_CHARS + 1);
+    let Err(BrowserError::ConfirmRequired { label, token }) = h
+        .browsers
+        .act(":1", act("@e4", ActAction::Click, None))
+        .await
+    else {
+        panic!("Pay went through");
+    };
+    assert!(label.chars().count() <= crate::shape::MAX_LABEL_CHARS + 1);
+    let mut approved = act("@e4", ActAction::Click, None);
+    approved.confirm = Some(token);
+    h.browsers.act(":1", approved).await.unwrap();
+    assert_eq!(calls_of(&h, "browser_click")[0]["confirm"], json!(long));
+}
