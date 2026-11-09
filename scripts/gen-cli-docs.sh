@@ -17,7 +17,7 @@ fi
 
 export COLUMNS=100 NO_COLOR=1 CLICOLOR=0
 # Help must not depend on the caller's environment.
-unset BUWIZ_COMPUTER_EXEC_URL BUWIZ_COMPUTER_HOST_URL BUWIZ_COMPUTER_TOKEN
+unset BUWIZ_COMPUTER_EXEC_URL BUWIZ_COMPUTER_HOST_URL BUWIZ_COMPUTER_TOKEN BUWIZ_COMPUTER_REQUEST_TIMEOUT_SECS
 
 # Print the subcommand names listed in a help text, skipping clap's own `help`.
 subcommands() {
@@ -47,7 +47,9 @@ cat >"${TMP}" <<'HEAD'
 
 `buwiz-computer` is the connect-only command line client. This page is generated from `--help` by `scripts/gen-cli-docs.sh`; CI fails when it is out of date (`scripts/check-cli-docs.sh`). Do not edit it by hand.
 
-The three connection flags have environment forms (`BUWIZ_COMPUTER_EXEC_URL`, `BUWIZ_COMPUTER_HOST_URL`, `BUWIZ_COMPUTER_TOKEN`). Prefer the environment for the token: argv shows in `ps`.
+The global flags have environment forms (`BUWIZ_COMPUTER_EXEC_URL`, `BUWIZ_COMPUTER_HOST_URL`, `BUWIZ_COMPUTER_TOKEN`, `BUWIZ_COMPUTER_REQUEST_TIMEOUT_SECS`). Prefer the environment for the token: argv shows in `ps`.
+
+`--request-timeout-secs` (default 120) bounds each request's whole round trip; an `exec` with `--timeout-ms` gets at least that plus 35 s, and a `cua wait` at least its own wait plus 5 s. In the library these are `BuwizComputer::with_timeout(Duration)`, `DEFAULT_TIMEOUT`, `EXEC_MARGIN` and `WAIT_MARGIN`, and running out is `Error::Timeout`.
 
 HEAD
 

@@ -76,7 +76,7 @@ Live view: `http://127.0.0.1:6901/` (loopback publish). voxl asks for `BOX_VIEWE
 
 After the guest is up, your orchestrator already has an exec URL, host URL, and token. Point the client at those. The SDKs **do not** start Docker and **ignore** `/v1/info` advertised URLs (those are container-local listen addresses).
 
-The token goes in the environment, not argv, where `ps` would show it. Every flag has an environment form: `BUWIZ_COMPUTER_EXEC_URL`, `BUWIZ_COMPUTER_HOST_URL`, `BUWIZ_COMPUTER_TOKEN`.
+The token goes in the environment, not argv, where `ps` would show it. Every global flag has an environment form: `BUWIZ_COMPUTER_EXEC_URL`, `BUWIZ_COMPUTER_HOST_URL`, `BUWIZ_COMPUTER_TOKEN`, `BUWIZ_COMPUTER_REQUEST_TIMEOUT_SECS`.
 
 ```bash
 export BUWIZ_COMPUTER_TOKEN="$BOX_TOKEN"
@@ -86,7 +86,7 @@ cargo run -p buwiz-computer -- \
   exec -- echo ok
 ```
 
-Every subcommand and flag is in [CLI.md](docs/CLI.md). The client gives up on a request after a default per-request timeout of 120 s; it is configurable (see CLI.md).
+Every subcommand and flag is in [CLI.md](docs/CLI.md). Each request has a bound on its whole round trip: `DEFAULT_TIMEOUT`, 120 s, unless the CLI's global `--request-timeout-secs` (env `BUWIZ_COMPUTER_REQUEST_TIMEOUT_SECS`) or the library's `BuwizComputer::with_timeout(Duration)` sets another. An exec with `timeout_ms` gets at least that plus `EXEC_MARGIN` (35 s), and a `cua wait` at least its own wait plus `WAIT_MARGIN` (5 s). A request that runs out of time is `Error::Timeout`.
 
 Workspace packages (not published):
 

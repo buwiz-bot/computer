@@ -2,14 +2,16 @@
 
 `buwiz-computer` is the connect-only command line client. This page is generated from `--help` by `scripts/gen-cli-docs.sh`; CI fails when it is out of date (`scripts/check-cli-docs.sh`). Do not edit it by hand.
 
-The three connection flags have environment forms (`BUWIZ_COMPUTER_EXEC_URL`, `BUWIZ_COMPUTER_HOST_URL`, `BUWIZ_COMPUTER_TOKEN`). Prefer the environment for the token: argv shows in `ps`.
+The global flags have environment forms (`BUWIZ_COMPUTER_EXEC_URL`, `BUWIZ_COMPUTER_HOST_URL`, `BUWIZ_COMPUTER_TOKEN`, `BUWIZ_COMPUTER_REQUEST_TIMEOUT_SECS`). Prefer the environment for the token: argv shows in `ps`.
+
+`--request-timeout-secs` (default 120) bounds each request's whole round trip; an `exec` with `--timeout-ms` gets at least that plus 35 s, and a `cua wait` at least its own wait plus 5 s. In the library these are `BuwizComputer::with_timeout(Duration)`, `DEFAULT_TIMEOUT`, `EXEC_MARGIN` and `WAIT_MARGIN`, and running out is `Error::Timeout`.
 
 ## `buwiz-computer`
 
 ```text
 Connect-only CLI for a running buwiz-computer guest
 
-Usage: buwiz-computer --exec-url <EXEC_URL> --host-url <HOST_URL> --token <TOKEN> <COMMAND>
+Usage: buwiz-computer [OPTIONS] --exec-url <EXEC_URL> --host-url <HOST_URL> --token <TOKEN> <COMMAND>
 
 Commands:
   health       GET exec and host /v1/health
@@ -31,11 +33,18 @@ Commands:
   help         Print this message or the help of the given subcommand(s)
 
 Options:
-      --exec-url <EXEC_URL>  Published box-exec base URL (not /v1/info) [env: BUWIZ_COMPUTER_EXEC_URL=]
-      --host-url <HOST_URL>  Published box-host base URL (not /v1/info) [env: BUWIZ_COMPUTER_HOST_URL=]
-      --token <TOKEN>        Guest bearer token (BOX_TOKEN) [env: BUWIZ_COMPUTER_TOKEN=]
-  -h, --help                 Print help
-  -V, --version              Print version
+      --exec-url <EXEC_URL>
+          Published box-exec base URL (not /v1/info) [env: BUWIZ_COMPUTER_EXEC_URL=]
+      --host-url <HOST_URL>
+          Published box-host base URL (not /v1/info) [env: BUWIZ_COMPUTER_HOST_URL=]
+      --token <TOKEN>
+          Guest bearer token (BOX_TOKEN) [env: BUWIZ_COMPUTER_TOKEN=]
+      --request-timeout-secs <REQUEST_TIMEOUT_SECS>
+          Bound on each request's whole round trip, in seconds. An exec with --timeout-ms and a cua wait get at least their own wait plus a margin [env: BUWIZ_COMPUTER_REQUEST_TIMEOUT_SECS=] [default: 120]
+  -h, --help
+          Print help
+  -V, --version
+          Print version
 ```
 
 ## `buwiz-computer health`
@@ -314,6 +323,8 @@ Commands:
   key
   scroll
   recipe        POST /v1/cua/recipe — many CUA steps, one request
+  tree          POST /v1/cua/tree: the accessibility tree of the focused window, or the whole desktop
+  element       POST /v1/cua/element: press, click, focus or set_text on a node of the latest tree
   help          Print this message or the help of the given subcommand(s)
 
 Options:
@@ -489,5 +500,38 @@ Usage: buwiz-computer cua recipe --file <FILE>
 Options:
       --file <FILE>
   -h, --help         Print help
+```
+
+## `buwiz-computer cua tree`
+
+```text
+POST /v1/cua/tree: the accessibility tree of the focused window, or the whole desktop
+
+Usage: buwiz-computer cua tree [OPTIONS]
+
+Options:
+      --scope <SCOPE>            focused_window (default) or desktop
+      --max-depth <MAX_DEPTH>
+      --max-nodes <MAX_NODES>
+      --timeout-ms <TIMEOUT_MS>
+      --include-hidden           Also nodes that are neither showing nor visible
+      --no-compact               Keep the nameless containers compact mode leaves out
+      --display <DISPLAY>        Another of the box's screens (:N)
+  -h, --help                     Print help
+```
+
+## `buwiz-computer cua element`
+
+```text
+POST /v1/cua/element: press, click, focus or set_text on a node of the latest tree
+
+Usage: buwiz-computer cua element [OPTIONS] --ref <REFERENCE> --action <ACTION>
+
+Options:
+      --ref <REFERENCE>    The node's ref, from `cua tree`
+      --action <ACTION>    press, click, focus or set_text
+      --text <TEXT>        The text, for set_text
+      --display <DISPLAY>  Another of the box's screens (:N)
+  -h, --help               Print help
 ```
 

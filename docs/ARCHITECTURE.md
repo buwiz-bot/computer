@@ -167,7 +167,7 @@ CUA is first-party in this image:
 
 Workspace-only (do not publish):
 
-1. **Rust** `buwiz-computer` — `BuwizComputer::connect(exec_url, host_url, token)?` (it returns a `Result`) plus CLI. A request that gets no answer fails after a default per-request timeout of 120 s, which is configurable. CLI: [CLI.md](CLI.md)
+1. **Rust** `buwiz-computer` — `BuwizComputer::connect(exec_url, host_url, token)?` (it returns a `Result`) plus CLI. Every request is bounded by `DEFAULT_TIMEOUT` (120 s) unless `BuwizComputer::with_timeout(Duration)` sets another; an exec with `timeout_ms` gets that plus `EXEC_MARGIN` (35 s) if longer, a `cua_wait` its wait plus `WAIT_MARGIN` (5 s). Running out is `Error::Timeout`. The CLI's global flag is `--request-timeout-secs` (env `BUWIZ_COMPUTER_REQUEST_TIMEOUT_SECS`). CLI: [CLI.md](CLI.md)
 2. **TypeScript** `sdk/typescript` — same connect
 3. **Python** `sdk/python` — same connect
 
