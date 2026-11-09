@@ -363,6 +363,10 @@ Caddy on the VM beats an ALB/HTTPS load balancer for a single box. Shared philos
 
 A different shape from the VMs above: Buwiz Bot's broker launches one EC2 instance per computer, hibernates it when idle and terminates it when the computer is deleted. [deploy/aws/README.md](../deploy/aws/README.md) is the OpenTofu module for what those instances launch into (launch template, network, SSH-only security group), the broker's IAM policy for your own account (`tofu output -raw broker_policy_json`), the broker's settings, cost, and how to tear it down. OpenTofu never creates an instance there.
 
+No OpenTofu? [deploy/aws/cloudformation/buwiz-computer.yaml](../deploy/aws/cloudformation/buwiz-computer.yaml) makes the same setup from the AWS console, with no access key in it: [deploy/aws/README.md](../deploy/aws/README.md#without-opentofu-cloudformation) has the steps, and `deploy/aws/check-parity.sh` fails if the two drift.
+
+E2B is the other provider the broker runs computers on. [deploy/e2b/README.md](../deploy/e2b/README.md) builds the box template in your own E2B team with `E2B_API_KEY=… bash deploy/e2b/build.sh`, and prints the name to set as `BUWIZ_E2B_TEMPLATE`.
+
 ### 4. Container-as-a-service? Kubernetes?
 
 The guest is a **long-running** container with X11, voxl, and Chromium — not a 10ms serverless function.
