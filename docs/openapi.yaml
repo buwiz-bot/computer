@@ -1842,8 +1842,18 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: target_gone, the tab is gone; dialog_open, a JavaScript dialog holds the tab
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
         "429":
           description: busy, more calls wait for this screen's browser than it takes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: internal, box-exec asked ultra-instinct for a tool it may not use (a bug in box-exec)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -1901,7 +1911,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "409":
-          description: stale_ref, the ref is from an older snapshot, or its element is gone or moved; confirm_required, a person must approve `error.details.label`
+          description: stale_ref, the ref is from an older snapshot, or its element is gone or moved; confirm_required, a person must approve `error.details.label`; target_gone, the tab is gone; dialog_open, a JavaScript dialog holds the tab
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -1917,6 +1927,11 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "429":
           description: busy, more calls wait for this screen's browser than it takes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: internal, box-exec asked ultra-instinct for a tool it may not use (a bug in box-exec)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -1975,8 +1990,18 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: target_gone, the tab is gone; dialog_open, a JavaScript dialog holds the tab
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
         "429":
           description: busy, more calls wait for this screen's browser than it takes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: internal, box-exec asked ultra-instinct for a tool it may not use (a bug in box-exec)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -2035,8 +2060,18 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: target_gone, the tab is gone; dialog_open, a JavaScript dialog holds the tab
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
         "429":
           description: busy, more calls wait for this screen's browser than it takes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: internal, box-exec asked ultra-instinct for a tool it may not use (a bug in box-exec)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -2090,8 +2125,18 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: target_gone, the tab is gone; dialog_open, a JavaScript dialog holds the tab
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
         "429":
           description: busy, more calls wait for this screen's browser than it takes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: internal, box-exec asked ultra-instinct for a tool it may not use (a bug in box-exec)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -2140,8 +2185,18 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: target_gone, the tab is gone; dialog_open, a JavaScript dialog holds the tab
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
         "429":
           description: busy, more calls wait for this screen's browser than it takes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: internal, box-exec asked ultra-instinct for a tool it may not use (a bug in box-exec)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -2202,8 +2257,18 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: target_gone, the tab is gone; dialog_open, a JavaScript dialog holds the tab
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
         "429":
           description: busy, more calls wait for this screen's browser than it takes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: internal, box-exec asked ultra-instinct for a tool it may not use (a bug in box-exec)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -2263,8 +2328,18 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: target_gone, the tab is gone; dialog_open, a JavaScript dialog holds the tab
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
         "429":
           description: busy, more calls wait for this screen's browser than it takes
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "500":
+          description: internal, box-exec asked ultra-instinct for a tool it may not use (a bug in box-exec)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }

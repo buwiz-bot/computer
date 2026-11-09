@@ -122,6 +122,14 @@ impl Screen {
                 BrowserError::Unavailable(format!("the browser went away: {m}"))
             }
             ToolFailure::Unavailable(m) => BrowserError::Unavailable(m),
+            ToolFailure::Stale(m) => BrowserError::Stale(m),
+            ToolFailure::TargetGone(m) => {
+                self.latest = None;
+                BrowserError::TargetGone(m)
+            }
+            ToolFailure::DialogOpen(m) => BrowserError::DialogOpen(m),
+            ToolFailure::Timeout(m) => BrowserError::Timeout(m),
+            ToolFailure::NotAllowed(m) => BrowserError::Internal(m),
             ToolFailure::Browser(m) => BrowserError::Backend(m),
         }
     }

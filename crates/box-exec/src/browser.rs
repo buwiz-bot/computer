@@ -40,6 +40,9 @@ pub fn map_browser(err: BrowserError) -> ApiError {
         BrowserError::Refused(_) => {
             ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "action_refused", message)
         }
+        BrowserError::TargetGone(_) => ApiError::new(StatusCode::CONFLICT, "target_gone", message),
+        BrowserError::DialogOpen(_) => ApiError::new(StatusCode::CONFLICT, "dialog_open", message),
+        BrowserError::Internal(_) => ApiError::internal(message),
         BrowserError::Busy => ApiError::busy(message),
         BrowserError::Timeout(_) => {
             ApiError::new(StatusCode::GATEWAY_TIMEOUT, "browser_timeout", message)

@@ -22,7 +22,7 @@ Auth: `Authorization: Bearer <BOX_TOKEN>` unless noted. `GET /v1/health` is the 
 }
 ```
 
-Common codes: `unauthorized`, `invalid_request`, `path_escape`, `not_found`, `payload_too_large`, `exec_failed`, `io_error`, `internal`, `not_ready`, `busy` (429, every exec slot is taken), `cua_disabled`, `display_unavailable` (503, the X server is down), `viewer_unavailable` (503, that screen's voxl is down), `out_of_range`, `cua_backend` (502), `keeper_failed` (502, `POST /v1/screen` could not reach `box-keeper`), and the browser's: `browser_disabled`, `browser_unavailable` (503), `stale_ref`, `confirm_required` (409), `domain_not_allowed` (403), `action_refused` (422), `browser_backend` (502), `browser_timeout` (504).
+Common codes: `unauthorized`, `invalid_request`, `path_escape`, `not_found`, `payload_too_large`, `exec_failed`, `io_error`, `internal`, `not_ready`, `busy` (429, every exec slot is taken), `cua_disabled`, `display_unavailable` (503, the X server is down), `viewer_unavailable` (503, that screen's voxl is down), `out_of_range`, `cua_backend` (502), `keeper_failed` (502, `POST /v1/screen` could not reach `box-keeper`), and the browser's: `browser_disabled`, `browser_unavailable` (503), `stale_ref`, `confirm_required`, `target_gone`, `dialog_open` (409), `domain_not_allowed` (403), `action_refused` (422), `browser_backend` (502), `browser_timeout` (504).
 
 A few errors carry `error.details`, what the caller needs to act on them: `confirm_required` has `{label, confirm}`, `domain_not_allowed` has `{host}`. Every other error has none.
 
@@ -422,6 +422,26 @@ Each screen's Chromium, driven over its DevTools pipe through [ultra-instinct](h
 **Pending.** The pipe transport is being added to ultra-instinct. Until `box-exec` is built with it, every route answers `503 browser_unavailable`, and no screen's pipe is taken from its launcher.
 
 **Limits.** Every call has a time budget (45 s; a wait or a run gets its own `timeout_ms` plus 15 s). Past it the answer is `504 browser_timeout`, and calls queue behind the one still running: past 4 waiting, `429 busy`. Every answer is bounded: labels at 160 characters, addresses at 2048, a field's text at 400, 8 actions per element, 100 tabs, a screenshot at 8 MiB, anything else at 4 MiB of JSON.
+
+**Errors**, the same on every route:
+
+| Status | `code` | When |
+| --- | --- | --- |
+| 400 | `invalid_request` | A field out of range or unknown, a malformed ref, a display that isn't `:N` |
+| 403 | `domain_not_allowed` | The page, or the address asked for, is off `allow_domains`; `error.details.host` |
+| 409 | `stale_ref` | The ref is from an older snapshot, or its element is gone or moved |
+| 409 | `confirm_required` | The click needs a person's confirm; `error.details.{label, confirm}` |
+| 409 | `target_gone` | The tab is gone: list the tabs, switch or open one, snap again |
+| 409 | `dialog_open` | A JavaScript dialog holds the tab |
+| 422 | `action_refused` | ultra-instinct's guard said no: covered, disabled, drifted, a spent ticket |
+| 429 | `busy` | More calls wait for this screen's browser than it takes |
+| 500 | `internal` | `box-exec` asked ultra-instinct for a tool it may not use: a bug in `box-exec` |
+| 502 | `browser_backend` | The browser answered badly, too much, or not at all |
+| 503 | `browser_disabled` | `BOX_BROWSER`, `BOX_CHROME` or `BOX_DESKTOP` is off |
+| 503 | `browser_unavailable` | The screen has no browser `box-exec` can use: no transport yet, or its pipe closed (the next call takes the new Chromium's) |
+| 504 | `browser_timeout` | The call's budget ran out |
+
+`target_gone` is 409, not 404: the call named nothing wrong, the browser's state moved under it, as with `stale_ref`.
 
 **Rules, checked by box-exec before ultra-instinct's guard checks them again:**
 

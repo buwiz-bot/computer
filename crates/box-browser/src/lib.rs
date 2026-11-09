@@ -56,6 +56,15 @@ pub enum BrowserError {
     /// ultra-instinct's guard refused: the page drifted, or the target is covered or disabled.
     #[error("{0}")]
     Refused(String),
+    /// The tab the call was for is gone: list the tabs.
+    #[error("{0}")]
+    TargetGone(String),
+    /// A JavaScript dialog is open on the tab and holds everything else up.
+    #[error("{0}")]
+    DialogOpen(String),
+    /// box-browser asked ultra-instinct for something it may not: a bug here, not the caller's.
+    #[error("{0}")]
+    Internal(String),
     /// The screen's browser has more calls waiting than it takes.
     #[error("this screen's browser is busy; try again")]
     Busy,

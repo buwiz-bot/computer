@@ -20,12 +20,17 @@ use ultra_instinct_mcp::{Server, ToolError};
 /// Whether [`open`] can speak over a pipe in this build.
 pub const LINKED: bool = false;
 
-/// The screen's tools on `pipe`, its end of Chromium's DevTools pipe. Both directions are on the
-/// one socket.
+/// The screen's tools on `pipe`, its end of Chromium's DevTools pipe.
 ///
-/// The ultra-instinct pipe rev goes here: a pipe transport over `pipe` (`try_clone` gives the
-/// reader and the writer their own fds), an `ultra_instinct_mcp::Server` whose tab tools use that
-/// pipe's `Target.*`, and [`ServerTools`] around it, with `run_goal` on the same pipe.
+/// `box-chrome-pipe` gives Chromium one end of a socket pair as both fd 3 (Chromium reads) and
+/// fd 4 (Chromium writes), so `pipe`, the other end, is both directions: what Chromium writes on
+/// fd 4 is read here, and what's written here Chromium reads on fd 3. So for ultra-instinct's
+/// `PipeBrowser::new(reader, writer)` (reader is Chromium's fd 4, writer its fd 3) both are this
+/// socket: `PipeBrowser::new(pipe.try_clone()?, pipe)`.
+///
+/// The ultra-instinct pipe rev goes here: that `PipeBrowser`, an `ultra_instinct_mcp::Server`
+/// whose tab tools use its `Target.*` (with `Target.setDiscoverTargets` on), [`ServerTools`]
+/// around it, and `run_goal` on the same pipe. Then [`LINKED`] is true.
 pub fn open(pipe: OwnedFd) -> Result<Box<dyn Tools>, ToolFailure> {
     drop(pipe);
     Err(ToolFailure::Unavailable(
@@ -128,6 +133,21 @@ pub enum ToolFailure {
     /// The pipe or the browser is gone: the next call opens the screen again.
     #[error("{0}")]
     Closed(String),
+    /// The element a ref named isn't on the page, or the ref isn't one ultra-instinct knows.
+    #[error("{0}")]
+    Stale(String),
+    /// The tab is gone.
+    #[error("{0}")]
+    TargetGone(String),
+    /// A JavaScript dialog is open on the tab, and nothing else gets through until it's answered.
+    #[error("{0}")]
+    DialogOpen(String),
+    /// The browser didn't answer in time.
+    #[error("{0}")]
+    Timeout(String),
+    /// box-browser called a tool ultra-instinct's allow-list doesn't let it: a bug here.
+    #[error("{0}")]
+    NotAllowed(String),
     /// This can't be done here at all.
     #[error("{0}")]
     Unavailable(String),
@@ -138,6 +158,15 @@ pub enum ToolFailure {
 impl From<ToolError> for ToolFailure {
     fn from(err: ToolError) -> Self {
         let message = err.to_string();
+        // ultra-instinct's stable codes, where it gives one; its variant names before that.
+        let wire = err.to_value();
+        if let Some(failure) = wire
+            .get("code")
+            .and_then(Value::as_str)
+            .and_then(|code| from_code(code, &message, &wire))
+        {
+            return failure;
+        }
         match err.variant() {
             "TicketInvalid" => refusal(&message),
             "InvalidArguments" | "UnknownTool" | "EmptyText" | "UnknownRole" | "UnknownAction"
@@ -145,6 +174,34 @@ impl From<ToolError> for ToolFailure {
             _ => Self::Browser(message),
         }
     }
+}
+
+/// One of ultra-instinct's stable error codes, or `None` for one this doesn't know.
+fn from_code(code: &str, message: &str, wire: &Value) -> Option<ToolFailure> {
+    let message = message.to_string();
+    Some(match code {
+        "needs_confirm" => match wire.get("label").and_then(Value::as_str) {
+            Some(label) => ToolFailure::NeedsConfirm {
+                label: label.to_string(),
+            },
+            // A confirm with no label to show a person is no confirm: refuse.
+            None => ToolFailure::Refused(message),
+        },
+        "domain_not_allowed" => ToolFailure::DomainNotAllowed(
+            wire.get("host")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        ),
+        "stale_ref" | "unknown_ref" => ToolFailure::Stale(message),
+        "target_gone" => ToolFailure::TargetGone(message),
+        "dialog_open" => ToolFailure::DialogOpen(message),
+        "timeout" => ToolFailure::Timeout(message),
+        "pipe_closed" => ToolFailure::Closed(message),
+        "tool_not_allowed" => ToolFailure::NotAllowed(message),
+        "invalid_arguments" => ToolFailure::Invalid(message),
+        _ => return None,
+    })
 }
 
 /// ultra-instinct's `TicketInvalid` text: `needs-confirm: "<label as JSON>"`,
@@ -242,6 +299,38 @@ mod tests {
                 label: "Delete".into()
             }
         );
+    }
+
+    #[test]
+    fn ultra_instinct_s_codes_map_one_to_one() {
+        let wire = |code: &str| serde_json::json!({"code": code, "message": "m"});
+        let cases = [
+            ("stale_ref", "Stale"),
+            ("unknown_ref", "Stale"),
+            ("target_gone", "TargetGone"),
+            ("dialog_open", "DialogOpen"),
+            ("timeout", "Timeout"),
+            ("pipe_closed", "Closed"),
+            ("tool_not_allowed", "NotAllowed"),
+            ("invalid_arguments", "Invalid"),
+        ];
+        for (code, want) in cases {
+            let got = from_code(code, "m", &wire(code)).unwrap();
+            assert!(format!("{got:?}").starts_with(want), "{code} -> {got:?}");
+        }
+        let confirm = serde_json::json!({"code": "needs_confirm", "label": "Pay $18"});
+        assert_eq!(
+            from_code("needs_confirm", "m", &confirm),
+            Some(ToolFailure::NeedsConfirm {
+                label: "Pay $18".into()
+            })
+        );
+        // No label is no confirm.
+        assert!(matches!(
+            from_code("needs_confirm", "m", &wire("needs_confirm")),
+            Some(ToolFailure::Refused(_))
+        ));
+        assert!(from_code("something_new", "m", &wire("x")).is_none());
     }
 
     #[test]
