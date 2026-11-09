@@ -98,7 +98,9 @@ components:
           description: >-
             The returned output is not everything the command produced: either
             BOX_MAX_OUTPUT_BYTES was hit, or reading stopped before EOF
-            (output_complete false).
+            (output_complete false). A detached exec that is still running, and
+            a stream that failed to start, report output_complete false with
+            truncated false: nothing was cut, nothing was read.
         output_complete:
           type: boolean
           description: >-
@@ -281,10 +283,28 @@ components:
       required: [enabled, ready, running, profile, display]
       properties:
         enabled: { type: boolean }
-        ready: { type: boolean, description: CDP GET /json/version succeeded }
+        ready: { type: boolean, description: The Chromium the entrypoint started is alive. There is no DevTools port. }
         running: { type: boolean }
         profile: { type: string }
         display: { type: string }
+    ActiveTab:
+      type: object
+      required: [url]
+      description: >-
+        The page in front of Chromium, as the box's extension last reported it. It answers
+        "which page is in front", not "prove no one lied": whatever runs as that screen's
+        desktop user could write the report.
+      properties:
+        url:
+          type: string
+          nullable: true
+          description: The front tab's URL; null when nothing has reported.
+        atMs: { type: integer, description: When the extension last reported, in ms since the epoch }
+        focus:
+          type: string
+          enum: [password, text, other, none]
+          description: The kind of box focused on that page, as the page said. Absent while it has not said.
+        seq: { type: integer, description: How many reports this browser has made }
     EgressStatus:
       type: object
       required: [enabled, ready, client_attached, protocol, ws, proxy]
@@ -975,10 +995,39 @@ paths:
       security: [{ bearer: [] }]
       responses:
         "200":
-          description: Profile path, CDP bind, running flag
+          description: Profile path, display, running flag
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ChromeStatus" }
+        "401":
+          description: Missing or wrong token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/chrome/active-tab:
+    get:
+      tags: [desktop, host]
+      summary: The page in front of Chromium (box-host)
+      description: |
+        The front tab's URL, as the box's own extension last reported it, on the box's
+        own screen or the one named with `display`. `url` is null when nothing has
+        reported (no Chromium, or one started without the extension). The report is a
+        file in that screen's run folder; a command cannot write it, but anything running
+        as that screen's desktop user can, so treat it as a hint of which page is in front.
+      security: [{ bearer: [] }]
+      parameters:
+        - name: display
+          in: query
+          required: false
+          description: Another of the box's screens (`:N`). Without it, the box's own.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The page in front, or none known
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ActiveTab" }
         "401":
           description: Missing or wrong token
           content:
