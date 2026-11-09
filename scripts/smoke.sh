@@ -501,13 +501,16 @@ echo "${pipe_desk}" | grep -q FDS_ONE_SOCKET
 echo "${pipe_desk}" | grep -q LAUNCHER_UNDUMPABLE
 
 echo "==> POST /v1/browser/* on a page served inside the box"
-# bpost <route> <json>: the answer in ${body}, its status in ${code}.
+# bpost <route> <json>: the answer in ${body}, its status in ${code}. The answer goes to a file of
+# this user's own: on a Linux host workspace-data is the box's (uid 1000), not the runner's.
 bpost() {
-  code="$(curl -sS -o "${ROOT}/workspace-data/.browser-answer" -w '%{http_code}' \
+  local answer
+  answer="$(mktemp "${TMPDIR:-/tmp}/browser-answer.XXXXXX")"
+  code="$(curl -sS -o "${answer}" -w '%{http_code}' \
     -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
     -d "$2" "${EXEC_URL}/v1/browser/$1")"
-  body="$(cat "${ROOT}/workspace-data/.browser-answer")"
-  rm -f "${ROOT}/workspace-data/.browser-answer"
+  body="$(cat "${answer}")"
+  rm -f "${answer}"
 }
 # ref_of <label> <role>: the @eN of the element with that label and role in the snap in ${body}.
 # A <label for> is an element of its own, with its field's name, so the role tells them apart.
