@@ -22,6 +22,14 @@ struct Cli {
     /// Guest bearer token (BOX_TOKEN).
     #[arg(long, env = "BUWIZ_COMPUTER_TOKEN")]
     token: String,
+    /// Bound on each request's whole round trip, in seconds. An exec with --timeout-ms and a
+    /// cua wait get at least their own wait plus a margin.
+    #[arg(
+        long,
+        env = "BUWIZ_COMPUTER_REQUEST_TIMEOUT_SECS",
+        default_value_t = 120
+    )]
+    request_timeout_secs: u64,
     #[command(subcommand)]
     command: Commands,
 }
@@ -230,7 +238,8 @@ enum CuaCmd {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    let box_client = BuwizComputer::connect(cli.exec_url, cli.host_url, cli.token)?;
+    let box_client = BuwizComputer::connect(cli.exec_url, cli.host_url, cli.token)?
+        .with_timeout(std::time::Duration::from_secs(cli.request_timeout_secs));
     match cli.command {
         Commands::Health => {
             print_json(&json!({

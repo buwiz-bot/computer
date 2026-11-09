@@ -3,8 +3,26 @@
 //! The caller starts the container and passes the **published** exec URL, host
 //! URL, and bearer token. This crate never runs Docker and never replaces those
 //! URLs with `/v1/info.endpoints` (those are container-local listen addresses).
+//!
+//! # Timeouts
+//!
+//! Every request has a bound on the whole round trip, connect to last body byte: by default
+//! [`DEFAULT_TIMEOUT`] (120 s), set with [`BuwizComputer::with_timeout`]. A request that runs
+//! out of it is [`Error::Timeout`]. Two kinds of call wait on purpose, and get longer:
+//!
+//! - [`BuwizComputer::exec`] and [`BuwizComputer::exec_stream`] wait for the command, so a
+//!   request with `timeout_ms` is bounded by the larger of the client timeout and `timeout_ms`
+//!   plus [`EXEC_MARGIN`] (the guest's SIGTERM-to-SIGKILL grace and the reply). A detached exec
+//!   answers at once, and [`BuwizComputer::exec_status`] never waits for the job.
+//! - [`BuwizComputer::cua_wait`] waits for the screen, so it is bounded by the larger of the
+//!   client timeout and the wait's own `timeout` (voxl's default 10 s) plus [`WAIT_MARGIN`].
+//!
+//! A long [`BuwizComputer::recipe`] is bounded by the client timeout like any other call: raise
+//! it with [`BuwizComputer::with_timeout`] for a recipe with many waits.
 
 mod error;
+
+use std::time::Duration;
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -17,6 +35,20 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub use error::Error;
+
+/// The bound on a request's whole round trip unless [`BuwizComputer::with_timeout`] says
+/// otherwise. The same as the TypeScript SDK's exec and the Python SDK's default.
+pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Added to an exec's own `timeout_ms`: the guest's SIGTERM-to-SIGKILL grace (at most 30 s,
+/// `BOX_EXEC_KILL_GRACE_MS`) and the reply.
+pub const EXEC_MARGIN: Duration = Duration::from_secs(35);
+
+/// Added to a `cua_wait`'s own `timeout`, as the guest adds to it before giving up on voxl.
+pub const WAIT_MARGIN: Duration = Duration::from_secs(5);
+
+/// voxl's wait when the request names none.
+const DEFAULT_WAIT: Duration = Duration::from_secs(10);
 
 type Https = hyper_rustls::HttpsConnector<HttpConnector>;
 type HttpClient = Client<Https, Full<Bytes>>;
@@ -45,6 +77,8 @@ pub struct BuwizComputer {
     /// The screen the computer-use and page-in-front calls go to: `None` is the box's own;
     /// `:N` is a Bot's own screen (`box-screen`). See [`BuwizComputer::on`].
     display: Option<String>,
+    /// See the crate docs, §Timeouts.
+    timeout: Duration,
 }
 
 impl BuwizComputer {
@@ -69,7 +103,32 @@ impl BuwizComputer {
             token,
             http,
             display: None,
+            timeout: DEFAULT_TIMEOUT,
         })
+    }
+
+    /// This client with every request bounded by `timeout` instead of [`DEFAULT_TIMEOUT`]. The
+    /// exec and screen-wait calls still get at least their own wait plus a margin; see the crate
+    /// docs, §Timeouts.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// The bound on a request, before any per-call extension.
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
+    /// The bound on an exec of `request`: it waits for the command.
+    fn exec_bound(&self, request: &ExecRequest) -> Duration {
+        match request.timeout_ms {
+            Some(ms) => self
+                .timeout
+                .max(Duration::from_millis(ms).saturating_add(EXEC_MARGIN)),
+            None => self.timeout,
+        }
     }
 
     /// This client on another of the box's screens (`:N`, a Bot's own, started by
@@ -126,8 +185,10 @@ impl BuwizComputer {
             .await
     }
 
+    /// Bounded by the client timeout, or by `timeout_ms` plus [`EXEC_MARGIN`] if that is longer.
     pub async fn exec(&self, request: &ExecRequest) -> Result<ExecResponse, Error> {
-        self.send_json(
+        self.send_json_within(
+            self.exec_bound(request),
             "POST",
             &format!("{}/v1/exec", self.exec_url),
             Some(json!(request)),
@@ -244,10 +305,17 @@ impl BuwizComputer {
     }
 
     /// `POST /v1/cua/wait`: when the screen settles or changes. `body` is voxl's `/wait` fields
-    /// (`idle`, `change`, `since`, `region`, `timeout`).
+    /// (`idle`, `change`, `since`, `region`, `timeout`). Bounded by the client timeout, or by the
+    /// wait's `timeout` plus [`WAIT_MARGIN`] if that is longer.
     pub async fn cua_wait(&self, body: Value) -> Result<Value, Error> {
         let url = format!("{}/v1/cua/wait{}", self.exec_url, self.screen_query('?'));
-        self.send_json("POST", &url, Some(body), true).await
+        let wait = body
+            .get("timeout")
+            .and_then(Value::as_u64)
+            .map_or(DEFAULT_WAIT, Duration::from_millis);
+        let bound = self.timeout.max(wait.saturating_add(WAIT_MARGIN));
+        self.send_json_within(bound, "POST", &url, Some(body), true)
+            .await
     }
 
     /// `POST /v1/cua/record/start`: `{id}`.
@@ -326,9 +394,11 @@ impl BuwizComputer {
         self.send_json("POST", &url, None, true).await
     }
 
+    /// The whole NDJSON stream, once the command is done. Bounded like [`Self::exec`].
     pub async fn exec_stream(&self, request: &ExecRequest) -> Result<String, Error> {
         let (status, bytes, _) = self
-            .send(
+            .send_within(
+                self.exec_bound(request),
                 "POST",
                 &format!("{}/v1/exec/stream", self.exec_url),
                 Some(json!(request)),
@@ -495,8 +565,20 @@ impl BuwizComputer {
         body: Option<Value>,
         auth: bool,
     ) -> Result<T, Error> {
+        self.send_json_within(self.timeout, method, url, body, auth)
+            .await
+    }
+
+    async fn send_json_within<T: for<'de> Deserialize<'de>>(
+        &self,
+        limit: Duration,
+        method: &str,
+        url: &str,
+        body: Option<Value>,
+        auth: bool,
+    ) -> Result<T, Error> {
         let (status, bytes, _) = self
-            .send(method, url, body, auth, "application/json")
+            .send_within(limit, method, url, body, auth, "application/json")
             .await?;
         if !(200..300).contains(&status) {
             let text = String::from_utf8_lossy(&bytes);
@@ -507,6 +589,19 @@ impl BuwizComputer {
 
     async fn send(
         &self,
+        method: &str,
+        url: &str,
+        body: Option<Value>,
+        auth: bool,
+        accept: &str,
+    ) -> Result<(u16, Bytes, String), Error> {
+        self.send_within(self.timeout, method, url, body, auth, accept)
+            .await
+    }
+
+    async fn send_within(
+        &self,
+        limit: Duration,
         method: &str,
         url: &str,
         body: Option<Value>,
@@ -534,25 +629,7 @@ impl BuwizComputer {
         let request = builder
             .body(Full::new(Bytes::from(payload)))
             .map_err(|err| Error::Transport(err.to_string()))?;
-        let response = self
-            .http
-            .request(request)
-            .await
-            .map_err(|err| Error::Transport(err.to_string()))?;
-        let status = response.status().as_u16();
-        let content_type = response
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        let bytes = response
-            .into_body()
-            .collect()
-            .await
-            .map_err(|err| Error::Transport(err.to_string()))?
-            .to_bytes();
-        Ok((status, bytes, content_type))
+        self.round_trip(request, limit).await
     }
 
     async fn send_bytes(
@@ -577,25 +654,39 @@ impl BuwizComputer {
         let request = builder
             .body(Full::new(Bytes::from(payload)))
             .map_err(|err| Error::Transport(err.to_string()))?;
-        let response = self
-            .http
-            .request(request)
+        self.round_trip(request, self.timeout).await
+    }
+
+    /// Send `request` and read the whole answer, all within `limit`.
+    async fn round_trip(
+        &self,
+        request: Request<Full<Bytes>>,
+        limit: Duration,
+    ) -> Result<(u16, Bytes, String), Error> {
+        let exchange = async {
+            let response = self
+                .http
+                .request(request)
+                .await
+                .map_err(|err| Error::Transport(err.to_string()))?;
+            let status = response.status().as_u16();
+            let content_type = response
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            let bytes = response
+                .into_body()
+                .collect()
+                .await
+                .map_err(|err| Error::Transport(err.to_string()))?
+                .to_bytes();
+            Ok((status, bytes, content_type))
+        };
+        tokio::time::timeout(limit, exchange)
             .await
-            .map_err(|err| Error::Transport(err.to_string()))?;
-        let status = response.status().as_u16();
-        let content_type = response
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        let bytes = response
-            .into_body()
-            .collect()
-            .await
-            .map_err(|err| Error::Transport(err.to_string()))?
-            .to_bytes();
-        Ok((status, bytes, content_type))
+            .map_err(|_| Error::Timeout(limit))?
     }
 }
 
@@ -736,6 +827,101 @@ mod tests {
                 .unwrap();
         assert_eq!(box_client.exec_url(), "http://127.0.0.1:1337");
         assert_eq!(box_client.host_url(), "http://127.0.0.1:1340");
+    }
+
+    fn exec_request(timeout_ms: Option<u64>) -> ExecRequest {
+        ExecRequest {
+            command: json!(["true"]),
+            cwd: None,
+            timeout_ms,
+            env: None,
+            stdin: None,
+            detach: None,
+            pty: None,
+        }
+    }
+
+    /// A server that takes the request and then says nothing for `silence`.
+    async fn slow_server(silence: Duration) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = stream.read(&mut buf).await;
+                    tokio::time::sleep(silence).await;
+                    let _ = stream
+                        .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n{}")
+                        .await;
+                });
+            }
+        });
+        url
+    }
+
+    #[test]
+    fn the_default_bound_is_two_minutes() {
+        let client =
+            BuwizComputer::connect("http://127.0.0.1:1337", "http://127.0.0.1:1340", "tok")
+                .unwrap();
+        assert_eq!(client.timeout(), Duration::from_secs(120));
+        let client = client.with_timeout(Duration::from_secs(5));
+        assert_eq!(client.timeout(), Duration::from_secs(5));
+    }
+
+    #[test]
+    fn an_exec_gets_at_least_its_own_timeout() {
+        let client =
+            BuwizComputer::connect("http://127.0.0.1:1337", "http://127.0.0.1:1340", "tok")
+                .unwrap();
+        assert_eq!(client.exec_bound(&exec_request(None)), DEFAULT_TIMEOUT);
+        assert_eq!(
+            client.exec_bound(&exec_request(Some(1_000))),
+            DEFAULT_TIMEOUT
+        );
+        assert_eq!(
+            client.exec_bound(&exec_request(Some(600_000))),
+            Duration::from_secs(600) + EXEC_MARGIN
+        );
+    }
+
+    #[tokio::test]
+    async fn a_silent_server_is_a_timeout() {
+        let url = slow_server(Duration::from_secs(30)).await;
+        let client = BuwizComputer::connect(&url, &url, "tok")
+            .unwrap()
+            .with_timeout(Duration::from_millis(200));
+        let started = std::time::Instant::now();
+        let err = client.health_exec().await.unwrap_err();
+        assert!(matches!(err, Error::Timeout(_)), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn a_slow_answer_inside_the_bound_arrives() {
+        let url = slow_server(Duration::from_millis(100)).await;
+        let client = BuwizComputer::connect(&url, &url, "tok")
+            .unwrap()
+            .with_timeout(Duration::from_secs(5));
+        assert_eq!(client.health_exec().await.unwrap(), json!({}));
+    }
+
+    #[tokio::test]
+    async fn a_screen_wait_outlives_a_short_client_bound() {
+        let url = slow_server(Duration::from_millis(400)).await;
+        let client = BuwizComputer::connect(&url, &url, "tok")
+            .unwrap()
+            .with_timeout(Duration::from_millis(100));
+        // The wait's own 100 ms plus the margin, not the client's 100 ms.
+        assert_eq!(
+            client.cua_wait(json!({ "timeout": 100 })).await.unwrap(),
+            json!({})
+        );
     }
 
     /// The box's own screen keeps the URLs it always had; a Bot's own screen names its display.
