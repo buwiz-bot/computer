@@ -42,9 +42,9 @@ There was **no** preceding batch/recipe endpoint on this guest. Single-op CUA (i
 }
 ```
 
-The guest **lints the whole plan first** (empty, >256 steps, out-of-range coordinates, bad keys). If lint fails, **nothing** moves. Then it runs in order. Default screenshot is `end` (one PNG on the receipt, and a file under `artifact_dir` when that field is set). `none` skips it. `each` attaches a PNG after every non-wait step (heavy). `settle: "raw"` waits until Chromium is mapped and the title/URL changes after Return; `compressed` uses shorter timeouts. Default is **`off`** (no extra Chromium waits and no launch/close side effects). Teach `wait` steps are always honored.
+The guest **lints the whole plan first** (empty, >256 steps, out-of-range coordinates, bad keys). If lint fails, **nothing** moves. Then it runs in order. Default screenshot is `end` (one PNG on the receipt, and a file under `artifact_dir` when that field is set). `none` skips it. `each` attaches a PNG after every non-wait step (heavy). `settle: "raw"` waits until Chromium is mapped and the title/URL changes after Return; `compressed` uses shorter timeouts. Default is **`off`** (no extra Chromium waits and no launch/close side effects). `wait` steps are always honored.
 
-`record: true` starts ffmpeg/x11grab on the same X display **before the first CUA step** (before `warmup_pointer`) and sends SIGINT after the last step so the MP4 is finalized. There is no `-t` duration cap (that is what made tapes stop at 1s). Live capture is fragmented so SIGINT can finish the file; a second pass remuxes to progressive `+faststart`. Finder, QuickTime, and Chrome play `frag_keyframe+empty_moov` x264 as a still (Play does not change pixels). Exact commands:
+`record: true` starts ffmpeg/x11grab on the same X display **before the first CUA step** (before `warmup_pointer`) and sends SIGINT after the last step so the MP4 is finalized. There is no `-t` duration cap (that is what made tapes stop at 1s). Live capture is fragmented so SIGINT can finish the file; a second pass remuxes to progressive `+faststart`. The live tape is `frag_keyframe+empty_moov` x264; the remux to `+faststart` is what makes the saved file seekable. Exact commands:
 
 ```bash
 ffmpeg -nostdin -hide_banner -loglevel error -y \
@@ -111,11 +111,11 @@ What it costs:
 | --- | --- | --- |
 | `off` | nothing | no probes; the receipt is byte-identical to before the field existed |
 | `input` | ~10 X round-trips for a pointer step, ~4 for a `type` | `TranslateCoordinates` down to the window at the coordinate, `QueryTree` + `GetProperty` up to the client window that names it, `GetInputFocus` |
-| `page` | `input`, plus **two** DevTools calls (one each side) on click / double\_click / type / key | Chromium DevTools `GET /json` on loopback |
+| `page` | `input`, plus **two** report-file reads (one each side) on click / double\_click / type / key | The screen's extension report, as `GET /v1/chrome/active-tab` serves it |
 
-Put beside what a step already costs: `CLICK_GAP` is 12 ms per click and typed characters are paced at 30 ms each, so observing a click is an order of magnitude cheaper than clicking it. `page` is the mode that scales into something worth noticing — 256 steps is up to 512 DevTools calls — which is why it is separate from `input` rather than bundled into one switch.
+Put beside what a step already costs: `CLICK_GAP` is 12 ms per click and typed characters are paced at 30 ms each, so observing a click is an order of magnitude cheaper than clicking it. `page` is the mode that scales into something worth noticing — 256 steps is up to 512 report reads — which is why it is separate from `input` rather than bundled into one switch.
 
-No process is forked for either mode. This deliberately does not go through `wmctrl` or `xdotool`, which the settle path uses and which cost a fork, an exec and a fresh X connection every time. Observation runs on its own X connection so a slow read cannot park the socket the next keystroke needs; each X observation is bounded at 400 ms and each DevTools read at 250 ms, so neither a wedged server nor a hung browser can stretch a recipe. A probe that fails costs the receipt a fact, never the recipe a step. `observe_ms` on each block reports what that step actually spent looking, and is not counted in the step's `ms` — so the cost is measurable from a receipt rather than taken on trust.
+No process is forked for either mode. This deliberately does not go through `wmctrl` or `xdotool`, which the settle path uses and which cost a fork, an exec and a fresh X connection every time. Observation runs on its own X connection so a slow read cannot park the socket the next keystroke needs; each X observation is bounded at 400 ms, and the page read is a local file, so a wedged server cannot stretch a recipe. A probe that fails costs the receipt a fact, never the recipe a step. `observe_ms` on each block reports what that step actually spent looking, and is not counted in the step's `ms` — so the cost is measurable from a receipt rather than taken on trust.
 
 `observe` never waits for a page to load and never launches anything — that is what `settle` is for. `url_after` is read as soon as the step returns (after any `settle` wait), so a `Return` that *did* navigate will often still show the old URL there and the new one in the next step's `url_before`.
 
@@ -151,4 +151,4 @@ If the agent must look at the framebuffer after every click, keep single-op CUA 
 - Not WebMCP. Chromium in the guest may load a site that speaks WebMCP; buwiz-computer does not broker those tools yet.
 - Not mixed exec/files + CUA in one document. Exec and files stay their own routes. A later `/v1/recipe` could mix them; CUA stays sequential even then.
 
-The product stay: you start the guest, `connect(execUrl, hostUrl, token)`, send a recipe.
+The product stays: you start the guest, `connect(execUrl, hostUrl, token)`, send a recipe.

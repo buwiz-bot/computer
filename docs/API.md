@@ -323,7 +323,7 @@ Optional `observe` is `off` (default), `input`, or `page`:
 
 - **`off`** — the receipt this endpoint produced before the field existed, byte for byte. No probes, no cost.
 - **`input`** — each step gains an `observed` block carrying `target` (the window covering the step's target coordinate, read **before** the step moved anything) for pointer steps, and `focus` (where the keys were about to go) for `type` and `key`. Both are X11 requests on a connection the box already holds — no processes are forked.
-- **`page`** — everything `input` gives, plus `url_before` / `url_after` around `click`, `double_click`, `type` and `key`, read from the Chromium DevTools HTTP endpoint on loopback.
+- **`page`** — everything `input` gives, plus `url_before` / `url_after` around `click`, `double_click`, `type` and `key`, read from that screen's extension report (the same one `GET /v1/chrome/active-tab` serves). There is no DevTools port.
 
 ```json
 {
@@ -349,7 +349,7 @@ Reading a receipt:
 - `url_after` is read as soon as the step returns (after any `settle` wait). A browser navigation is not instant, so a `Return` that *did* navigate often still shows the old URL there and the new one in the next step's `url_before`. A URL that never moves across a whole run is a `Return` that submitted nothing.
 - `observe_ms` is the wall time that step spent looking rather than acting. It is **not** counted in the step's `ms`, the same way a per-step screenshot never was.
 
-Cost, so a caller can decide rather than be surprised. `input` forks nothing: it is about **ten X round-trips** for a pointer step and about **four** for a `type`, over the box's own unix socket, on a connection held separately from the input one. That is an order of magnitude below the pacing a step already pays — `CLICK_GAP` is 12ms per click and typed characters are paced at 30ms each. `page` adds **two** DevTools HTTP calls per observed step (one each side); where Chromium is not listening, the loopback connection is refused immediately, and where it is hung, each call is capped at 250ms. Every observation is bounded at 400ms on the X side, and one that fails costs the receipt a fact, never the recipe a step. `observe` changes no timing except its own: it never waits for a page to load and it never launches anything.
+Cost, so a caller can decide rather than be surprised. `input` forks nothing: it is about **ten X round-trips** for a pointer step and about **four** for a `type`, over the box's own unix socket, on a connection held separately from the input one. That is an order of magnitude below the pacing a step already pays — `CLICK_GAP` is 12ms per click and typed characters are paced at 30ms each. `page` adds **two** reads of the screen's small report file per observed step (one each side); where the browser has not reported, the read finds nothing and the URL is absent. Every observation is bounded at 400ms on the X side, and one that fails costs the receipt a fact, never the recipe a step. `observe` changes no timing except its own: it never waits for a page to load and it never launches anything.
 
 ---
 

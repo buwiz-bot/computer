@@ -106,4 +106,4 @@ Default `screenshot` is `end` (one PNG on the receipt, and a file when `artifact
 
 `GET /v1/info` (bearer) returns box id, capability flags, workspace path, and **container-local** endpoint URLs (`scope: container-local`). Use it to see whether desktop/chrome/CUA/egress_tunnel are up. Do not dial those URLs from another machine; dial the URLs you published.
 
-`GET /v1/desktop`, `GET /v1/chrome`, and `GET /v1/egress` are the same: status inside the guest. Viewer and CDP addresses are loopback unless you published them yourself. `GET /v1/screens` lists every screen with its viewer port, state and folder. Egress `ws` is the guest listen; the laptop dials the URL **you** published or SSH-forwarded.
+`GET /v1/desktop`, `GET /v1/chrome`, and `GET /v1/egress` are the same: status inside the guest. Viewer addresses are loopback unless you published them yourself. `GET /v1/screens` lists every screen with its viewer port, state and folder. Egress `ws` is the guest listen; the laptop dials the URL **you** published or SSH-forwarded.
