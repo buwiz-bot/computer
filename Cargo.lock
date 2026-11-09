@@ -80,6 +80,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "ar_archive_writer"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73cd58deff2140a0a8eae87e417bd01db68a33e148aa93d1e8cd837e55e312b6"
+dependencies = [
+ "object",
+]
+
+[[package]]
 name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -337,6 +346,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "base64"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
+
+[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -347,6 +362,19 @@ name = "bitflags"
 version = "2.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
+
+[[package]]
+name = "blake3"
+version = "1.8.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d9e454fc11f76977dc803893aff6304ed33d6a26efae8696573bea74baa27ae"
+dependencies = [
+ "arrayvec",
+ "cc",
+ "cfg-if",
+ "constant_time_eq",
+ "cpufeatures 0.3.1",
+]
 
 [[package]]
 name = "block-buffer"
@@ -386,6 +414,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "box-browser"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "box-chrome",
+ "box-desktop",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "ultra-instinct-cdp",
+ "ultra-instinct-guard",
+ "ultra-instinct-mcp",
+]
+
+[[package]]
 name = "box-chrome"
 version = "0.1.0"
 dependencies = [
@@ -404,6 +450,7 @@ dependencies = [
  "libc",
  "mimalloc",
  "serde",
+ "serde_json",
  "smallvec",
  "subtle",
  "tempfile",
@@ -418,7 +465,7 @@ name = "box-cua"
 version = "0.1.0"
 dependencies = [
  "arrayvec",
- "base64",
+ "base64 0.22.1",
  "box-common",
  "box-desktop",
  "bumpalo",
@@ -472,7 +519,7 @@ name = "box-exec"
 version = "0.1.0"
 dependencies = [
  "axum",
- "base64",
+ "base64 0.22.1",
  "box-a11y",
  "box-common",
  "box-cua",
@@ -651,10 +698,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "constant_time_eq"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3d52eff69cd5e647efe296129160853a42795992097e8af39800e1060caeea9b"
+
+[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "cpufeatures"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ca28b0ae3115b884660db4118d803791fd6756b6e88f39c0f3f7859060d7566"
 dependencies = [
  "libc",
 ]
@@ -1112,6 +1174,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "instinct-core"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15c64cd105f939dce25d4f9fddf8c76c1e629764a6864852a089353e5e9886ff"
+dependencies = [
+ "blake3",
+]
+
+[[package]]
+name = "instinct-lexicon"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae78fca0f86eeee26b8f83f1cdf993728d40af7b36cfffeb073778a2d77a3cd2"
+dependencies = [
+ "instinct-core",
+ "instinct-text",
+]
+
+[[package]]
+name = "instinct-text"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7a9422e1e22f9e3a05a758422ab380ac0683eff44c87215f0b81d311b6da136f"
+dependencies = [
+ "instinct-core",
+ "unicode-normalization",
+ "unicode-security",
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "is-terminal"
 version = "0.4.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1291,6 +1384,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "object"
+version = "0.39.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e5a6c098c7a3b6547378093f5cc30bc54fd361ce711e05293a5cc589562739b"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1422,6 +1524,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "psm"
+version = "0.1.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4dcd034599e63b970727f70d79e02d62390a4a84f7c6b827c27c46d5ac3fa622"
+dependencies = [
+ "ar_archive_writer",
+ "cc",
 ]
 
 [[package]]
@@ -1670,6 +1782,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_stacker"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4936375d50c4be7eff22293a9344f8e46f323ed2b3c243e52f89138d9bb0f4a"
+dependencies = [
+ "serde",
+ "serde_core",
+ "stacker",
+]
+
+[[package]]
 name = "serde_urlencoded"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1688,7 +1811,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
 dependencies = [
  "cfg-if",
- "cpufeatures",
+ "cpufeatures 0.2.17",
  "digest",
 ]
 
@@ -1742,6 +1865,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "stacker"
+version = "0.1.25"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "707f49d46706bacf8a2b00d51dace3f9de527c13eec3778f570c411f89e69967"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "libc",
+ "psm",
  "windows-sys 0.61.2",
 ]
 
@@ -1842,6 +1978,12 @@ dependencies = [
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "tinyvec"
+version = "1.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tokio"
@@ -2089,10 +2231,144 @@ dependencies = [
 ]
 
 [[package]]
+name = "ultra-instinct-agent"
+version = "0.1.0"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=f506686#f50668698c2999ed3775af431f4ed257131fb4c9"
+dependencies = [
+ "ultra-instinct-browser",
+ "ultra-instinct-core",
+ "ultra-instinct-guard",
+ "ultra-instinct-observe",
+ "ultra-instinct-policy",
+ "ultra-instinct-protocol",
+]
+
+[[package]]
+name = "ultra-instinct-browser"
+version = "0.1.0"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=f506686#f50668698c2999ed3775af431f4ed257131fb4c9"
+dependencies = [
+ "serde",
+ "serde_json",
+ "serde_stacker",
+ "ultra-instinct-cdp",
+ "ultra-instinct-core",
+ "ultra-instinct-geometry",
+ "ultra-instinct-observe",
+]
+
+[[package]]
+name = "ultra-instinct-cdp"
+version = "0.1.0"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=f506686#f50668698c2999ed3775af431f4ed257131fb4c9"
+dependencies = [
+ "serde_json",
+ "tungstenite",
+]
+
+[[package]]
+name = "ultra-instinct-core"
+version = "0.1.0"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=f506686#f50668698c2999ed3775af431f4ed257131fb4c9"
+
+[[package]]
+name = "ultra-instinct-geometry"
+version = "0.1.0"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=f506686#f50668698c2999ed3775af431f4ed257131fb4c9"
+dependencies = [
+ "ultra-instinct-core",
+]
+
+[[package]]
+name = "ultra-instinct-guard"
+version = "0.1.0"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=f506686#f50668698c2999ed3775af431f4ed257131fb4c9"
+dependencies = [
+ "ultra-instinct-core",
+ "ultra-instinct-geometry",
+ "ultra-instinct-protocol",
+]
+
+[[package]]
+name = "ultra-instinct-mcp"
+version = "0.1.0"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=f506686#f50668698c2999ed3775af431f4ed257131fb4c9"
+dependencies = [
+ "base64 0.23.1",
+ "serde_json",
+ "ultra-instinct-agent",
+ "ultra-instinct-browser",
+ "ultra-instinct-cdp",
+ "ultra-instinct-core",
+ "ultra-instinct-geometry",
+ "ultra-instinct-guard",
+ "ultra-instinct-observe",
+ "ultra-instinct-protocol",
+]
+
+[[package]]
+name = "ultra-instinct-observe"
+version = "0.1.0"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=f506686#f50668698c2999ed3775af431f4ed257131fb4c9"
+dependencies = [
+ "ultra-instinct-core",
+]
+
+[[package]]
+name = "ultra-instinct-policy"
+version = "0.1.0"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=f506686#f50668698c2999ed3775af431f4ed257131fb4c9"
+dependencies = [
+ "instinct-core",
+ "instinct-lexicon",
+ "instinct-text",
+ "ultra-instinct-core",
+]
+
+[[package]]
+name = "ultra-instinct-protocol"
+version = "0.1.0"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=f506686#f50668698c2999ed3775af431f4ed257131fb4c9"
+dependencies = [
+ "ultra-instinct-core",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "unicode-normalization"
+version = "0.1.26"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75cd3fb03d5288b3ba9a1ee103ac7e9cbb59f0b03d64f8ddfcc04dd42758a85d"
+dependencies = [
+ "tinyvec",
+]
+
+[[package]]
+name = "unicode-script"
+version = "0.5.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa04c955db05429d464c74d495c1ee677e1866e783a4c3747f9c0cef7756cabf"
+
+[[package]]
+name = "unicode-security"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a23f3d0a5f302dbfdc8c5303c943c325e67cb478611bf1f44fb4c1520c64eb7"
+dependencies = [
+ "unicode-normalization",
+ "unicode-script",
+]
+
+[[package]]
+name = "unicode-segmentation"
+version = "1.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
 name = "untrusted"

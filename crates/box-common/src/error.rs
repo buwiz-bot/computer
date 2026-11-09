@@ -16,6 +16,10 @@ pub struct ErrorBody {
     pub code: String,
     pub message: String,
     pub status: u16,
+    /// What a caller needs to act on this error, for the few that have any (`confirm_required`'s
+    /// label and token). Absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
 }
 
 impl ErrorResponse {
@@ -25,6 +29,7 @@ impl ErrorResponse {
                 code: code.into(),
                 message: message.into(),
                 status: status.as_u16(),
+                details: None,
             },
         }
     }
@@ -38,6 +43,7 @@ pub enum ApiError {
         status: StatusCode,
         code: &'static str,
         message: String,
+        details: Option<serde_json::Value>,
     },
 }
 
@@ -47,6 +53,24 @@ impl ApiError {
             status,
             code,
             message: message.into(),
+            details: None,
+        }
+    }
+
+    /// This error with `details` in its body.
+    pub fn with_details(self, value: serde_json::Value) -> Self {
+        match self {
+            Self::Status {
+                status,
+                code,
+                message,
+                ..
+            } => Self::Status {
+                status,
+                code,
+                message,
+                details: Some(value),
+            },
         }
     }
 
@@ -100,7 +124,12 @@ impl ApiError {
                 status,
                 code,
                 message,
-            } => ErrorResponse::new(*status, *code, message.clone()),
+                details,
+            } => {
+                let mut body = ErrorResponse::new(*status, *code, message.clone());
+                body.error.details = details.clone();
+                body
+            }
         }
     }
 }
@@ -139,5 +168,15 @@ mod tests {
         let body = err.into_response_body();
         assert_eq!(body.error.code, "unauthorized");
         assert_eq!(body.error.status, 401);
+        let wire = serde_json::to_value(&body).unwrap();
+        assert!(wire["error"].get("details").is_none());
+    }
+
+    #[test]
+    fn details_ride_along_when_given() {
+        let err = ApiError::new(StatusCode::CONFLICT, "confirm_required", "confirm it")
+            .with_details(serde_json::json!({"label": "Pay"}));
+        let wire = serde_json::to_value(err.into_response_body()).unwrap();
+        assert_eq!(wire["error"]["details"]["label"], "Pay");
     }
 }

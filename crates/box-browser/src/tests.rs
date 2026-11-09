@@ -1,0 +1,773 @@
+//! box-browser against a fake [`Tools`]: what ultra-instinct would answer, scripted, and every call
+//! box-browser made, kept. One test runs ultra-instinct's own `Server` on a replayed page.
+
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+use base64::Engine as _;
+use serde_json::{json, Value};
+
+use crate::policy::Rules;
+use crate::seam::{GoalBounds, GoalEnd, GoalReport, GoalStep, PolicyLists, ToolFailure, Tools};
+use crate::*;
+
+#[derive(Default)]
+struct World {
+    url: String,
+    elements: Vec<Value>,
+    calls: Vec<(String, Value)>,
+    policies: Vec<PolicyLists>,
+    goal: Option<GoalReport>,
+    goals: Vec<(String, u32)>,
+    /// What the next call answers instead, once.
+    fail_next: Option<ToolFailure>,
+    /// The region the next press lands on, instead of the one at its index.
+    drift_to: Option<String>,
+    shot: Vec<u8>,
+    /// Labels the fake guard wants confirmed besides the policy's.
+    extra_confirm: Vec<String>,
+}
+
+type Shared = Arc<Mutex<World>>;
+
+struct Fake(Shared);
+
+fn button(index: u64, region: &str, label: &str) -> Value {
+    json!({"index": index, "region": region, "role": "button", "label": label,
+           "actions": ["click"], "rect": {"x": 10.0 * index as f64, "y": 20, "w": 80, "h": 30}})
+}
+
+impl Tools for Fake {
+    fn call(&mut self, name: &str, args: &Value) -> Result<Value, ToolFailure> {
+        let mut w = self.0.lock().unwrap();
+        w.calls.push((name.to_string(), args.clone()));
+        if let Some(fail) = w.fail_next.take() {
+            return Err(fail);
+        }
+        let at = |w: &World| -> Result<Value, ToolFailure> {
+            let index = args["index"].as_u64().unwrap();
+            w.elements
+                .iter()
+                .find(|e| e["index"] == index)
+                .cloned()
+                .ok_or_else(|| ToolFailure::Invalid(format!("no interactive element at {index}")))
+        };
+        Ok(match name {
+            "browser_get_state" => {
+                assert_eq!(args["format"], "json");
+                json!({"url": w.url, "title": "Shop", "interactive_elements": w.elements.len(),
+                       "elements": w.elements})
+            }
+            "browser_click"
+            | "browser_type"
+            | "browser_select_dropdown"
+            | "browser_send_key"
+            | "browser_scroll_to"
+            | "browser_focus" => {
+                let el = at(&w)?;
+                // ultra-instinct's own guard, as the fake's: the policy last set decides.
+                if name == "browser_click" {
+                    let policy = w
+                        .policies
+                        .last()
+                        .cloned()
+                        .unwrap_or_default()
+                        .to_policy()
+                        .unwrap();
+                    let label = el["label"].as_str().unwrap();
+                    let extra = w.extra_confirm.iter().any(|l| l == label)
+                        && !policy.confirmed.iter().any(|c| c == label);
+                    if policy.confirm_pattern(label).is_some() || extra {
+                        return Err(ToolFailure::NeedsConfirm {
+                            label: label.into(),
+                        });
+                    }
+                }
+                let region = w
+                    .drift_to
+                    .take()
+                    .unwrap_or_else(|| el["region"].as_str().unwrap().into());
+                json!({"acted": name, "index": args["index"], "region": region, "ticket": 41})
+            }
+            "browser_navigate" => {
+                w.url = args["url"].as_str().unwrap().into();
+                json!({"navigated": w.url})
+            }
+            "browser_list_tabs" => json!({"tabs": [
+                {"tab_id": "T1", "url": w.url, "title": "Shop", "ws_url": "ws://never/shown"},
+                {"tab_id": "T2", "url": "about:blank", "title": ""}]}),
+            "browser_new_tab" => json!({"tab_id": "T3", "url": args["url"], "new_tab": true}),
+            "browser_switch_tab" => json!({"active_tab": args["tab_id"]}),
+            "browser_close_tab" => json!({"closed": true, "tab_id": args["tab_id"]}),
+            "browser_wait" => json!({"seen": true, "after_ms": 5, "looks": 1, "url": w.url}),
+            "browser_screenshot" => json!({"format": "png",
+                "base64": base64::engine::general_purpose::STANDARD.encode(&w.shot)}),
+            "browser_state_save" => {
+                let path = args["path"].as_str().unwrap();
+                std::fs::write(
+                    path,
+                    br#"{"version":1,"cookies":[{"name":"sid","value":"s3cret"}]}"#,
+                )
+                .unwrap();
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+                json!({"path": path, "cookies": 1, "origins": [{"origin": "https://shop.example", "local": 2, "session": 0}]})
+            }
+            "browser_state_load" => {
+                let path = args["path"].as_str().unwrap();
+                assert!(std::fs::read(path).is_ok());
+                json!({"cookies": 1, "pending_origins": ["https://other.example"]})
+            }
+            other => panic!("box-browser called {other}"),
+        })
+    }
+
+    fn set_policy(&mut self, policy: &PolicyLists) -> Result<(), ToolFailure> {
+        policy.to_policy()?;
+        self.0.lock().unwrap().policies.push(policy.clone());
+        Ok(())
+    }
+
+    fn run_goal(&mut self, goal: &str, bounds: &GoalBounds) -> Result<GoalReport, ToolFailure> {
+        let mut w = self.0.lock().unwrap();
+        w.goals.push((goal.to_string(), bounds.max_steps));
+        Ok(w.goal.clone().expect("a goal report"))
+    }
+}
+
+struct FakeOpener(Shared, AtomicUsize);
+
+impl Opener for FakeOpener {
+    fn open(&self, _display: &str) -> Result<Box<dyn Tools>, BrowserError> {
+        self.1.fetch_add(1, Ordering::SeqCst);
+        Ok(Box::new(Fake(self.0.clone())))
+    }
+}
+
+struct Harness {
+    world: Shared,
+    opener: Arc<FakeOpener>,
+    browsers: Browsers,
+    root: tempfile::TempDir,
+}
+
+fn harness() -> Harness {
+    let world: Shared = Arc::default();
+    {
+        let mut w = world.lock().unwrap();
+        w.url = "https://shop.example/cart".into();
+        w.elements = vec![
+            button(1, "n10", "Search"),
+            json!({"index": 2, "region": "n20", "role": "textbox", "label": "Email",
+                   "input_type": "email", "value": "kid@example.com", "actions": ["type"],
+                   "rect": {"x": 0, "y": 60, "w": 200, "h": 30}}),
+            json!({"index": 3, "region": "n30", "role": "textbox", "label": "Password",
+                   "input_type": "password", "value": "hunter2", "actions": ["type"],
+                   "rect": {"x": 0, "y": 100, "w": 200, "h": 30}}),
+            button(4, "n40", "Pay $18"),
+            button(5, "n50", "Delete account"),
+        ];
+    }
+    let opener = Arc::new(FakeOpener(world.clone(), AtomicUsize::new(0)));
+    let root = tempfile::tempdir().unwrap();
+    let browsers = Browsers::new(
+        true,
+        Rules::default(),
+        opener.clone(),
+        root.path().to_path_buf(),
+    );
+    Harness {
+        world,
+        opener,
+        browsers,
+        root,
+    }
+}
+
+fn act(reference: &str, action: ActAction, text: Option<&str>) -> ActRequest {
+    ActRequest {
+        reference: reference.into(),
+        snapshot: None,
+        action,
+        text: text.map(str::to_string),
+        confirm: None,
+        allow_domains: None,
+    }
+}
+
+fn calls_of(h: &Harness, name: &str) -> Vec<Value> {
+    h.world
+        .lock()
+        .unwrap()
+        .calls
+        .iter()
+        .filter(|(n, _)| n == name)
+        .map(|(_, a)| a.clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn a_snapshot_is_shaped_cut_and_numbered() {
+    let h = harness();
+    let snap = h
+        .browsers
+        .snap(":1", SnapRequest { max_nodes: Some(2) })
+        .await
+        .unwrap();
+    assert_eq!(snap.elements.len(), 2);
+    assert!(snap.truncated);
+    assert_eq!(snap.total, 5);
+    assert_eq!(snap.elements[0].reference, "@e1");
+    assert_eq!(snap.elements[1].value.as_deref(), Some("kid@example.com"));
+    assert_eq!(snap.url.as_deref(), Some("https://shop.example/cart"));
+    assert!(snap.text.starts_with("@e1 button \"Search\"\n"));
+    let wire = serde_json::to_value(&snap).unwrap();
+    // Nothing of ultra-instinct's own passes through: no region ids, no indexes.
+    assert!(!wire.to_string().contains("n10"));
+    assert!(wire["elements"][0].get("index").is_none());
+
+    let next = h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    assert!(next.snapshot > snap.snapshot);
+    assert!(!next.truncated);
+    assert!(h
+        .browsers
+        .snap(":1", SnapRequest { max_nodes: Some(0) })
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn a_password_field_s_text_is_never_returned() {
+    let h = harness();
+    let snap = h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    let wire = serde_json::to_string(&snap).unwrap();
+    assert!(!wire.contains("hunter2"), "{wire}");
+    let password = &snap.elements[2];
+    assert!(password.sensitive);
+    assert_eq!(password.value, None);
+    assert!(snap.text.contains("@e3 textbox \"Password\" [sensitive]"));
+}
+
+#[tokio::test]
+async fn refs_are_good_for_the_latest_snapshot_alone() {
+    let h = harness();
+    let stale = h
+        .browsers
+        .act(":1", act("@e1", ActAction::Click, None))
+        .await;
+    assert!(matches!(stale, Err(BrowserError::Stale(_))), "{stale:?}");
+
+    let first = h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    let second = h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    let mut old = act("@e1", ActAction::Click, None);
+    old.snapshot = Some(first.snapshot);
+    assert!(matches!(
+        h.browsers.act(":1", old).await,
+        Err(BrowserError::Stale(_))
+    ));
+    let long_form = act(&format!("{}:@e1", second.snapshot), ActAction::Click, None);
+    assert!(h.browsers.act(":1", long_form).await.is_ok());
+    assert!(matches!(
+        h.browsers
+            .act(":1", act("@e9", ActAction::Click, None))
+            .await,
+        Err(BrowserError::Invalid(_))
+    ));
+
+    // The element left the page: the ref is stale, and nothing was pressed.
+    h.world
+        .lock()
+        .unwrap()
+        .elements
+        .retain(|e| e["region"] != "n10");
+    let before = calls_of(&h, "browser_click").len();
+    assert!(matches!(
+        h.browsers
+            .act(":1", act("@e1", ActAction::Click, None))
+            .await,
+        Err(BrowserError::Stale(_))
+    ));
+    assert_eq!(calls_of(&h, "browser_click").len(), before);
+
+    // A navigation ends the snapshot.
+    h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    h.browsers
+        .navigate(
+            ":1",
+            NavigateRequest {
+                url: "https://shop.example/".into(),
+                allow_domains: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        h.browsers
+            .act(":1", act("@e2", ActAction::Focus, None))
+            .await,
+        Err(BrowserError::Stale(_))
+    ));
+}
+
+#[tokio::test]
+async fn an_element_that_moved_is_found_where_it_went() {
+    let h = harness();
+    h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    // Something new above Search: Search is now @e2 on the page, still @e1 in the snapshot.
+    {
+        let mut w = h.world.lock().unwrap();
+        for e in w.elements.iter_mut() {
+            let i = e["index"].as_u64().unwrap();
+            e["index"] = json!(i + 1);
+        }
+        w.elements.insert(0, button(1, "n5", "Banner"));
+    }
+    let done = h
+        .browsers
+        .act(":1", act("@e1", ActAction::Click, None))
+        .await
+        .unwrap();
+    assert_eq!(done.ticket, Some(41));
+    assert_eq!(calls_of(&h, "browser_click")[0]["index"], 2);
+}
+
+#[tokio::test]
+async fn a_press_that_lands_elsewhere_is_reported_stale() {
+    let h = harness();
+    h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    h.world.lock().unwrap().drift_to = Some("n99".into());
+    assert!(matches!(
+        h.browsers
+            .act(":1", act("@e1", ActAction::Click, None))
+            .await,
+        Err(BrowserError::Stale(_))
+    ));
+}
+
+#[tokio::test]
+async fn a_pay_click_needs_a_person_s_confirm() {
+    let h = harness();
+    h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    let Err(BrowserError::ConfirmRequired { label, token }) = h
+        .browsers
+        .act(":1", act("@e4", ActAction::Click, None))
+        .await
+    else {
+        panic!("a Pay click went through");
+    };
+    assert_eq!(label, "Pay $18");
+    assert!(calls_of(&h, "browser_click").is_empty());
+
+    // Typing into a Pay button isn't a click: no confirm. A wrong token is no confirm.
+    let mut wrong = act("@e4", ActAction::Click, None);
+    wrong.confirm = Some("0123".into());
+    assert!(matches!(
+        h.browsers.act(":1", wrong).await,
+        Err(BrowserError::ConfirmRequired { .. })
+    ));
+
+    let mut confirmed = act("@e4", ActAction::Click, None);
+    confirmed.confirm = Some(token.clone());
+    let done = h.browsers.act(":1", confirmed).await.unwrap();
+    assert!(done.ok);
+    let clicks = calls_of(&h, "browser_click");
+    assert_eq!(clicks.len(), 1);
+    assert_eq!(clicks[0]["confirm"], "Pay $18");
+    let policies = h.world.lock().unwrap().policies.clone();
+    assert!(policies
+        .last()
+        .unwrap()
+        .confirmed
+        .contains(&"Pay $18".to_string()));
+
+    // Spent: the same token again is a new confirm.
+    let mut again = act("@e4", ActAction::Click, None);
+    again.confirm = Some(token);
+    assert!(matches!(
+        h.browsers.act(":1", again).await,
+        Err(BrowserError::ConfirmRequired { .. })
+    ));
+    // And the next plain click on Search runs under a policy with nothing confirmed.
+    h.browsers
+        .act(":1", act("@e1", ActAction::Click, None))
+        .await
+        .unwrap();
+    assert!(h
+        .world
+        .lock()
+        .unwrap()
+        .policies
+        .last()
+        .unwrap()
+        .confirmed
+        .is_empty());
+}
+
+#[tokio::test]
+async fn ultra_instinct_s_own_confirm_is_answered_the_same_way() {
+    let h = harness();
+    // Its guard holds a glob box-browser's rules don't.
+    h.world.lock().unwrap().extra_confirm = vec!["Search".into()];
+    h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    let Err(BrowserError::ConfirmRequired { label, token }) = h
+        .browsers
+        .act(":1", act("@e1", ActAction::Click, None))
+        .await
+    else {
+        panic!("the guard's refusal was lost");
+    };
+    assert_eq!(label, "Search");
+    assert_eq!(token.len(), 32);
+}
+
+#[tokio::test]
+async fn off_the_allow_list_there_is_no_input_and_no_navigation() {
+    let h = harness();
+    h.world.lock().unwrap().url = "https://evil.example/".into();
+    h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    let mut typed = act("@e2", ActAction::Type, Some("kid@example.com"));
+    typed.allow_domains = Some(vec!["shop.example".into()]);
+    let refused = h.browsers.act(":1", typed).await;
+    assert!(
+        matches!(&refused, Err(BrowserError::DomainNotAllowed(host)) if host == "evil.example"),
+        "{refused:?}"
+    );
+    assert!(calls_of(&h, "browser_type").is_empty());
+
+    let go = |url: &str| NavigateRequest {
+        url: url.into(),
+        allow_domains: Some(vec!["*.shop.example".into(), "shop.example".into()]),
+    };
+    assert!(matches!(
+        h.browsers
+            .navigate(":1", go("https://evil.example/x"))
+            .await,
+        Err(BrowserError::DomainNotAllowed(_))
+    ));
+    assert!(calls_of(&h, "browser_navigate").is_empty());
+    h.browsers
+        .navigate(":1", go("https://www.shop.example/"))
+        .await
+        .unwrap();
+    let policy = h.world.lock().unwrap().policies.last().cloned().unwrap();
+    assert_eq!(policy.allow_domains, vec!["*.shop.example", "shop.example"]);
+    assert_eq!(policy.confirm_press, Rules::default().globs());
+
+    let open = TabsRequest {
+        op: TabsOp::Open,
+        tab_id: None,
+        url: Some("https://evil.example/".into()),
+        allow_domains: Some(vec!["shop.example".into()]),
+    };
+    assert!(matches!(
+        h.browsers.tabs(":1", open).await,
+        Err(BrowserError::DomainNotAllowed(_))
+    ));
+    assert!(matches!(
+        h.browsers
+            .navigate(
+                ":1",
+                NavigateRequest {
+                    url: "file:///etc/passwd".into(),
+                    allow_domains: None
+                }
+            )
+            .await,
+        Err(BrowserError::Invalid(_))
+    ));
+}
+
+#[tokio::test]
+async fn acts_take_their_text_and_nothing_else() {
+    let h = harness();
+    h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    assert!(h
+        .browsers
+        .act(":1", act("@e2", ActAction::Type, None))
+        .await
+        .is_err());
+    assert!(h
+        .browsers
+        .act(":1", act("@e1", ActAction::Click, Some("x")))
+        .await
+        .is_err());
+    h.browsers
+        .act(":1", act("@e2", ActAction::Type, Some("kid@example.com")))
+        .await
+        .unwrap();
+    h.browsers
+        .act(":1", act("@e2", ActAction::Key, Some("Enter")))
+        .await
+        .unwrap();
+    h.browsers
+        .act(":1", act("@e2", ActAction::Scroll, None))
+        .await
+        .unwrap();
+    assert_eq!(calls_of(&h, "browser_type")[0]["text"], "kid@example.com");
+    assert_eq!(calls_of(&h, "browser_send_key")[0]["key"], "Enter");
+    assert_eq!(calls_of(&h, "browser_scroll_to")[0]["index"], 2);
+}
+
+#[tokio::test]
+async fn goal_runs_end_done_blocked_abstained_or_failed() {
+    let h = harness();
+    let run = |goal: &str| RunRequest {
+        goal: goal.into(),
+        max_steps: Some(7),
+        timeout_ms: None,
+        allow_domains: None,
+        confirm: None,
+    };
+    let step = GoalStep {
+        action: "type".into(),
+        target: "Search".into(),
+        effect: "success".into(),
+    };
+    h.world.lock().unwrap().goal = Some(GoalReport {
+        end: GoalEnd::Done,
+        steps: vec![step.clone()],
+    });
+    let done = h
+        .browsers
+        .run_goal(":1", run("Type \"rust\" into Search"))
+        .await
+        .unwrap();
+    assert_eq!(done.outcome, Outcome::Done);
+    assert_eq!(done.steps[0].target, "Search");
+    assert_eq!(h.world.lock().unwrap().goals[0].1, 7);
+
+    h.world.lock().unwrap().goal = Some(GoalReport {
+        end: GoalEnd::Blocked {
+            reason: "needs-confirm".into(),
+            confirm_label: Some("Place order".into()),
+        },
+        steps: vec![step.clone()],
+    });
+    let blocked = h.browsers.run_goal(":1", run("Buy it")).await.unwrap();
+    assert_eq!(blocked.outcome, Outcome::Blocked);
+    assert_eq!(blocked.confirm_label.as_deref(), Some("Place order"));
+    let token = blocked.confirm.clone().unwrap();
+    let wire = serde_json::to_value(&blocked).unwrap();
+    assert_eq!(wire["outcome"], "blocked");
+
+    h.world.lock().unwrap().goal = Some(GoalReport {
+        end: GoalEnd::Abstained {
+            why: "two Buy buttons".into(),
+        },
+        steps: vec![],
+    });
+    let mut confirmed = run("Buy it");
+    confirmed.confirm = Some(token.clone());
+    let abstained = h.browsers.run_goal(":1", confirmed).await.unwrap();
+    assert_eq!(abstained.outcome, Outcome::Abstained);
+    assert_eq!(abstained.why.as_deref(), Some("two Buy buttons"));
+    let policies = h.world.lock().unwrap().policies.clone();
+    assert!(policies
+        .iter()
+        .any(|p| p.confirmed == vec!["Place order".to_string()]));
+    let mut reused = run("Buy it");
+    reused.confirm = Some(token);
+    assert!(matches!(
+        h.browsers.run_goal(":1", reused).await,
+        Err(BrowserError::Invalid(_))
+    ));
+
+    h.world.lock().unwrap().goal = Some(GoalReport {
+        end: GoalEnd::Failed {
+            why: "bounds".into(),
+        },
+        steps: vec![],
+    });
+    let failed = h.browsers.run_goal(":1", run("x")).await.unwrap();
+    assert_eq!(failed.outcome, Outcome::Failed);
+
+    let mut too_many = run("x");
+    too_many.max_steps = Some(MAX_STEPS + 1);
+    assert!(h.browsers.run_goal(":1", too_many).await.is_err());
+    let mut too_long = run("x");
+    too_long.timeout_ms = Some(MAX_RUN_MS + 1);
+    assert!(h.browsers.run_goal(":1", too_long).await.is_err());
+}
+
+#[tokio::test]
+async fn a_saved_login_is_a_0600_file_in_the_screen_s_own_0700_folder() {
+    let h = harness();
+    let save = StateRequest {
+        op: StateOp::Save,
+        name: None,
+    };
+    let saved = h.browsers.state(":1", "main", save).await.unwrap();
+    assert_eq!(saved.cookies, 1);
+    assert_eq!(saved.origins, vec!["https://shop.example"]);
+    assert!(!serde_json::to_string(&saved).unwrap().contains("s3cret"));
+    let folder = h.root.path().join("main");
+    let file = folder.join("default.json");
+    let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&folder), 0o700);
+    assert_eq!(mode(&file), 0o600);
+    assert_eq!(calls_of(&h, "browser_state_save")[0]["path"], json!(file));
+
+    let load = || StateRequest {
+        op: StateOp::Load,
+        name: Some("default".into()),
+    };
+    let loaded = h.browsers.state(":1", "main", load()).await.unwrap();
+    assert_eq!(loaded.pending_origins, vec!["https://other.example"]);
+
+    // One others can read is refused, and so is a name that isn't one, or a login never saved.
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(h.browsers.state(":1", "main", load()).await.is_err());
+    let bad = StateRequest {
+        op: StateOp::Save,
+        name: Some("../../etc/x".into()),
+    };
+    assert!(h.browsers.state(":1", "main", bad).await.is_err());
+    assert!(h.browsers.state(":1", "../x", load()).await.is_err());
+    let never = StateRequest {
+        op: StateOp::Load,
+        name: Some("nope".into()),
+    };
+    assert!(h.browsers.state(":2", "bot-a", never).await.is_err());
+}
+
+#[tokio::test]
+async fn a_shot_is_a_png_within_its_cap() {
+    let h = harness();
+    let mut png = vec![
+        0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n', 0, 0, 0, 13,
+    ];
+    png.extend_from_slice(b"IHDR");
+    png.extend_from_slice(&1280u32.to_be_bytes());
+    png.extend_from_slice(&800u32.to_be_bytes());
+    h.world.lock().unwrap().shot = png.clone();
+    let shot = h.browsers.shot(":1").await.unwrap();
+    assert_eq!(
+        (shot.width, shot.height, shot.bytes),
+        (1280, 800, png.len())
+    );
+    h.world.lock().unwrap().shot = b"not a png".to_vec();
+    assert!(matches!(
+        h.browsers.shot(":1").await,
+        Err(BrowserError::Backend(_))
+    ));
+    h.world.lock().unwrap().shot = vec![0u8; screen::MAX_SHOT_BYTES + 1];
+    assert!(matches!(
+        h.browsers.shot(":1").await,
+        Err(BrowserError::Backend(_))
+    ));
+}
+
+#[tokio::test]
+async fn tabs_and_waits_come_back_in_box_browser_s_shapes() {
+    let h = harness();
+    let list = TabsRequest {
+        op: TabsOp::List,
+        tab_id: None,
+        url: None,
+        allow_domains: None,
+    };
+    let tabs = h.browsers.tabs(":1", list).await.unwrap();
+    let wire = serde_json::to_string(&tabs).unwrap();
+    assert!(!wire.contains("ws://"), "{wire}");
+    assert_eq!(tabs.tabs.unwrap().len(), 2);
+    let switch = TabsRequest {
+        op: TabsOp::Switch,
+        tab_id: Some("T2".into()),
+        url: None,
+        allow_domains: None,
+    };
+    assert_eq!(
+        h.browsers
+            .tabs(":1", switch)
+            .await
+            .unwrap()
+            .tab_id
+            .as_deref(),
+        Some("T2")
+    );
+    let close = TabsRequest {
+        op: TabsOp::Close,
+        tab_id: None,
+        url: None,
+        allow_domains: None,
+    };
+    assert!(h.browsers.tabs(":1", close).await.is_err());
+
+    let wait = WaitRequest {
+        text: Some("Welcome".into()),
+        timeout_ms: Some(2000),
+        ..Default::default()
+    };
+    let seen = h.browsers.wait(":1", wait).await.unwrap();
+    assert!(seen.seen);
+    assert_eq!(calls_of(&h, "browser_wait")[0]["seconds"], 2.0);
+    let too_long = WaitRequest {
+        timeout_ms: Some(MAX_WAIT_MS + 1),
+        ..Default::default()
+    };
+    assert!(h.browsers.wait(":1", too_long).await.is_err());
+}
+
+#[tokio::test]
+async fn a_closed_pipe_opens_again_on_the_next_call() {
+    let h = harness();
+    h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    h.world.lock().unwrap().fail_next = Some(ToolFailure::Closed("pipe closed".into()));
+    assert!(matches!(
+        h.browsers.snap(":1", SnapRequest::default()).await,
+        Err(BrowserError::Unavailable(_))
+    ));
+    h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    assert_eq!(h.opener.1.load(Ordering::SeqCst), 2);
+    // Another screen has a thread and tools of its own.
+    h.browsers.snap(":2", SnapRequest::default()).await.unwrap();
+    assert_eq!(h.opener.1.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn an_off_layer_answers_nothing() {
+    let off = Browsers::disabled();
+    assert!(matches!(
+        off.snap(":1", SnapRequest::default()).await,
+        Err(BrowserError::Disabled)
+    ));
+}
+
+/// ultra-instinct's real `Server` on a replayed page: box-browser's snap reads what it gives.
+#[tokio::test]
+async fn ultra_instinct_s_own_answer_is_read() {
+    use ultra_instinct_cdp::script::{Control, PageSpec, ScriptBuilder};
+    use ultra_instinct_cdp::{CdpTransport, ReplayTransport};
+
+    struct Replay;
+    impl Opener for Replay {
+        fn open(&self, _display: &str) -> Result<Box<dyn Tools>, BrowserError> {
+            let page = PageSpec::of(
+                &[
+                    Control::button(10, 100, "Sign in", (400.0, 300.0, 80.0, 32.0)),
+                    Control::text_field(20, 200, "Email", (400.0, 200.0, 200.0, 32.0)),
+                ],
+                "https://shop.example/login",
+                "Sign in",
+            );
+            let script = ScriptBuilder::new().observe(&page).to_json();
+            let server = ultra_instinct_mcp::Server::with_connector(move |_url| {
+                ReplayTransport::parse(&script).map(|t| Box::new(t) as Box<dyn CdpTransport>)
+            });
+            Ok(Box::new(seam::ServerTools::new(server)))
+        }
+    }
+    let browsers = Browsers::new(
+        true,
+        Rules::default(),
+        Arc::new(Replay),
+        std::env::temp_dir(),
+    );
+    let snap = browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    let labels: Vec<_> = snap.elements.iter().map(|e| e.label.as_str()).collect();
+    assert!(labels.contains(&"Sign in"), "{snap:?}");
+    assert!(labels.contains(&"Email"), "{snap:?}");
+    assert_eq!(snap.url.as_deref(), Some("https://shop.example/login"));
+    assert!(snap.elements.iter().all(|e| e.reference.starts_with("@e")));
+}

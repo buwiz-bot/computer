@@ -1,0 +1,25 @@
+[package]
+name = "box-browser"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Each screen's Chromium over its DevTools pipe, through ultra-instinct, for computer use"
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+box-chrome = { workspace = true }
+box-desktop = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+libc = { workspace = true }
+base64 = { workspace = true }
+ultra-instinct-mcp = { workspace = true }
+ultra-instinct-guard = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+ultra-instinct-cdp = { workspace = true }
