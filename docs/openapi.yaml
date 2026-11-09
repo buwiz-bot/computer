@@ -2224,6 +2224,8 @@ paths:
         ultra-instinct's loop, observe, Instinct, gate, ticket, execute, verify, on the current tab,
         under allow_domains and the confirm globs, until it's done, blocked, abstains, or max_steps or
         timeout_ms runs out. No model runs in the box: after an abstain the caller's may.
+        Not yet: this box-exec answers 503 browser_unavailable until ultra-instinct has a goal loop on
+        the pipe.
       security: [{ bearer: [] }]
       parameters:
         - name: display

@@ -419,7 +419,7 @@ How box-exec reaches each screen's tree, and why a command can't: [`ARCHITECTURE
 
 Each screen's Chromium, driven over its DevTools pipe through [ultra-instinct](https://github.com/hexuria/ultra-instinct): ultra-instinct reads the page (DOM and accessibility tree), and every press goes through its gate and a one-shot ticket bound to what it saw. All eight routes are `POST` on `box-exec`, take the token, and take `?display=:N` for another screen, as `/v1/cua/*` do. The pipe is `box-exec`'s alone, never a command's: [USERS.md](USERS.md).
 
-**Pending.** The pipe transport is being added to ultra-instinct. Until `box-exec` is built with it, every route answers `503 browser_unavailable`, and no screen's pipe is taken from its launcher.
+**Not yet.** `POST /v1/browser/run` answers `503 browser_unavailable` until ultra-instinct has a goal loop on the pipe. Every other route works. The tabs a call drives are the browser's page tabs: the first one, until `tabs open` or `switch` picks another. A tab a person opens by hand isn't driven until it's switched to.
 
 **Limits.** Every call has a time budget (45 s; a wait or a run gets its own `timeout_ms` plus 15 s). Past it the answer is `504 browser_timeout`, and calls queue behind the one still running: past 4 waiting, `429 busy`. Every answer is bounded: labels at 160 characters, addresses at 2048, a field's text at 400, 8 actions per element, 100 tabs, a screenshot at 8 MiB, anything else at 4 MiB of JSON.
 
@@ -462,16 +462,16 @@ Each screen's Chromium, driven over its DevTools pipe through [ultra-instinct](h
   "url": "https://shop.example/login",
   "title": "Sign in",
   "elements": [
-    { "ref": "@e1", "role": "textbox", "label": "Email", "actions": ["type"],
+    { "ref": "@e1", "role": "text_field", "label": "Email", "actions": ["type"],
       "rect": { "x": 400, "y": 200, "width": 200, "height": 32 }, "value": "kid@example.com" },
-    { "ref": "@e2", "role": "textbox", "label": "Password", "actions": ["type"],
+    { "ref": "@e2", "role": "text_field", "label": "Password", "actions": ["type"],
       "rect": { "x": 400, "y": 240, "width": 200, "height": 32 }, "sensitive": true },
     { "ref": "@e3", "role": "button", "label": "Sign in", "actions": ["click"],
       "rect": { "x": 400, "y": 300, "width": 80, "height": 32 } }
   ],
   "total": 3,
   "truncated": false,
-  "text": "@e1 textbox \"Email\" value=\"kid@example.com\"\n@e2 textbox \"Password\" [sensitive]\n@e3 button \"Sign in\"\n",
+  "text": "@e1 text_field \"Email\" value=\"kid@example.com\"\n@e2 text_field \"Password\" [sensitive]\n@e3 button \"Sign in\"\n",
   "elapsed_ms": 61
 }
 ```
@@ -490,7 +490,8 @@ Each screen's Chromium, driven over its DevTools pipe through [ultra-instinct](h
 
 - `action`: `click`, `type` (`text`), `select` (`text` is the option), `key` (`text` is the key: `Enter`, `Escape`, the arrows, `Home`, `End`, `PageUp`, `PageDown`), `scroll` (into view) or `focus`. `text` is up to 64 KiB, and only for those three.
 - `ref` is `@eN` or `<snapshot>:@eN`. With `snapshot`, or the long form, a ref from anything but the latest snapshot is `409 stale_ref`.
-- The page is looked at again first. The element is found by its identity, not its number, so one that moved is still hit, and one that's gone is `409 stale_ref`. If ultra-instinct's own look lands the press on another element, the answer is `409 stale_ref` too, and the press may have happened: snap again.
+- The page is looked at again first. The element is found by its identity, not its number, so one that moved is still hit, and one that's gone is `409 stale_ref`.
+- **The window that leaves.** ultra-instinct takes the element's number in reading order, and looks at the page once more to find it. Between `box-exec`'s look and that one, a few CDP round trips, the page can move, and another element can take the number. The press then lands on that element, under ultra-instinct's gate and ticket as always, and `box-exec` answers `409 stale_ref` because the identity it pressed isn't the one asked for: the press happened. ultra-instinct's coming presses bound to the snapshot close the window.
 
 `200 {"ok": true, "ref": "@e3", "action": "click", "ticket": 41}`. Errors: `409 stale_ref`, `409 confirm_required`, `403 domain_not_allowed`, `422 action_refused` (ultra-instinct's guard said no: covered, disabled, drifted), `400 invalid_request`.
 

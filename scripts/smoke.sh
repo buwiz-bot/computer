@@ -500,33 +500,152 @@ echo "${pipe_desk}"
 echo "${pipe_desk}" | grep -q FDS_ONE_SOCKET
 echo "${pipe_desk}" | grep -q LAUNCHER_UNDUMPABLE
 
-echo "==> POST /v1/browser/* (pending the ultra-instinct pipe transport)"
-snap_code="$(curl -sS -o /tmp/buwiz-browser-snap.json -w '%{http_code}' \
-  -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
-  -d '{}' "${EXEC_URL}/v1/browser/snap")"
-snap="$(cat /tmp/buwiz-browser-snap.json)"
-rm -f /tmp/buwiz-browser-snap.json
-if [[ "${snap_code}" == "503" ]] && printf '%s' "${snap}" | grep -q 'no DevTools pipe transport yet'; then
-  # Nothing took the pipe: the launcher still offers it.
-  echo "${pipe_desk}" | grep -q SOCKET_OFFERED
-  echo "PENDING: box-exec has no DevTools pipe transport yet; the browser routes answer 503 browser_unavailable"
-else
-  echo "${snap}"
-  [[ "${snap_code}" == "200" ]]
-  printf '%s' "${snap}" | grep -q '"snapshot"'
-  printf '%s' "${snap}" | grep -q '"elements"'
-  # box-exec took the pipe, and the launcher no longer offers it.
-  "${COMPOSE[@]}" exec -T -u box box sh -c '[ ! -e /run/box/x/1/run/cdp.sock ]'
-  tabs="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
-    -d '{"op":"list"}' "${EXEC_URL}/v1/browser/tabs")"
-  echo "${tabs}"
-  printf '%s' "${tabs}" | grep -q '"tabs"'
-  denied="$(curl -sS -o /dev/null -w '%{http_code}' \
+echo "==> POST /v1/browser/* on a page served inside the box"
+# bpost <route> <json>: the answer in ${body}, its status in ${code}.
+bpost() {
+  code="$(curl -sS -o "${ROOT}/workspace-data/.browser-answer" -w '%{http_code}' \
     -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
-    -d '{"url":"https://example.org/","allow_domains":["example.com"]}' \
-    "${EXEC_URL}/v1/browser/navigate")"
-  [[ "${denied}" == "403" ]]
+    -d "$2" "${EXEC_URL}/v1/browser/$1")"
+  body="$(cat "${ROOT}/workspace-data/.browser-answer")"
+  rm -f "${ROOT}/workspace-data/.browser-answer"
+}
+# ref_of <label> <role>: the @eN of the element with that label and role in the snap in ${body}.
+# A <label for> is an element of its own, with its field's name, so the role tells them apart.
+ref_of() {
+  printf '%s' "${body}" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+hits = [e["ref"] for e in d["elements"] if e["label"] == sys.argv[1] and e["role"] == sys.argv[2]]
+assert hits, (sys.argv[1:], [(e["label"], e["role"]) for e in d["elements"]])
+print(hits[0])
+' "$1" "$2"
+}
+# The page: a command serves it, as any command may on a port of its own.
+fixture="$(python3 -c 'import json,sys; print(json.dumps({"path":"shared/browser-shop.pl","content":open(sys.argv[1]).read()}))' \
+  "${ROOT}/scripts/fixtures/browser-shop.pl")"
+curl -fsS -X PUT -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+  -d "${fixture}" "${EXEC_URL}/v1/files" >/dev/null
+curl -fsS -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+  -d '{"command":["sh","-c","nohup perl /workspace/shared/browser-shop.pl >/dev/null 2>&1 & for i in $(seq 50); do curl -fsS -o /dev/null http://127.0.0.1:6910/ && exit 0; sleep 0.1; done; exit 1"]}' \
+  "${EXEC_URL}/v1/exec" | grep -q '"exit_code":0'
+allow='["127.0.0.1"]'
+
+bpost navigate "{\"url\":\"http://127.0.0.1:6910/\",\"allow_domains\":${allow}}"
+echo "navigate ${code} ${body}"
+[[ "${code}" == "200" ]]
+# box-exec took the pipe: the launcher no longer offers it.
+"${COMPOSE[@]}" exec -T -u box box sh -c '[ ! -e /run/box/x/1/run/cdp.sock ]'
+echo "the launcher's socket is gone once box-exec holds the pipe"
+bpost wait '{"text":"Fixture shop","load":"load","timeout_ms":15000}'
+echo "wait ${code} ${body}"
+printf '%s' "${body}" | grep -q '"seen":true'
+
+bpost snap '{}'
+[[ "${code}" == "200" ]]
+printf '%s' "${body}" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+labels = [e["label"] for e in d["elements"]]
+print("snap", d["snapshot"], d["url"], labels)
+assert d["url"] == "http://127.0.0.1:6910/", d["url"]
+assert {"Email", "Password", "Search", "Pay $18"} <= set(labels), labels
+# No password text: no Password element has a value, whatever ultra-instinct can say of its type.
+assert all("value" not in e for e in d["elements"] if e["label"] == "Password"), d["elements"]
+print("roles", sorted({(e["label"], e["role"]) for e in d["elements"]}))
+'
+if printf '%s' "${body}" | grep -q 'hunter2-smoke-pw'; then
+  echo "a password field's value came back" >&2
+  exit 1
 fi
+snapshot="$(printf '%s' "${body}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["snapshot"])')"
+email="$(ref_of Email text_field)"
+search="$(ref_of Search button)"
+pay="$(ref_of 'Pay $18' button)"
+
+bpost act "{\"ref\":\"${email}\",\"snapshot\":${snapshot},\"action\":\"type\",\"text\":\"kid@example.com\",\"allow_domains\":${allow}}"
+echo "type ${code} ${body}"
+[[ "${code}" == "200" ]]
+bpost act "{\"ref\":\"${search}\",\"action\":\"click\",\"allow_domains\":${allow}}"
+echo "click ${code} ${body}"
+[[ "${code}" == "200" ]]
+bpost wait '{"text":"searched kid@example.com","timeout_ms":10000}'
+echo "wait ${code} ${body}"
+printf '%s' "${body}" | grep -q '"seen":true'
+
+# A Pay click needs a person's confirm, and goes through with the token.
+bpost act "{\"ref\":\"${pay}\",\"action\":\"click\",\"allow_domains\":${allow}}"
+echo "pay ${code} ${body}"
+[[ "${code}" == "409" ]]
+printf '%s' "${body}" | grep -q '"code":"confirm_required"'
+printf '%s' "${body}" | grep -q '"label":"Pay \$18"'
+token="$(printf '%s' "${body}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["error"]["details"]["confirm"])')"
+bpost act "{\"ref\":\"${pay}\",\"action\":\"click\",\"confirm\":\"${token}\",\"allow_domains\":${allow}}"
+echo "pay confirmed ${code} ${body}"
+[[ "${code}" == "200" ]]
+bpost wait '{"text":"paid in full","timeout_ms":10000}'
+printf '%s' "${body}" | grep -q '"seen":true'
+bpost act "{\"ref\":\"${pay}\",\"action\":\"click\",\"confirm\":\"${token}\",\"allow_domains\":${allow}}"
+[[ "${code}" == "409" ]]
+echo "a spent token confirms nothing: ${code}"
+
+# Off the allow-list: refused before the browser goes anywhere.
+bpost navigate "{\"url\":\"https://example.org/\",\"allow_domains\":${allow}}"
+echo "off-list ${code} ${body}"
+[[ "${code}" == "403" ]]
+printf '%s' "${body}" | grep -q '"code":"domain_not_allowed"'
+
+bpost shot '{}'
+[[ "${code}" == "200" ]]
+printf '%s' "${body}" | python3 -c '
+import base64, json, sys
+d = json.load(sys.stdin)
+png = base64.b64decode(d["data"])
+assert d["format"] == "png" and png[:8] == b"\x89PNG\r\n\x1a\n" and len(png) == d["bytes"], d["bytes"]
+print("shot", d["width"], "x", d["height"], d["bytes"], "bytes")
+'
+
+bpost state '{"op":"save","name":"smoke"}'
+echo "state save ${code} ${body}"
+[[ "${code}" == "200" ]]
+"${COMPOSE[@]}" exec -T box sh -c 'stat -c "%a %U" /home/box/browser-state/main /home/box/browser-state/main/smoke.json' | tee /dev/stderr | tr '\n' ' ' | grep -q '^700 boxsvc 600 boxsvc'
+state_exec="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+  -d '{"command":["sh","-c","if cat /home/box/browser-state/main/smoke.json >/dev/null 2>&1; then echo STATE_READ; else echo STATE_WALLED; fi"]}' \
+  "${EXEC_URL}/v1/exec")"
+echo "${state_exec}" | grep -q STATE_WALLED
+bpost state '{"op":"load","name":"smoke"}'
+echo "state load ${code} ${body}"
+[[ "${code}" == "200" ]]
+
+bpost tabs '{"op":"open","url":"about:blank"}'
+echo "tabs open ${code} ${body}"
+[[ "${code}" == "200" ]]
+new_tab="$(printf '%s' "${body}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tab_id"])')"
+bpost tabs '{"op":"list"}'
+echo "tabs list ${code}"
+printf '%s' "${body}" | grep -q "${new_tab}"
+bpost tabs "{\"op\":\"close\",\"tab_id\":\"${new_tab}\"}"
+[[ "${code}" == "200" ]]
+bpost run '{"goal":"Click Search"}'
+echo "run ${code} ${body}"
+[[ "${code}" == "503" ]]
+
+echo "==> a relaunched Chromium offers a fresh pipe, which box-exec takes on its next call"
+"${COMPOSE[@]}" exec -T -u box box sh -c 'kill -KILL "$(pgrep -u box -o -P "$(pgrep -u box -o -x box-chrome-pipe)" -x chromium)"'
+relaunched=0
+for _ in $(seq 1 40); do
+  bpost snap '{}'
+  if [[ "${code}" == "200" ]]; then
+    relaunched=1
+    break
+  fi
+  sleep 0.5
+done
+if [[ "${relaunched}" != "1" ]]; then
+  echo "box-exec never took the relaunched Chromium's pipe: ${code} ${body}" >&2
+  exit 1
+fi
+echo "snap after the relaunch ${code}"
+"${COMPOSE[@]}" exec -T -u box box sh -c '[ ! -e /run/box/x/1/run/cdp.sock ]'
 
 echo "==> BOX_DESKTOP=0 still serves exec+host"
 "${COMPOSE[@]}" down --remove-orphans >/dev/null 2>&1 || true
