@@ -359,6 +359,10 @@ Caddy on the VM beats an ALB/HTTPS load balancer for a single box. Shared philos
 
 **Pros:** Recreate/destroy is a command; cost stops when you `tofu destroy`. **Cons:** Provider quirks, state files, easy to commit secrets if you are sloppy.
 
+### AWS EC2 (broker-managed computers)
+
+A different shape from the VMs above: Buwiz Bot's broker launches one EC2 instance per computer, hibernates it when idle and terminates it when the computer is deleted. [deploy/aws/README.md](../deploy/aws/README.md) is the OpenTofu module for what those instances launch into (launch template, network, SSH-only security group), the broker's IAM policy for your own account (`tofu output -raw broker_policy_json`), the broker's settings, cost, and how to tear it down. OpenTofu never creates an instance there.
+
 ### 4. Container-as-a-service? Kubernetes?
 
 The guest is a **long-running** container with X11, voxl, and Chromium — not a 10ms serverless function.
