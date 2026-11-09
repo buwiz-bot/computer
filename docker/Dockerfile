@@ -126,7 +126,6 @@ COPY docker/xfce/launchers/files.desktop /opt/box/desktop-home/.config/xfce4/pan
 COPY docker/xfce/kioskrc /etc/xdg/xfce4/kiosk/kioskrc
 # The desktop's wallpaper, named by xfce4-desktop.xml above.
 COPY docker/xfce/wallpaper.png /usr/share/backgrounds/buwiz-computer.png
-# chromium-launch.sh is intentionally not installed. Entrypoint owns Chromium.
 RUN chmod 755 /usr/local/bin/entrypoint.sh /usr/local/bin/box-prepare \
         /usr/local/bin/box-reset-desktop /usr/local/bin/box-chromium \
         /usr/local/bin/box-active-tab \
