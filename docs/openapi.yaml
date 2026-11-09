@@ -276,6 +276,106 @@ components:
       properties:
         path: { type: string, description: "Relative to the workspace, in the screen's folder: <workspace>/recordings/<time>-<id>.mp4" }
         bytes: { type: integer }
+    TreeRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        scope:
+          type: string
+          enum: [focused_window, desktop]
+          default: focused_window
+          description: |
+            focused_window: the window with the keyboard focus (named by the focused X window's
+            title, else AT-SPI's active window) and what's in it. desktop: every application.
+        max_depth: { type: integer, minimum: 0, maximum: 40, default: 12, description: Levels below the top nodes }
+        max_nodes: { type: integer, minimum: 1, maximum: 2000, default: 400 }
+        timeout_ms: { type: integer, minimum: 1, maximum: 10000, default: 3000, description: The walk's budget; what's read by then is returned }
+        include_hidden: { type: boolean, default: false, description: Also nodes that are neither showing nor visible, and what's under them }
+    A11yBounds:
+      type: object
+      description: Screen pixels, the space /v1/cua/click takes
+      required: [x, y, width, height]
+      properties:
+        x: { type: integer }
+        y: { type: integer }
+        width: { type: integer }
+        height: { type: integer }
+    A11yNode:
+      type: object
+      required: [ref, role, name, states]
+      properties:
+        ref: { type: string, examples: ["48213:12"], description: "<tree>:<node>, for POST /v1/cua/element; good for this tree only" }
+        role: { type: string, examples: [push_button, entry, frame, page_tab], description: "AT-SPI's role, in snake case" }
+        name: { type: string, maxLength: 161, description: May be empty }
+        description: { type: string, maxLength: 161 }
+        text:
+          type: string
+          maxLength: 401
+          description: A text node's contents when they aren't its name. Never a password field's.
+        states:
+          type: array
+          items:
+            type: string
+            enum: [active, busy, checkable, checked, collapsed, editable, enabled, expandable, expanded,
+              focusable, focused, has_popup, indeterminate, invalid_entry, modal, multi_line, pressed,
+              read_only, required, selectable, selected]
+        bounds: { $ref: "#/components/schemas/A11yBounds" }
+        actions:
+          type: array
+          maxItems: 8
+          items: { type: string }
+          description: AT-SPI action names (`click`, `press`, `activate`, …). An unnamed first action is `default`.
+        children:
+          type: array
+          items: { $ref: "#/components/schemas/A11yNode" }
+        children_omitted: { type: integer, description: Children a limit left out }
+    TreeResponse:
+      type: object
+      required: [snapshot, display, scope, nodes, count, truncated, truncated_by, skipped, elapsed_ms]
+      properties:
+        snapshot: { type: integer, description: "This tree's number. Only a screen's latest tree can be acted on." }
+        display: { type: string }
+        scope: { type: string, enum: [focused_window, desktop] }
+        nodes:
+          type: array
+          items: { $ref: "#/components/schemas/A11yNode" }
+        count: { type: integer, description: Nodes at every depth }
+        truncated: { type: boolean }
+        truncated_by:
+          type: array
+          items: { type: string, enum: [max_nodes, max_depth, time] }
+        skipped: { type: integer, description: Nodes whose application failed to answer, left out with what's under them }
+        reason: { type: string, description: "Why nodes is empty, when it is: nothing publishes a tree, or no window is focused" }
+        elapsed_ms: { type: integer }
+    ElementRequest:
+      type: object
+      additionalProperties: false
+      required: [ref, action]
+      properties:
+        ref: { type: string, description: A ref from the screen's latest tree }
+        action:
+          type: string
+          enum: [press, click, focus, set_text]
+          description: |
+            press: the element's own AT-SPI action (click, press, activate, …). The application
+            says it took it, not that anything happened: some widgets only act on a real click.
+            click: a real click (XTEST) in the middle of the element, where it is now.
+            focus: give it the keyboard focus. set_text: replace an editable field's text.
+        text: { type: string, maxLength: 65536, description: For set_text alone }
+    ElementResponse:
+      type: object
+      required: [ok, ref, action]
+      properties:
+        ok: { type: boolean }
+        ref: { type: string }
+        action: { type: string, enum: [press, click, focus, set_text] }
+        performed: { type: string, description: "For press: the AT-SPI action run" }
+        at:
+          type: object
+          description: "For click: where the click went"
+          properties:
+            x: { type: integer }
+            y: { type: integer }
     ChromeStatus:
       type: object
       required: [enabled, ready, running, profile, display]
@@ -1362,6 +1462,108 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "503":
           description: CUA disabled or display down
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/cua/tree:
+    post:
+      tags: [cua]
+      summary: The screen's accessibility tree (AT-SPI), as text
+      description: |
+        Native apps' buttons, fields, menus and tabs, Chromium's own included, read over that
+        screen's accessibility bus. Breadth first, and bounded by node count, depth, time and
+        string length: a cut is `truncated`, never an error. Each node's `ref` names it in this
+        tree, for POST /v1/cua/element, and `bounds` are in the pixels /v1/cua/click takes. An
+        empty tree comes with a `reason`. With no body, the focused window with the defaults.
+      security: [{ bearer: [] }]
+      parameters:
+        - name: display
+          in: query
+          required: false
+          description: Another of the box's screens (`:N`). Without it, the box's own.
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TreeRequest" }
+      responses:
+        "200":
+          description: The tree, possibly cut or empty
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TreeResponse" }
+        "400":
+          description: invalid_request, a limit out of range or a display that isn't `:N`
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401":
+          description: Missing or wrong token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "502":
+          description: a11y_backend, the screen's accessibility registry did not answer
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: cua_disabled, display_unavailable, or a11y_unavailable when the screen has no accessibility bus
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/cua/element:
+    post:
+      tags: [cua]
+      summary: Press, click, focus or fill a node of the screen's latest tree
+      security: [{ bearer: [] }]
+      parameters:
+        - name: display
+          in: query
+          required: false
+          description: The screen whose tree the ref is from (`:N`). Without it, the box's own.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ElementRequest" }
+      responses:
+        "200":
+          description: Done
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ElementResponse" }
+        "400":
+          description: invalid_request (a malformed ref, set_text without text), or out_of_range for a click off the screen
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "401":
+          description: Missing or wrong token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: stale_ref, the ref is from an older tree, or its element is gone; read the tree again
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "422":
+          description: unsupported_action, the element has no way to do it; action_refused, its application said no
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "502":
+          description: a11y_backend, the application did not answer
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: cua_disabled, display_unavailable or a11y_unavailable
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
