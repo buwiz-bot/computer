@@ -490,8 +490,8 @@ impl BuwizComputer {
 
     /// `POST /v1/cua/tree`: the screen's accessibility tree (AT-SPI), each node with a `ref`,
     /// role, name, states, bounds in screen pixels and actions. `body` takes `scope`
-    /// (`focused_window`, the default, or `desktop`), `max_depth`, `max_nodes`, `timeout_ms` and
-    /// `include_hidden`; `{}` for the defaults.
+    /// (`focused_window`, the default, or `desktop`), `max_depth`, `max_nodes`, `timeout_ms`,
+    /// `include_hidden` and `compact`; `{}` for the defaults.
     pub async fn cua_tree(&self, body: Value) -> Result<Value, Error> {
         self.send_json("POST", &self.cua("tree"), Some(body), true)
             .await

@@ -239,6 +239,9 @@ enum CuaCmd {
         /// Also nodes that are neither showing nor visible
         #[arg(long)]
         include_hidden: bool,
+        /// Keep the nameless containers compact mode leaves out
+        #[arg(long)]
+        no_compact: bool,
         /// Another of the box's screens (:N)
         #[arg(long)]
         display: Option<String>,
@@ -452,6 +455,7 @@ async fn main() -> Result<()> {
                 max_nodes,
                 timeout_ms,
                 include_hidden,
+                no_compact,
                 display,
             } => {
                 let on = display.map_or_else(|| box_client.clone(), |d| box_client.on(&d));
@@ -470,6 +474,9 @@ async fn main() -> Result<()> {
                 }
                 if include_hidden {
                     body["include_hidden"] = json!(true);
+                }
+                if no_compact {
+                    body["compact"] = json!(false);
                 }
                 print_json(&on.cua_tree(body).await?)?;
             }
