@@ -17,9 +17,8 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 authors = ["Uriah"]
-description = "Sandboxed Linux computer for agents (buwiz-computer guest image, CLI, and SDKs)"
 repository = "https://github.com/buwiz-bot/computer"
-rust-version = "1.85"
+rust-version = "1.99"
 
 [workspace.dependencies]
 box-common = { path = "crates/box-common" }

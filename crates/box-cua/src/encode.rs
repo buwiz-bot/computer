@@ -118,7 +118,7 @@ pub fn zpixmap_to_rgb(
             bgra_to_rgb(row, dst);
             continue;
         }
-        for (x, out) in dst.chunks_exact_mut(3).enumerate() {
+        for (x, out) in dst.as_chunks_mut::<3>().0.iter_mut().enumerate() {
             let pixel = if bits_per_pixel == 32 {
                 // SAFETY: `row` is `w*4` and `x < w` (dst is `w*3` chunks).
                 let s = unsafe { load_u32_bytes(row, x * 4) };
@@ -136,12 +136,11 @@ pub fn zpixmap_to_rgb(
                     u32::from_be_bytes([0, s[0], s[1], s[2]])
                 }
             };
-            // SAFETY: `chunks_exact_mut(3)` yields a 3-byte slice.
-            unsafe {
-                *out.get_unchecked_mut(0) = ((pixel & red_mask) >> r_shift) as u8;
-                *out.get_unchecked_mut(1) = ((pixel & green_mask) >> g_shift) as u8;
-                *out.get_unchecked_mut(2) = ((pixel & blue_mask) >> b_shift) as u8;
-            }
+            *out = [
+                ((pixel & red_mask) >> r_shift) as u8,
+                ((pixel & green_mask) >> g_shift) as u8,
+                ((pixel & blue_mask) >> b_shift) as u8,
+            ];
         }
     }
     Ok(())

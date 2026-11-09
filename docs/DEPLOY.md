@@ -81,7 +81,7 @@ Optional later: a domain + DNS at Akamai or elsewhere (only for public HTTPS). T
 
 ## C. Instance / machine sizing
 
-This guest is **RAM-heavy**: Debian + Xvfb + xfce + voxl + Chromium + two Rust daemons. The **first** deploy also **builds the image on the VM** (Rust `1.85` builder compiles `box-exec` / `box-host`, then a `debian:bookworm-slim` runtime with Chromium). `.github/workflows/publish-image.yml` can push GHCR on `v*` tags; until you pull that, build on the VM.
+This guest is **RAM-heavy**: Debian + Xvfb + xfce + voxl + Chromium + two Rust daemons. The **first** deploy also **builds the image on the VM** (Rust `1.99` builder compiles `box-exec` / `box-host`, then a `debian:bookworm-slim` runtime with Chromium). `.github/workflows/publish-image.yml` can push GHCR on `v*` tags; until you pull that, build on the VM.
 
 | Plan | Type slug | vCPU | RAM | Disk | ~price (core regions, 2026 list — confirm in Cloud Manager) | Verdict |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -458,7 +458,7 @@ After the Akamai VM is up and Compose is healthy:
 
 ## I. Open questions / risks
 
-- **Image build time on the VM.** First `docker compose up --build` compiles Rust in `rust:1.85-bookworm` and `rust:1.93-bookworm` (voxl) and apt-installs Chromium. Expect a long first boot. A small VM makes this worse; 8 GB / 4 vCPU is the mitigation. Tagged releases can push `ghcr.io/buwiz-bot/computer` via `.github/workflows/publish-image.yml` (`GITHUB_TOKEN` + `packages: write`). Until you have pulled that image, `git clone && docker compose up --build` is the path.
+- **Image build time on the VM.** First `docker compose up --build` compiles Rust in `rust:1.99-bookworm` and `rust:1.93-bookworm` (voxl) and apt-installs Chromium. Expect a long first boot. A small VM makes this worse; 8 GB / 4 vCPU is the mitigation. Tagged releases can push `ghcr.io/buwiz-bot/computer` via `.github/workflows/publish-image.yml` (`GITHUB_TOKEN` + `packages: write`). Until you have pulled that image, `git clone && docker compose up --build` is the path.
 - **Rust / TS / Python clients speak HTTPS.** Guest daemons still bind HTTP. Put Caddy/nginx in front for TLS. The Rust crate uses hyper-rustls (webpki roots).
 - **Chromium RAM.** One desktop guest is the design point. Two guests on one 8 GB VM will hurt.
 - **IPv6.** Akamai assigns it. Cloud Firewall must DROP v6 too, or you published the box on v6 while locking v4.

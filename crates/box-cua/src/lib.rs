@@ -664,7 +664,7 @@ pub fn wheel_ticks(delta: i32) -> u32 {
     if abs == 0 {
         return 0;
     }
-    ((abs + 119) / 120).clamp(1, 12)
+    abs.div_ceil(120).clamp(1, 12)
 }
 
 pub(crate) fn scroll_args(x: i32, y: i32, dx: i32, dy: i32) -> SmallVec<[String; 16]> {

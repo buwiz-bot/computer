@@ -4,7 +4,7 @@
 # box-exec / box-host default features compile in mimalloc (needs gcc, already
 # in rust:bookworm). Opt out with cargo --no-default-features.
 
-FROM rust:1.85-bookworm AS builder
+FROM rust:1.99-bookworm AS builder
 WORKDIR /src
 
 COPY Cargo.toml rust-toolchain.toml ./
@@ -20,7 +20,7 @@ RUN gcc -shared -fPIC -O2 -o /src/target/release/libbox-shm-private.so shm-priva
 
 # voxl serves each screen to a browser: H.264 over a WebSocket, and /wait, /screenshot and
 # /record for the agent. Pinned, because it moves fast: bump it on purpose. It stays a separate
-# process (x264 is GPL) and needs a newer Rust than the box's own 1.85.
+# process (x264 is GPL), built on the toolchain its own release was checked on.
 FROM rust:1.93-bookworm AS voxl-builder
 ARG VOXL_VERSION=0.3.3
 RUN apt-get update \

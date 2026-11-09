@@ -4,7 +4,7 @@ A sandboxed Linux computer for agents: a guest Docker image, two HTTP daemons (`
 
 You start the guest. Then you talk to it over HTTP with a URL pair and a bearer token. This repo does **not** publish packages to crates.io, npm, or PyPI.
 
-License: **MIT**. MSRV: Rust **1.85**.
+License: **MIT**. MSRV: Rust **1.99**.
 
 ## What you get
 

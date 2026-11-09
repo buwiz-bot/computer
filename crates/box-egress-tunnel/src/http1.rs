@@ -101,14 +101,10 @@ fn header_value<'a>(head: &'a str, name: &str) -> Option<&'a str> {
 }
 
 fn parse_absolute_http(target: &str) -> Option<(String, u16, String)> {
-    let (scheme, rest, default_port) = if let Some(rest) = target.strip_prefix("http://") {
-        ("http", rest, 80u16)
-    } else if let Some(rest) = target.strip_prefix("https://") {
-        ("https", rest, 443u16)
-    } else {
-        return None;
+    let (rest, default_port) = match target.strip_prefix("http://") {
+        Some(rest) => (rest, 80u16),
+        None => (target.strip_prefix("https://")?, 443u16),
     };
-    let _ = scheme;
     let (authority, path) = match rest.find('/') {
         Some(i) => (&rest[..i], &rest[i..]),
         None => (rest, "/"),
