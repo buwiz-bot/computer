@@ -7,9 +7,12 @@ How to bring buwiz-computer up and talk to it. The product is the guest image pl
 From the repository root:
 
 ```bash
-cp .env.example .env          # set BOX_TOKEN and BOX_VIEWER_PASSWORD
+cp .env.example .env          # set BOX_TOKEN and BOX_VIEWER_PASSWORD (openssl rand -base64 32)
+bash scripts/write-secrets.sh # ./secrets/*, which Compose mounts
 docker compose up --build
 ```
+
+The daemons refuse to start on a token or viewer password that is short, or still the `.env.example` placeholder (`replace-with…`).
 
 Wait until host ready is 200 (Bearer required):
 
@@ -17,7 +20,7 @@ Wait until host ready is 200 (Bearer required):
 curl -fsS -H "Authorization: Bearer $BOX_TOKEN" http://127.0.0.1:1340/v1/ready
 ```
 
-Compose healthcheck uses the same path with the container env token.
+The Compose healthcheck does not use this path. It checks the public `/v1/health` on both daemons, with no token.
 
 You now have:
 
@@ -43,20 +46,20 @@ See [API.md](API.md) for files and CUA.
 ### CLI
 
 ```bash
+export BUWIZ_COMPUTER_TOKEN="$BOX_TOKEN"   # not --token: argv shows in `ps`
+
 cargo run -p buwiz-computer -- \
   --exec-url http://127.0.0.1:1337 \
   --host-url http://127.0.0.1:1340 \
-  --token "$BOX_TOKEN" \
   ready
 
 cargo run -p buwiz-computer -- \
   --exec-url http://127.0.0.1:1337 \
   --host-url http://127.0.0.1:1340 \
-  --token "$BOX_TOKEN" \
   exec -- echo ok
 ```
 
-Environment aliases: `BUWIZ_COMPUTER_EXEC_URL`, `BUWIZ_COMPUTER_HOST_URL`, `BUWIZ_COMPUTER_TOKEN`.
+Every flag has an environment form: `BUWIZ_COMPUTER_EXEC_URL`, `BUWIZ_COMPUTER_HOST_URL`, `BUWIZ_COMPUTER_TOKEN`. All subcommands: [CLI.md](CLI.md).
 
 ### SDKs
 
@@ -96,7 +99,7 @@ let box_client = buwiz_computer::BuwizComputer::connect(
     "http://127.0.0.1:1337",
     "http://127.0.0.1:1340",
     std::env::var("BUWIZ_COMPUTER_TOKEN").unwrap(),
-);
+)?;
 ```
 
 There is no `Sandbox.create()`. Start the guest with Docker (or your own runtime), then connect.
@@ -112,7 +115,7 @@ Binds exec/host to **127.0.0.1**. Does not print `BOX_TOKEN`. CUA will not scree
 ## 3. Your own orchestrator
 
 1. `docker run` (or equivalent) from this image.
-2. Inject `BOX_TOKEN`, `BOX_VIEWER_PASSWORD`, `BOX_ID`, desktop/chrome/CUA env as needed.
+2. Hand the box `BOX_TOKEN` and `BOX_VIEWER_PASSWORD` as files (`BOX_TOKEN_FILE`, `BOX_VIEWER_PASSWORD_FILE`; README §Auth), and `BOX_ID`, desktop/chrome/CUA env as needed.
 3. Publish 1337, 1340, 6901-6905 on **127.0.0.1** (or a tunnel). Never 8791. Optional `8790` when `BOX_EGRESS_TUNNEL=1` ([EGRESS.md](EGRESS.md)).
 4. Poll `GET {hostUrl}/v1/ready` with Bearer until 200.
 5. `BuwizComputer.connect(execUrl, hostUrl, token)` — the URLs **you** published, not `/v1/info`.

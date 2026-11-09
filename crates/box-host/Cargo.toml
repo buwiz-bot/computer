@@ -6,6 +6,7 @@ license.workspace = true
 authors.workspace = true
 description = "Layer 3 host gateway: identity, capabilities, readiness"
 rust-version.workspace = true
+publish = false
 
 [features]
 default = ["mimalloc"]
@@ -32,4 +33,3 @@ http = { workspace = true }
 tempfile = { workspace = true }
 http-body-util = { workspace = true }
 tower = { workspace = true }
-serde_json = { workspace = true }

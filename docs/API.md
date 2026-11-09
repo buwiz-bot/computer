@@ -22,7 +22,7 @@ Auth: `Authorization: Bearer <BOX_TOKEN>` unless noted. `GET /v1/health` is the 
 }
 ```
 
-Common codes: `unauthorized`, `invalid_request`, `path_escape`, `not_found`, `payload_too_large`, `exec_failed`, `io_error`, `internal`, `not_ready`, `cua_disabled`, `display_unavailable`, `out_of_range`, `cua_backend`.
+Common codes: `unauthorized`, `invalid_request`, `path_escape`, `not_found`, `payload_too_large`, `exec_failed`, `io_error`, `internal`, `not_ready`, `busy` (429, every exec slot is taken), `cua_disabled`, `display_unavailable` (503, the X server is down), `viewer_unavailable` (503, that screen's voxl is down), `out_of_range`, `cua_backend` (502), `keeper_failed` (502, `POST /v1/screen` could not reach `box-keeper`).
 
 CUA coordinate space is the X framebuffer **1280×800** (`BOX_DISPLAY_GEOM=1280x800x24`). Origin is top-left. Clicks outside that range return `400 out_of_range`.
 
@@ -79,7 +79,7 @@ On timeout: `timed_out: true`; the process group gets **SIGTERM**, then **SIGKIL
 A backgrounded process inherits the write ends of stdout and stderr, so those pipes never reach EOF. Once the direct child exits, the daemon collects what is already buffered and stops reading; it does not wait for an EOF that is not coming.
 
 - `output_complete: false` — a process the command left running still holds the pipes. Everything the foreground wrote is in `stdout` / `stderr`; anything written **after** the foreground exited was not captured.
-- `truncated` is `true` whenever `output_complete` is `false`, so a caller that only looks at `truncated` is not told the output is whole when it is not.
+- `truncated` is `true` when `output_complete` is `false` for a finished command, so a caller that only looks at `truncated` is not told the output is whole when it is not. It is also `true` when a cap hit. There are two exceptions where `output_complete` is `false` and `truncated` is `false`, because nothing was read at all: polling a detached exec that is still running, and a stream whose command failed to start (its `exit` event follows an `exec failed:` line on stderr).
 
 ```bash
 curl -fsS "$EXEC/v1/exec" -H "Authorization: Bearer $BOX_TOKEN" \
@@ -323,7 +323,7 @@ Optional `observe` is `off` (default), `input`, or `page`:
 
 - **`off`** — the receipt this endpoint produced before the field existed, byte for byte. No probes, no cost.
 - **`input`** — each step gains an `observed` block carrying `target` (the window covering the step's target coordinate, read **before** the step moved anything) for pointer steps, and `focus` (where the keys were about to go) for `type` and `key`. Both are X11 requests on a connection the box already holds — no processes are forked.
-- **`page`** — everything `input` gives, plus `url_before` / `url_after` around `click`, `double_click`, `type` and `key`, read from the Chromium DevTools HTTP endpoint on loopback.
+- **`page`** — everything `input` gives, plus `url_before` / `url_after` around `click`, `double_click`, `type` and `key`, read from that screen's extension report (the same one `GET /v1/chrome/active-tab` serves). There is no DevTools port.
 
 ```json
 {
@@ -349,7 +349,67 @@ Reading a receipt:
 - `url_after` is read as soon as the step returns (after any `settle` wait). A browser navigation is not instant, so a `Return` that *did* navigate often still shows the old URL there and the new one in the next step's `url_before`. A URL that never moves across a whole run is a `Return` that submitted nothing.
 - `observe_ms` is the wall time that step spent looking rather than acting. It is **not** counted in the step's `ms`, the same way a per-step screenshot never was.
 
-Cost, so a caller can decide rather than be surprised. `input` forks nothing: it is about **ten X round-trips** for a pointer step and about **four** for a `type`, over the box's own unix socket, on a connection held separately from the input one. That is an order of magnitude below the pacing a step already pays — `CLICK_GAP` is 12ms per click and typed characters are paced at 30ms each. `page` adds **two** DevTools HTTP calls per observed step (one each side); where Chromium is not listening, the loopback connection is refused immediately, and where it is hung, each call is capped at 250ms. Every observation is bounded at 400ms on the X side, and one that fails costs the receipt a fact, never the recipe a step. `observe` changes no timing except its own: it never waits for a page to load and it never launches anything.
+Cost, so a caller can decide rather than be surprised. `input` forks nothing: it is about **ten X round-trips** for a pointer step and about **four** for a `type`, over the box's own unix socket, on a connection held separately from the input one. That is an order of magnitude below the pacing a step already pays — `CLICK_GAP` is 12ms per click and typed characters are paced at 30ms each. `page` adds **two** reads of the screen's small report file per observed step (one each side); where the browser has not reported, the read finds nothing and the URL is absent. Every observation is bounded at 400ms on the X side, and one that fails costs the receipt a fact, never the recipe a step. `observe` changes no timing except its own: it never waits for a page to load and it never launches anything.
+
+### `POST /v1/cua/tree`
+
+A screen's accessibility tree, over AT-SPI: native apps' buttons, fields, menus and tabs as text, Chromium's own toolbar and pages included, so an agent can read what's on the screen and act on it by name instead of by pixels. `?display=:N` for another screen. Every field is optional, and no body is the focused window with the defaults:
+
+```json
+{ "scope": "focused_window", "max_depth": 12, "max_nodes": 400, "timeout_ms": 3000, "include_hidden": false, "compact": true }
+```
+
+- `scope`: `focused_window` (default) is the window with the keyboard focus, as X names it (its title), else the one AT-SPI calls active. `desktop` is every application with its windows.
+- `max_depth` 0–40 (levels below the top nodes), `max_nodes` 1–2000, `timeout_ms` 1–10000. Out of range is `400 invalid_request`.
+- `include_hidden`: nodes that are neither showing nor visible (a closed menu, a tab behind another) are left out, with what's under them, unless this is true.
+- `compact`: nameless containers with nothing to act on (`panel`, `filler`, `section`, …) give their place to their children, unless this is false. Chromium wraps each control in a few of them. `max_nodes` and `max_depth` count the nodes read, compacted ones included.
+
+```json
+{
+  "snapshot": 48213,
+  "display": ":1",
+  "scope": "desktop",
+  "nodes": [
+    { "ref": "48213:4", "role": "application", "name": "xfce4-panel", "states": [], "children": [
+      { "ref": "48213:11", "role": "frame", "name": "", "states": ["enabled"],
+        "bounds": { "x": 576, "y": 736, "width": 128, "height": 64 }, "children": [
+          { "ref": "48213:35", "role": "button", "name": "Files", "states": ["enabled"],
+            "bounds": { "x": 640, "y": 736, "width": 64, "height": 64 }, "actions": ["Click"] } ] } ] }
+  ],
+  "count": 63,
+  "truncated": false,
+  "truncated_by": [],
+  "skipped": 0,
+  "elapsed_ms": 44
+}
+```
+
+- `ref` is `<snapshot>:<n>`, good for this tree only: `POST /v1/cua/element` takes refs from the screen's **latest** tree and refuses older ones.
+- `role` is AT-SPI's in snake case (`push_button`, `entry`, `page_tab`, `document_web`). `name` is always there and may be empty; `description` and `text` only when they say something new. `text` is a text node's contents, clipped; a password field's never comes, nor that of a node whose role is `unknown`.
+- `states` is the useful subset: `active`, `checked`, `editable`, `enabled`, `expanded`, `focusable`, `focused`, `pressed`, `selected` and a few more ([`openapi.yaml`](openapi.yaml)).
+- `bounds` are screen pixels, the space `/v1/cua/click` takes; absent when the element takes no space. `actions` are AT-SPI's action names. Chromium names none of its, so its buttons list none, and `press` still runs their first, the default action.
+- Bounded everywhere: names and descriptions at 160 characters, text at 400, 8 actions. The walk is breadth first, so a cut tree still has the top of every window. A cut sets `truncated`, lists the limits in `truncated_by` (`max_nodes`, `max_depth`, `time`), and puts `children_omitted` on each node that lost children. An application that hangs costs the time budget and no more. `skipped` counts nodes whose application answered with an error.
+- An empty tree is not an error: it comes with a `reason` ("no application on this screen publishes an accessibility tree", or no window is focused).
+
+Errors: `503 cua_disabled`, `503 display_unavailable`, `503 a11y_unavailable` (the screen has no accessibility bus, or what listens there isn't its desktop), `502 a11y_backend` (its registry did not answer).
+
+### `POST /v1/cua/element`
+
+An action on a node of the screen's latest tree, by `ref`. `?display=:N` must be the screen the tree came from.
+
+```json
+{ "ref": "48213:35", "action": "press" }
+{ "ref": "48213:57", "action": "set_text", "text": "hello" }
+```
+
+- `press`: the element's own AT-SPI action, the first of `click`, `press`, `activate`, `jump`, `toggle`, `open`, else its only one, or its first when that has no name (Chromium's default action, reported as `performed: "default"`). The application says whether it took it, not whether anything happened, and some widgets only act on a real click (xfce's panel launchers are one): look again, or use `click`.
+- `click`: a real click (XTEST, as `/v1/cua/click`) in the middle of the element where it is **now**, so a window that moved since the tree is still hit. The answer has `at: {x, y}`.
+- `focus`: the keyboard focus, through AT-SPI.
+- `set_text`: replaces an editable field's text, up to 64 KiB. Only for fields with AT-SPI's EditableText (GTK entries; not Chromium's address bar): otherwise `focus` or `click`, then `/v1/cua/type`.
+
+`200 {"ok": true, "ref": "48213:35", "action": "press", "performed": "Click"}`. Errors: `409 stale_ref` (the ref is from an older tree, from another screen's, or its element is gone: read the tree again), `422 unsupported_action` (the element has no way to do it), `422 action_refused` (its application said no), `400 invalid_request` (a malformed ref, `set_text` without `text`, `text` with another action), `400 out_of_range` (a `click` off the screen), `502 a11y_backend`, and the `503`s of `/v1/cua/tree`.
+
+How box-exec reaches each screen's tree, and why a command can't: [`ARCHITECTURE.md`](ARCHITECTURE.md#accessibility-tree-at-spi).
 
 ---
 
@@ -366,8 +426,10 @@ Cost, so a caller can decide rather than be surprised. `input` forks nothing: it
 `200` when `box-exec` answers `/v1/health`, and (when `BOX_DESKTOP_REQUIRED=1`) the X display is up. Otherwise `503` with `error.code = not_ready`. Chrome is not required for ready. Missing or invalid Bearer is `401`.
 
 ```json
-{ "status": "ready", "service": "box-host", "exec_ready": true, "desktop_ready": true }
+{ "status": "ready", "service": "box-host", "exec_ready": true, "desktop_ready": true, "viewer_ready": true }
 ```
+
+`viewer_ready` is whether the main screen's voxl takes connections. It never holds up ready: the box works unwatched. The X probe has a time limit, and a box without `xdpyinfo` is not ready when the desktop is required.
 
 ### `GET /v1/info` (bearer)
 
@@ -387,6 +449,7 @@ Uses `BOX_HOST_TOKEN` if set, else `BOX_TOKEN`.
     "exec": { "enabled": true, "ready": true },
     "files": { "enabled": true, "ready": true },
     "desktop": { "enabled": true, "ready": true },
+    "viewer": { "kind": "voxl", "port": 6901, "enabled": true, "ready": true },
     "chrome": { "enabled": true, "ready": true },
     "cua": { "enabled": true, "ready": true },
     "egress_tunnel": { "enabled": false, "ready": false }
@@ -480,6 +543,20 @@ Answer: `{"changed": true, "timed_out": false, "seq": 813, "waited_ms": 340}`. T
 ```
 
 `ready` and `running` mean the process the entrypoint started is alive. There is no DevTools port: [`USERS.md`](USERS.md).
+
+### `GET /v1/chrome/active-tab` (bearer)
+
+The page in front of Chromium, as the box's own extension last reported it. `?display=:N` asks for a Bot's own screen; without it, the box's own.
+
+```json
+{ "url": "https://example.com/login", "atMs": 1794000000000, "focus": "password", "seq": 7 }
+```
+
+`url` is `null` (and the other fields are absent) when nothing has reported: no Chromium on that screen, or one started without the extension. `focus` is the kind of box focused on the page, as the page said: `password`, `text`, `other` or `none`. `seq` counts that browser's reports, so a reader that clicked a field can wait for it to move before it trusts `focus`. The report is dropped when Chromium closes its port.
+
+A caller reads this before typing a saved login, and types nothing when the page in front is not the login's own site.
+
+Trust limit. The report is a file in that screen's run folder (`/run/box/x/<slot>/run/active-tab.json`), written by `box-active-tab` as the screen's desktop user. A command (an agent user) cannot write it, and `box-host` refuses a file that is not that desktop user's own. But anything running as that desktop user, the browser included, could write it. It answers "which page is in front", not "prove no one lied", and is no weaker than the desktop user itself, who can already read the browser's profile. A box not run with separate users (`BOX_RUN_AS` not `agents`) has no owner check, and any process of the box user could write the file.
 
 ### `GET /v1/egress` (bearer)
 

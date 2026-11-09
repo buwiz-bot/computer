@@ -6,6 +6,7 @@ license.workspace = true
 authors.workspace = true
 description = "Layer 3 exec daemon: shell, files, and workspace jail"
 rust-version.workspace = true
+publish = false
 
 [features]
 default = ["mimalloc"]
@@ -15,13 +16,13 @@ mimalloc = ["box-common/mimalloc"]
 
 [dependencies]
 box-common = { workspace = true }
+box-a11y = { workspace = true }
 box-cua = { workspace = true }
 box-desktop = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-tower = { workspace = true }
 tower-http = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -36,4 +37,3 @@ tokio-stream = { workspace = true }
 http-body-util = { workspace = true }
 tempfile = { workspace = true }
 tower = { workspace = true }
-serde_json = { workspace = true }

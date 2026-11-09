@@ -1,12 +1,10 @@
 # Review status (for follow-up agents)
 
-**Branch:** `main`  
-**Baseline merge:** [PR #7](https://github.com/buwiz-bot/computer/pull/7) — BOX-REVIEW P0 → P1 (selective P2)  
-**Merged:** 2026-09-14 (commit includes merge of `gol/box-review-p0-p1-cff5`)
+**Repo:** `buwiz-bot/computer`, imported from `hexuria/box` at `64f2b13` with its history. `hexuria/box` is frozen; `buwiz-bot/computer` is the one name.  
+**Baseline:** the slices below came from the original BOX-REVIEW P0 → P1 pass (selective P2), merged 2026-09-14 as `hexuria/box` PR #7. The review text itself was a conversation artifact and is not in this repo.  
+**Since then:** [CHANGELOG.md](../CHANGELOG.md) at the repo root lists what changed, with the files; the egress review's findings, fixed and open, are in [review/findings-box30.md](review/findings-box30.md).
 
-Prior analysis-only review: conversation artifact `BOX-REVIEW.md` (keep/cut/add). Implementation tracked in PR #7 body + `docs/CHANGELOG.md` if present.
-
-## Completed on `main`
+## Completed (original baseline)
 
 ### Slice A — contract freeze
 - OpenAPI / README / API.md aligned with live routes
@@ -14,7 +12,7 @@ Prior analysis-only review: conversation artifact `BOX-REVIEW.md` (keep/cut/add)
 - Recipe `settle` defaults **off**; recipes do not launch/kill Chromium as side effects
 
 ### Slice B — honest image
-- Single Chromium model via entrypoint (no fighting `chromium-launch.sh` in image)
+- Single Chromium model via the entrypoint; the old standalone launch script was never run and is now deleted
 - `reset_desktop` does not fight Chromium respawn
 
 ### Slice C — hardness + CI
@@ -41,11 +39,13 @@ Prior analysis-only review: conversation artifact `BOX-REVIEW.md` (keep/cut/add)
 | --- | --- |
 | Interactive **PTY** (`pty: true`) | Returns 400; use `/v1/exec/stream` |
 | Vendor **trycua/cua** | Optional later backend; Linux X11 is default |
-| Full Docker image smoke on CI runner | May be environment-limited; use `scripts/smoke.sh` locally |
+| Docker image smoke on CI | `.github/workflows/image-smoke.yml` runs `scripts/smoke.sh` on PRs that touch `docker/**`, `docker-compose.yml` or the script. It is written, not yet seen to pass on a runner; run `scripts/smoke.sh` locally too. |
+| amd64 image | Neither built nor tested; the publish workflow is written, not run |
 
 ## How to re-review
 
-1. Checkout `main`, read `README.md` + `docs/ARCHITECTURE.md` + `docs/openapi.yaml`.
+1. Check out the branch under review (`main` once merged), read `README.md` + `docs/ARCHITECTURE.md` + `docs/openapi.yaml`.
 2. `cargo test --workspace` && clippy.
 3. `./scripts/smoke-native.sh`; optionally `./scripts/smoke.sh` with Docker.
-4. Compare OpenAPI to `crates/box-exec/src/routes.rs` + `box-host` routes.
+4. Compare OpenAPI to `crates/box-exec/src/routes.rs` + `crates/box-host/src/lib.rs`, with `bash scripts/check-openapi.sh`.
+5. Regenerate the CLI reference with `bash scripts/gen-cli-docs.sh`; CI fails when `docs/CLI.md` is stale.

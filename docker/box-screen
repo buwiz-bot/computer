@@ -171,7 +171,8 @@ as_desktop() {
     DISPLAY=":${n}" BOX_DISPLAY=":${n}" BOX_SHARED_DISPLAY="${BOX_SHARED_DISPLAY:-:1}" \
     BOX_DISPLAY_GEOM="${GEOM}" XAUTHORITY="/run/box/x/${n}/auth" BOX_SCREEN_RUN="/run/box/x/${n}/run" \
     BOX_CHROME_PROFILE="${profile}" BOX_SCREEN_WORKSPACE="${agent_dir}" \
-    XDG_RUNTIME_DIR="/run/box/x/${n}/run/runtime" XDG_CONFIG_HOME="${desktop_home}/.config" "$@"
+    XDG_RUNTIME_DIR="/run/box/x/${n}/run/runtime" XDG_CONFIG_HOME="${desktop_home}/.config" \
+    AT_SPI_BUS_ADDRESS="unix:path=/run/box/x/${n}/run/a11y-bus" ACCESSIBILITY_ENABLED=1 "$@"
 }
 
 if [[ "$1" == "list" ]]; then
@@ -277,6 +278,14 @@ if ! running "${n}" "${DESKTOP_UID}"; then
     sleep 0.1
   done
   running "${n}" "${DESKTOP_UID}" || die "the screen's X server did not start"
+fi
+
+# The screen's accessibility bus, before the session whose apps publish on it (entrypoint.sh has
+# the main screen's). Only box-exec and this desktop may connect: see box-a11y-bus.
+if ! pgrep -u "${DESKTOP_UID}" -f "^dbus-daemon --config-file=/etc/box/a11y-bus.conf " >/dev/null; then
+  cd /
+  as_desktop /usr/local/bin/box-a11y-bus "/run/box/x/${n}/run/a11y-bus" \
+    >"/run/box/log/a11y-bus-${n}.log" 2>&1 9>&- || true
 fi
 
 # The main screen's desktop (entrypoint.sh): xfce4-session brings up xfwm4, xfdesktop (the

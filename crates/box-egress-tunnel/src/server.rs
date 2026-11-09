@@ -23,7 +23,7 @@ use crate::http1::{parse_proxy_request, read_http_head};
 use crate::protocol::{decode_data, encode_data, ControlMsg, PROTOCOL_NAME};
 use crate::status::{format_bind, EgressStatus};
 
-const OPEN_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const OPEN_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_STREAMS: usize = 256;
 const CHUNK: usize = 32 * 1024;
 

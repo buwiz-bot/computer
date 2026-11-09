@@ -12,6 +12,9 @@ pub enum Error {
     },
     #[error("{0}")]
     Transport(String),
+    /// No whole answer within the request's bound. See [`crate::BuwizComputer::with_timeout`].
+    #[error("no answer within {0:?}")]
+    Timeout(std::time::Duration),
 }
 
 impl Error {

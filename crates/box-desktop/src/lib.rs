@@ -10,11 +10,12 @@
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
+use box_common::process::run_bounded;
 use box_common::{env_bool, env_nonempty};
 use serde::{Deserialize, Serialize};
+use tokio::process::Command;
 
 /// Capability flag name advertised by `box-host`.
 pub const CAPABILITY: &str = "desktop";
@@ -27,6 +28,13 @@ pub const VIEWER_KIND: &str = "voxl";
 
 /// A screen's viewer listens on this plus its display number: `:1` is 6901.
 pub const VIEWER_PORT_BASE: u16 = 6900;
+
+/// Longest an X helper (`xdpyinfo`, `wmctrl`) may run. A wedged X server makes them hang, and a
+/// request that asked for them must still answer.
+pub const TOOL_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// More than any `wmctrl -lx` or `xdpyinfo` prints.
+const MAX_TOOL_OUTPUT: u64 = 1024 * 1024;
 
 /// Default framebuffer width (CUA coordinate space).
 pub const DISPLAY_WIDTH: u32 = 1280;
@@ -82,8 +90,8 @@ impl DesktopConfig {
     }
 
     /// True when desktop is enabled and the X display is accepting clients.
-    pub fn probe_display(&self) -> bool {
-        probe_display(self)
+    pub async fn probe_display(&self) -> bool {
+        probe_display(self).await
     }
 
     /// The port of this screen's viewer.
@@ -156,8 +164,8 @@ pub struct ViewerInfo {
 }
 
 impl DesktopStatus {
-    pub fn from_config(config: &DesktopConfig, advertised_host: &str) -> Self {
-        let ready = config.probe_display();
+    pub async fn from_config(config: &DesktopConfig, advertised_host: &str) -> Self {
+        let ready = config.probe_display().await;
         Self {
             enabled: config.enabled,
             ready,
@@ -451,8 +459,8 @@ pub struct WindowList {
 }
 
 impl WindowList {
-    pub fn from_config(config: &DesktopConfig) -> Self {
-        if !config.enabled || !config.probe_display() {
+    pub async fn from_config(config: &DesktopConfig) -> Self {
+        if !config.enabled || !config.probe_display().await {
             return Self {
                 display: config.display.clone(),
                 available: false,
@@ -462,20 +470,25 @@ impl WindowList {
         Self {
             display: config.display.clone(),
             available: true,
-            windows: list_windows(&config.display),
+            windows: list_windows(&config.display).await,
         }
     }
 }
 
-/// `wmctrl -lx` on `DISPLAY`. Empty if wmctrl is missing.
-pub fn list_windows(display: &str) -> Vec<DesktopWindow> {
-    let out = Command::new("wmctrl")
-        .env("DISPLAY", display)
-        .arg("-lx")
-        .output();
-    match out {
+/// `wmctrl -lx` on `DISPLAY`. Empty if wmctrl is missing, fails, or takes longer than
+/// [`TOOL_TIMEOUT`].
+pub async fn list_windows(screen: &str) -> Vec<DesktopWindow> {
+    let mut command = Command::new("wmctrl");
+    command.env("DISPLAY", screen).arg("-lx");
+    match run_bounded(&mut command, TOOL_TIMEOUT, MAX_TOOL_OUTPUT).await {
         Ok(o) if o.status.success() => parse_wmctrl_lx(&String::from_utf8_lossy(&o.stdout)),
-        _ => Vec::new(),
+        Ok(_) => Vec::new(),
+        Err(err) => {
+            if err.kind() == std::io::ErrorKind::TimedOut {
+                tracing::warn!("wmctrl on {screen} timed out; no windows listed");
+            }
+            Vec::new()
+        }
     }
 }
 
@@ -501,7 +514,10 @@ pub fn parse_wmctrl_lx_line(line: &str) -> Option<DesktopWindow> {
     })
 }
 
-pub fn probe_display(config: &DesktopConfig) -> bool {
+/// True when the display's socket is there and `xdpyinfo` can talk to it within
+/// [`TOOL_TIMEOUT`]. A missing or unspawnable `xdpyinfo` is not ready: nothing then said the
+/// display answers.
+pub async fn probe_display(config: &DesktopConfig) -> bool {
     if !config.enabled {
         return false;
     }
@@ -509,13 +525,22 @@ pub fn probe_display(config: &DesktopConfig) -> bool {
     if !socket.exists() {
         return false;
     }
-    match Command::new("xdpyinfo")
-        .arg("-display")
-        .arg(&config.display)
-        .output()
-    {
+    xdpyinfo_answers(&config.display, "xdpyinfo", TOOL_TIMEOUT).await
+}
+
+async fn xdpyinfo_answers(screen: &str, program: &str, timeout: Duration) -> bool {
+    let mut command = Command::new(program);
+    command.arg("-display").arg(screen);
+    match run_bounded(&mut command, timeout, MAX_TOOL_OUTPUT).await {
         Ok(out) => out.status.success(),
-        Err(_) => true,
+        Err(err) if err.kind() == std::io::ErrorKind::TimedOut => {
+            tracing::warn!("xdpyinfo on {screen} timed out after {timeout:?}; display not ready");
+            false
+        }
+        Err(err) => {
+            tracing::warn!("xdpyinfo could not run on {screen}: {err}; display not ready");
+            false
+        }
     }
 }
 
@@ -540,12 +565,12 @@ mod tests {
         assert_eq!(x11_socket_path("2"), PathBuf::from("/tmp/.X11-unix/X2"));
     }
 
-    #[test]
-    fn disabled_never_available() {
+    #[tokio::test]
+    async fn disabled_never_available() {
         let cfg = DesktopConfig::disabled();
         assert!(!cfg.enabled);
-        assert!(!cfg.probe_display());
-        let status = DesktopStatus::from_config(&cfg, "127.0.0.1:1340");
+        assert!(!cfg.probe_display().await);
+        let status = DesktopStatus::from_config(&cfg, "127.0.0.1:1340").await;
         assert!(!status.available);
         assert!(!status.enabled);
         assert!(!status.ready);
@@ -658,6 +683,23 @@ mod tests {
         assert_eq!(win.desktop, 0);
         assert_eq!(win.class, "chromium.Chromium");
         assert_eq!(win.title, "New Tab - Chromium");
+    }
+
+    #[tokio::test]
+    async fn no_xdpyinfo_means_not_ready() {
+        assert!(!xdpyinfo_answers(":1", "/nonexistent/xdpyinfo", TOOL_TIMEOUT).await);
+    }
+
+    #[tokio::test]
+    async fn a_hung_xdpyinfo_means_not_ready() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("xdpyinfo");
+        std::fs::write(&fake, "#!/bin/sh\nsleep 10\n").unwrap();
+        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let started = std::time::Instant::now();
+        assert!(!xdpyinfo_answers(":1", fake.to_str().unwrap(), Duration::from_millis(100)).await);
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

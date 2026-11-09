@@ -21,14 +21,13 @@ use axum::{Json, Router};
 use box_chrome::{probe_chrome, ChromeConfig, ChromeStatus};
 use box_common::{
     bearer_token, container_local_host, container_local_http_url, cors_layer, echo_request_id,
-    tokens_equal, ApiError, BoxConfig, GLOBAL_ALLOCATOR, PROTOCOL_VERSION,
+    tokens_equal, ApiError, BoxConfig, ConfigError, GLOBAL_ALLOCATOR, PROTOCOL_VERSION,
 };
 use box_cua::CuaConfig;
 use box_desktop::{slots_dir, DesktopConfig, DesktopStatus, ScreenList, WindowList, VIEWER_KIND};
 use box_egress_tunnel::{probe_egress, EgressConfig, EgressStatus};
 use serde::Serialize;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tower_http::trace::TraceLayer;
 
@@ -50,8 +49,9 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn from_config(config: &BoxConfig) -> Self {
-        Self {
+    /// Fails when an egress bind is set and malformed.
+    pub fn from_config(config: &BoxConfig) -> Result<Self, ConfigError> {
+        Ok(Self {
             box_id: config.box_id.clone(),
             token: config.host_token.clone(),
             workspace: config.workspace.display().to_string(),
@@ -61,11 +61,11 @@ impl AppState {
             desktop: DesktopConfig::from_env(),
             chrome: ChromeConfig::from_env(),
             cua: CuaConfig::from_env(),
-            egress: EgressConfig::from_env(),
+            egress: EgressConfig::from_env()?,
             shutdown: Arc::new(Notify::new()),
             shutting_down: Arc::new(AtomicBool::new(false)),
             started_at: Instant::now(),
-        }
+        })
     }
 }
 
@@ -166,7 +166,13 @@ pub fn router(state: AppState) -> Router {
 
 pub async fn serve(config: BoxConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let bind = config.host_bind;
-    let state = AppState::from_config(&config);
+    let state = AppState::from_config(&config)?;
+    if state.desktop.enabled && !on_path("xdpyinfo", &std::env::var_os("PATH").unwrap_or_default())
+    {
+        tracing::warn!(
+            "xdpyinfo is not on PATH: the desktop is on, but its display will never be ready"
+        );
+    }
     let shutdown = state.shutdown.clone();
     let app = router(state);
     tracing::info!(
@@ -182,13 +188,44 @@ pub async fn serve(config: BoxConfig) -> Result<(), Box<dyn std::error::Error + 
     Ok(())
 }
 
+/// Whether `program` is an executable file in one of `path`'s folders.
+fn on_path(program: &str, path: &std::ffi::OsStr) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::env::split_paths(path).any(|dir| {
+        std::fs::metadata(dir.join(program))
+            .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    })
+}
+
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok" })
 }
 
+/// Run a probe that may block (a loopback connect) off the async workers.
+async fn blocking<T: Send + 'static>(probe: impl FnOnce() -> T + Send + 'static) -> T {
+    match tokio::task::spawn_blocking(probe).await {
+        Ok(value) => value,
+        Err(err) => std::panic::resume_unwind(err.into_panic()),
+    }
+}
+
+/// Whether the display answers. Its X helper is bounded by [`box_desktop::TOOL_TIMEOUT`].
+async fn display_ready(desktop: &DesktopConfig) -> bool {
+    desktop.probe_display().await
+}
+
+/// Whether the display answers, and whether its viewer does.
+async fn desktop_probe(desktop: &DesktopConfig) -> (bool, bool) {
+    let viewer = desktop.clone();
+    tokio::join!(
+        desktop.probe_display(),
+        blocking(move || viewer.viewer_ready())
+    )
+}
+
 async fn ready(State(state): State<AppState>) -> Result<Json<ReadyResponse>, ApiError> {
     let exec_ready = probe_exec_health(&state.exec_url).await;
-    let desktop_ready = state.desktop.probe_display();
+    let (desktop_ready, viewer_ready) = desktop_probe(&state.desktop).await;
     if !exec_ready {
         return Err(ApiError::new(
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -208,11 +245,12 @@ async fn ready(State(state): State<AppState>) -> Result<Json<ReadyResponse>, Api
         service: "box-host",
         exec_ready: true,
         desktop_ready,
-        viewer_ready: state.desktop.viewer_ready(),
+        viewer_ready,
     }))
 }
 
 async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
+    let (desktop_ready, viewer_ready) = desktop_probe(&state.desktop).await;
     Json(InfoResponse {
         box_id: state.box_id.clone(),
         service: "box-host",
@@ -233,13 +271,13 @@ async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
             },
             desktop: Capability {
                 enabled: state.desktop.enabled,
-                ready: state.desktop.probe_display(),
+                ready: desktop_ready,
             },
             viewer: ViewerCapability {
                 kind: VIEWER_KIND,
                 port: state.desktop.viewer_port(),
                 enabled: state.desktop.enabled,
-                ready: state.desktop.viewer_ready(),
+                ready: viewer_ready,
             },
             chrome: {
                 let st = probe_chrome(&state.chrome);
@@ -253,7 +291,7 @@ async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
                 ready: state.cua.capability_ready(),
             },
             egress_tunnel: {
-                let st = probe_egress(&state.egress);
+                let st = probe_egress(&state.egress).await;
                 Capability {
                     enabled: st.enabled,
                     ready: st.ready,
@@ -271,12 +309,12 @@ async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
 
 async fn desktop(State(state): State<AppState>) -> Json<DesktopStatus> {
     let host = container_local_host(state.host_bind);
-    Json(DesktopStatus::from_config(&state.desktop, &host))
+    Json(DesktopStatus::from_config(&state.desktop, &host).await)
 }
 
 /// The box's own screen and every Bot's, with each one's viewer port and state.
 async fn screens(State(state): State<AppState>) -> Json<ScreenList> {
-    Json(ScreenList::from_config(&state.desktop, &slots_dir()))
+    Json(blocking(move || ScreenList::from_config(&state.desktop, &slots_dir())).await)
 }
 
 async fn chrome(State(state): State<AppState>) -> Json<ChromeStatus> {
@@ -284,7 +322,7 @@ async fn chrome(State(state): State<AppState>) -> Json<ChromeStatus> {
 }
 
 async fn egress(State(state): State<AppState>) -> Json<EgressStatus> {
-    Json(probe_egress(&state.egress))
+    Json(probe_egress(&state.egress).await)
 }
 
 /// `?display=:N`: one of the box's other screens (a Bot's own, `box-screen`).
@@ -301,7 +339,7 @@ async fn active_tab_now(Query(on): Query<OnScreen>) -> Json<active_tab::ActiveTa
 }
 
 async fn windows(State(state): State<AppState>) -> Json<WindowList> {
-    Json(WindowList::from_config(&state.desktop))
+    Json(WindowList::from_config(&state.desktop).await)
 }
 
 #[derive(Serialize)]
@@ -335,7 +373,7 @@ async fn busy(State(state): State<AppState>) -> Json<HostBusy> {
             .shutting_down
             .load(std::sync::atomic::Ordering::Relaxed),
         exec_ready: probe_exec_health(&state.exec_url).await,
-        desktop_ready: state.desktop.probe_display(),
+        desktop_ready: display_ready(&state.desktop).await,
         chrome_ready: chrome.ready,
     })
 }
@@ -359,7 +397,7 @@ async fn metrics(State(state): State<AppState>) -> Json<HostMetrics> {
     Json(HostMetrics {
         service: "box-host",
         uptime_ms: state.started_at.elapsed().as_millis() as u64,
-        desktop_ready: state.desktop.probe_display(),
+        desktop_ready: display_ready(&state.desktop).await,
         chrome_ready: probe_chrome(&state.chrome).ready,
     })
 }
@@ -376,26 +414,19 @@ async fn require_token(
     Ok(next.run(request).await)
 }
 
-/// Tiny HTTP/1.1 probe so box-host does not need an HTTP client crate.
+/// Longest the exec health probe may take, connect to last byte.
+const EXEC_PROBE_DEADLINE: Duration = Duration::from_secs(2);
+/// A health answer is a few bytes.
+const EXEC_PROBE_CAP: usize = 16 * 1024;
+
+/// `GET /v1/health` on box-exec, bounded in time and size so box-host needs no HTTP client crate.
 async fn probe_exec_health(exec_url: &str) -> bool {
     let Some(addr) = host_port_from_url(exec_url) else {
         return false;
     };
-    let Ok(Ok(mut stream)) =
-        tokio::time::timeout(Duration::from_secs(1), TcpStream::connect(&addr)).await
-    else {
-        return false;
-    };
-    let req = format!("GET /v1/health HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
-    if stream.write_all(req.as_bytes()).await.is_err() {
-        return false;
-    }
-    let mut buf = vec![0u8; 256];
-    let Ok(n) = stream.read(&mut buf).await else {
-        return false;
-    };
-    let text = String::from_utf8_lossy(&buf[..n]);
-    text.starts_with("HTTP/1.1 200") || text.starts_with("HTTP/1.0 200")
+    box_common::local_get(&addr, "/v1/health", EXEC_PROBE_DEADLINE, EXEC_PROBE_CAP)
+        .await
+        .is_ok_and(|answer| answer.status == 200)
 }
 
 fn host_port_from_url(url: &str) -> Option<String> {
@@ -433,6 +464,22 @@ async fn shutdown_signal(notify: Arc<Notify>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_tool_is_on_path_only_as_an_executable_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let tool = dir.path().join("xdpyinfo");
+        std::fs::write(&tool, "#!/bin/sh\n").unwrap();
+        let path = std::env::join_paths(["/nonexistent", dir.path().to_str().unwrap()]).unwrap();
+        assert!(!super::on_path("xdpyinfo", &path));
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(super::on_path("xdpyinfo", &path));
+        assert!(!super::on_path(
+            "xdpyinfo",
+            std::ffi::OsStr::new("/nonexistent")
+        ));
+    }
+
     use super::*;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};

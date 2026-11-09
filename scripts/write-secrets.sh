@@ -26,6 +26,13 @@ if [[ -z "${BOX_VIEWER_PASSWORD:-}" ]]; then
   exit 1
 fi
 
+for name in BOX_TOKEN BOX_VIEWER_PASSWORD BOX_EGRESS_TUNNEL_BEARER; do
+  if [[ "${!name:-}" == *replace-with* ]]; then
+    echo "${name} is still the sample value from .env.example. Generate one: openssl rand -base64 32" >&2
+    exit 1
+  fi
+done
+
 mkdir -p "${ROOT}/secrets"
 chmod 700 "${ROOT}/secrets"
 

@@ -1,0 +1,491 @@
+# The same setup as deploy/aws (OpenTofu), for a client who would rather click than run tofu: one
+# stack in the console, made from this template. Everything here must match deploy/aws/*.tf and
+# broker-policy.json. deploy/aws/check-parity.sh fails when they drift. Change both or neither.
+#
+# Creates: a VPC, an internet gateway, one public subnet and its route table; the SSH-only security
+# group; the launch template `buwiz-computer` the broker launches every computer from; the optional
+# role `buwiz-computer-instance` (SSM Session Manager only); the broker's managed policy
+# `buwiz-computer-broker`, with this account and region; and an IAM user `buwiz-computer-broker` with
+# that policy. It creates NO access key: make one in the IAM console and paste it into Buwiz Bot.
+# Stack outputs are readable by anyone who can call DescribeStacks, so a key there would be exposed.
+#
+# Names are fixed, not parameters: the broker's policy only lets it pass roles named buwiz-computer*,
+# and the broker's settings name the launch template. Only one stack per account and region can make
+# the IAM names below; do not run this and the OpenTofu module in the same account and region.
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Buwiz Bot computers on EC2: the VPC, an SSH-only security group, the launch template buwiz-computer,
+  and the broker's IAM policy and user. Creates no instance. No access key is created.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Who may reach the computers
+        Parameters:
+          - AllowedSshCidr
+      - Label:
+          default: What a computer is
+        Parameters:
+          - InstanceType
+          - Architecture
+          - RootVolumeGiB
+          - KmsKeyId
+          - BoxImage
+      - Label:
+          default: Where it goes
+        Parameters:
+          - VpcCidr
+          - AvailabilityZone
+      - Label:
+          default: Options
+        Parameters:
+          - EnableSsm
+      - Label:
+          default: Ubuntu 24.04 (Canonical's public SSM parameters)
+        Parameters:
+          - UbuntuAmiAmd64
+          - UbuntuAmiArm64
+          - UbuntuAmiOwner
+
+Parameters:
+  AllowedSshCidr:
+    Type: String
+    Description: >-
+      The address that may reach port 22 on the computers: the Mac running the broker, as one CIDR,
+      for example 203.0.113.7/32. There is no default and 0.0.0.0/0 is refused. To find it, run
+      `curl -s https://checkip.amazonaws.com` on that Mac and add /32. If your address changes
+      (home connections, mobile networks), update this stack's parameter to the new address.
+    AllowedPattern: '^((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)/(3[0-2]|[12]?\d)$'
+    ConstraintDescription: Must be an IPv4 CIDR such as 203.0.113.7/32. 0.0.0.0/0 is not allowed.
+  InstanceType:
+    Type: String
+    Default: m7i.large
+    Description: >-
+      A type that can hibernate, with under 150 GiB of memory. m7i.large is 2 vCPU and 8 GiB. Pick
+      an instance type that matches Architecture.
+  Architecture:
+    Type: String
+    Default: amd64
+    AllowedValues:
+      - amd64
+      - arm64
+    Description: "The architecture of InstanceType: amd64 for m7i, arm64 for Graviton (m7g and similar)."
+  RootVolumeGiB:
+    Type: Number
+    Default: 60
+    MinValue: 30
+    Description: >-
+      The encrypted gp3 root volume: the OS, Docker and the image, the computer's files, and room for
+      all of its memory when it hibernates. At least 30 GiB.
+  KmsKeyId:
+    Type: String
+    Default: ""
+    Description: A KMS key ARN or ID for the root volume. Empty uses the account's default EBS key.
+  BoxImage:
+    Type: String
+    Default: ghcr.io/buwiz-bot/computer:latest
+    Description: The box image each instance pulls at its first boot. The broker's BUWIZ_EC2_IMAGE must say the same.
+  VpcCidr:
+    Type: String
+    Default: 10.73.0.0/16
+    AllowedPattern: '^((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)/16$'
+    ConstraintDescription: Must be an IPv4 CIDR of /16, such as 10.73.0.0/16. The subnet is the second /24 in it.
+    Description: The VPC's address range.
+  AvailabilityZone:
+    Type: String
+    Default: ""
+    Description: Where the subnet goes. Empty is the region's first Availability Zone.
+  EnableSsm:
+    Type: String
+    Default: "false"
+    AllowedValues:
+      - "true"
+      - "false"
+    Description: >-
+      Give instances the role buwiz-computer-instance with SSM Session Manager and nothing else. Off,
+      instances have no role at all.
+  UbuntuAmiAmd64:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+    Description: Canonical's public parameter for the latest Ubuntu 24.04 LTS AMI, amd64.
+  UbuntuAmiArm64:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id
+    Description: Canonical's public parameter for the latest Ubuntu 24.04 LTS AMI, arm64.
+  UbuntuAmiOwner:
+    Type: String
+    Default: "099720109477"
+    AllowedPattern: '^\d{12}$'
+    ConstraintDescription: Must be a 12-digit AWS account ID.
+    Description: >-
+      The account that owns the AMIs the two parameters above name: Canonical's, 099720109477. The
+      broker's policy lets it launch images of this owner only, so change it only with them.
+
+Conditions:
+  HasKmsKey: !Not [!Equals [!Ref KmsKeyId, ""]]
+  HasAvailabilityZone: !Not [!Equals [!Ref AvailabilityZone, ""]]
+  UseSsm: !Equals [!Ref EnableSsm, "true"]
+  IsArm64: !Equals [!Ref Architecture, arm64]
+
+Resources:
+  # ---- network: a VPC with one public subnet ----
+
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: buwiz-computer
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: buwiz-computer
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      # cidrsubnet(var.vpc_cidr, 8, 1): the second /24 of the VPC, as deploy/aws/main.tf makes it
+      CidrBlock: !Select [1, !Cidr [!GetAtt Vpc.CidrBlock, 256, 8]]
+      AvailabilityZone: !If [HasAvailabilityZone, !Ref AvailabilityZone, !Select [0, !GetAZs ""]]
+      MapPublicIpOnLaunch: true
+      # The broker's policy lets it launch only into a subnet, security group and launch template
+      # with this tag.
+      Tags:
+        - Key: Name
+          Value: buwiz-computer
+        - Key: buwiz:managed
+          Value: "true"
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: buwiz-computer
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Subnet
+      RouteTableId: !Ref RouteTable
+
+  # SSH from the broker's Mac, and nothing else in. The box's ports are on the instance's loopback.
+  SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: buwiz-computer
+      GroupDescription: "Buwiz computers: SSH from the broker, nothing else in"
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - Description: SSH from the broker
+          IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AllowedSshCidr
+      SecurityGroupEgress:
+        - Description: The box browses the internet
+          IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: buwiz-computer
+        - Key: buwiz:managed
+          Value: "true"
+
+  # ---- an optional role: SSM Session Manager, and nothing else ----
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Condition: UseSsm
+    Properties:
+      RoleName: buwiz-computer-instance
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Condition: UseSsm
+    Properties:
+      InstanceProfileName: buwiz-computer-instance
+      Roles:
+        - !Ref InstanceRole
+
+  # ---- the launch template the broker launches every computer from ----
+
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    DependsOn: SubnetRouteTableAssociation
+    Properties:
+      LaunchTemplateName: buwiz-computer
+      TagSpecifications:
+        - ResourceType: launch-template
+          Tags:
+            - Key: buwiz:managed
+              Value: "true"
+      LaunchTemplateData:
+        ImageId: !If [IsArm64, !Ref UbuntuAmiArm64, !Ref UbuntuAmiAmd64]
+        InstanceType: !Ref InstanceType
+        # The same as user-data.yaml, with ${BoxImage} for ${image}. Keep the two in step:
+        # deploy/aws/check-parity.sh compares them.
+        UserData:
+          Fn::Base64: !Sub |
+            #cloud-config
+            # No secret here: every process on the instance can read its user data, and cloud-init's logs.
+            # The broker adds one part of its own at launch, the computer's SSH public key.
+            package_update: true
+            packages:
+              - ca-certificates
+              - docker.io
+              - ec2-hibinit-agent
+            ssh_pwauth: false
+            disable_root: true
+            ssh_genkeytypes: [ed25519, ecdsa]
+            # The broker pins the host key it reads here, from the console, before it logs in.
+            ssh_key_console_blacklist: []
+            ssh_fp_console_blacklist: []
+            runcmd:
+              - [systemctl, enable, --now, docker]
+              - [sh, -c, "systemctl enable --now hibinit-agent || true"]
+              - [sh, -c, "docker pull -q '${BoxImage}' || true"]
+        BlockDeviceMappings:
+          - DeviceName: /dev/sda1
+            Ebs:
+              VolumeSize: !Ref RootVolumeGiB
+              VolumeType: gp3
+              Encrypted: true
+              KmsKeyId: !If [HasKmsKey, !Ref KmsKeyId, !Ref AWS::NoValue]
+              DeleteOnTermination: true
+        HibernationOptions:
+          Configured: true
+        # IMDSv2 only, one hop: a container on the instance can't get a token
+        MetadataOptions:
+          HttpEndpoint: enabled
+          HttpTokens: required
+          HttpPutResponseHopLimit: 1
+          InstanceMetadataTags: enabled
+        NetworkInterfaces:
+          - DeviceIndex: 0
+            SubnetId: !Ref Subnet
+            Groups:
+              - !Ref SecurityGroup
+            AssociatePublicIpAddress: true
+            DeleteOnTermination: true
+        IamInstanceProfile: !If
+          - UseSsm
+          - Name: !Ref InstanceProfile
+          - !Ref AWS::NoValue
+
+  # ---- the broker's policy and its user (no access key: make one in the IAM console) ----
+
+  BrokerPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: buwiz-computer-broker
+      Description: What the Buwiz Bot broker may do with its EC2 computers in this region.
+      # broker-policy.json, with <ACCOUNT_ID> and <REGION> as ${AWS::AccountId} and ${AWS::Region}.
+      PolicyDocument: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "ReadEc2InSingapore",
+              "Effect": "Allow",
+              "Action": ["ec2:Describe*", "ec2:GetConsoleOutput"],
+              "Resource": "*",
+              "Condition": {"StringEquals": {"aws:RequestedRegion": "${AWS::Region}"}}
+            },
+            {
+              "Sid": "LaunchOnlyTaggedComputers",
+              "Effect": "Allow",
+              "Action": "ec2:RunInstances",
+              "Resource": ["arn:aws:ec2:${AWS::Region}:*:instance/*", "arn:aws:ec2:${AWS::Region}:*:volume/*"],
+              "Condition": {"StringEquals": {"aws:RequestTag/buwiz:managed": "true"}}
+            },
+            {
+              "Sid": "LaunchFromOurTemplateAndNetwork",
+              "Effect": "Allow",
+              "Action": "ec2:RunInstances",
+              "Resource": [
+                "arn:aws:ec2:${AWS::Region}:*:launch-template/*",
+                "arn:aws:ec2:${AWS::Region}:*:subnet/*",
+                "arn:aws:ec2:${AWS::Region}:*:security-group/*"
+              ],
+              "Condition": {"StringEquals": {"ec2:ResourceTag/buwiz:managed": "true"}}
+            },
+            {
+              "Sid": "LaunchWithItsOwnNetworkInterface",
+              "Effect": "Allow",
+              "Action": "ec2:RunInstances",
+              "Resource": "arn:aws:ec2:${AWS::Region}:*:network-interface/*"
+            },
+            {
+              "Sid": "LaunchOnlyCanonicalImages",
+              "Effect": "Allow",
+              "Action": "ec2:RunInstances",
+              "Resource": "arn:aws:ec2:${AWS::Region}::image/*",
+              "Condition": {"StringEquals": {"ec2:Owner": "${UbuntuAmiOwner}"}}
+            },
+            {
+              "Sid": "TagOnlyAtLaunch",
+              "Effect": "Allow",
+              "Action": "ec2:CreateTags",
+              "Resource": ["arn:aws:ec2:${AWS::Region}:*:instance/*", "arn:aws:ec2:${AWS::Region}:*:volume/*"],
+              "Condition": {"StringEquals": {"ec2:CreateAction": "RunInstances"}}
+            },
+            {
+              "Sid": "LifecycleOfOurComputersOnly",
+              "Effect": "Allow",
+              "Action": ["ec2:StartInstances", "ec2:StopInstances", "ec2:TerminateInstances", "ec2:RebootInstances"],
+              "Resource": "arn:aws:ec2:${AWS::Region}:*:instance/*",
+              "Condition": {"StringEquals": {"ec2:ResourceTag/buwiz:managed": "true"}}
+            },
+            {
+              "Sid": "PassOnlyTheComputerRole",
+              "Effect": "Allow",
+              "Action": "iam:PassRole",
+              "Resource": "arn:aws:iam::${AWS::AccountId}:role/buwiz-computer*",
+              "Condition": {"StringEquals": {"iam:PassedToService": "ec2.amazonaws.com"}}
+            }
+          ]
+        }
+
+  BrokerUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: buwiz-computer-broker
+      ManagedPolicyArns:
+        - !Ref BrokerPolicy
+
+Outputs:
+  Region:
+    Description: BUWIZ_EC2_REGION
+    Value: !Ref AWS::Region
+  LaunchTemplateId:
+    Description: The launch template's id, lt-...
+    Value: !Ref LaunchTemplate
+  LaunchTemplateName:
+    Description: BUWIZ_EC2_LAUNCH_TEMPLATE
+    Value: buwiz-computer
+  SubnetId:
+    Value: !Ref Subnet
+  SecurityGroupId:
+    Value: !Ref SecurityGroup
+  AllowedSshCidr:
+    Value: !Ref AllowedSshCidr
+  AmiId:
+    Description: The Ubuntu 24.04 AMI the launch template uses now
+    Value: !If [IsArm64, !Ref UbuntuAmiArm64, !Ref UbuntuAmiAmd64]
+  BrokerEnv:
+    Description: The lines to start the Buwiz Bot broker with (the same as tofu output broker_env)
+    Value: !Sub |
+      BUWIZ_COMPUTER_PROVIDER=ec2
+      BUWIZ_EC2_REGION=${AWS::Region}
+      BUWIZ_EC2_LAUNCH_TEMPLATE=buwiz-computer
+      BUWIZ_EC2_IMAGE=${BoxImage}
+      BUWIZ_EC2_PROFILE=buwiz-broker
+  BrokerUserName:
+    Value: !Ref BrokerUser
+  BrokerPolicyArn:
+    Description: The broker user's managed policy, for this account and region
+    Value: !Ref BrokerPolicy
+  BrokerPolicyJson:
+    Description: The broker's policy as deploy/aws prints it from tofu output broker_policy_json, for this account and region
+    Value: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Sid": "ReadEc2InSingapore",
+              "Effect": "Allow",
+              "Action": ["ec2:Describe*", "ec2:GetConsoleOutput"],
+              "Resource": "*",
+              "Condition": {"StringEquals": {"aws:RequestedRegion": "${AWS::Region}"}}
+            },
+            {
+              "Sid": "LaunchOnlyTaggedComputers",
+              "Effect": "Allow",
+              "Action": "ec2:RunInstances",
+              "Resource": ["arn:aws:ec2:${AWS::Region}:*:instance/*", "arn:aws:ec2:${AWS::Region}:*:volume/*"],
+              "Condition": {"StringEquals": {"aws:RequestTag/buwiz:managed": "true"}}
+            },
+            {
+              "Sid": "LaunchFromOurTemplateAndNetwork",
+              "Effect": "Allow",
+              "Action": "ec2:RunInstances",
+              "Resource": [
+                "arn:aws:ec2:${AWS::Region}:*:launch-template/*",
+                "arn:aws:ec2:${AWS::Region}:*:subnet/*",
+                "arn:aws:ec2:${AWS::Region}:*:security-group/*"
+              ],
+              "Condition": {"StringEquals": {"ec2:ResourceTag/buwiz:managed": "true"}}
+            },
+            {
+              "Sid": "LaunchWithItsOwnNetworkInterface",
+              "Effect": "Allow",
+              "Action": "ec2:RunInstances",
+              "Resource": "arn:aws:ec2:${AWS::Region}:*:network-interface/*"
+            },
+            {
+              "Sid": "LaunchOnlyCanonicalImages",
+              "Effect": "Allow",
+              "Action": "ec2:RunInstances",
+              "Resource": "arn:aws:ec2:${AWS::Region}::image/*",
+              "Condition": {"StringEquals": {"ec2:Owner": "${UbuntuAmiOwner}"}}
+            },
+            {
+              "Sid": "TagOnlyAtLaunch",
+              "Effect": "Allow",
+              "Action": "ec2:CreateTags",
+              "Resource": ["arn:aws:ec2:${AWS::Region}:*:instance/*", "arn:aws:ec2:${AWS::Region}:*:volume/*"],
+              "Condition": {"StringEquals": {"ec2:CreateAction": "RunInstances"}}
+            },
+            {
+              "Sid": "LifecycleOfOurComputersOnly",
+              "Effect": "Allow",
+              "Action": ["ec2:StartInstances", "ec2:StopInstances", "ec2:TerminateInstances", "ec2:RebootInstances"],
+              "Resource": "arn:aws:ec2:${AWS::Region}:*:instance/*",
+              "Condition": {"StringEquals": {"ec2:ResourceTag/buwiz:managed": "true"}}
+            },
+            {
+              "Sid": "PassOnlyTheComputerRole",
+              "Effect": "Allow",
+              "Action": "iam:PassRole",
+              "Resource": "arn:aws:iam::${AWS::AccountId}:role/buwiz-computer*",
+              "Condition": {"StringEquals": {"iam:PassedToService": "ec2.amazonaws.com"}}
+            }
+          ]
+        }
+  BrokerAccessKeyConsole:
+    Description: Create the broker's access key here, once, and paste it into Buwiz Bot. The key is not in this stack.
+    Value: https://console.aws.amazon.com/iam/home#/users/details/buwiz-computer-broker?section=security_credentials

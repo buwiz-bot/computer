@@ -1,12 +1,31 @@
 name: image-smoke
 
-# Build the image and run scripts/smoke.sh against it when the image itself changes.
+# Build the image and run scripts/smoke.sh against it when anything that goes into it changes:
+# the image, or the Rust code built inside it.
 on:
   pull_request:
     paths:
       - "docker/**"
       - "docker-compose.yml"
+      - ".dockerignore"
       - "scripts/smoke.sh"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/image-smoke.yml"
+  push:
+    branches: [main]
+    paths:
+      - "docker/**"
+      - "docker-compose.yml"
+      - ".dockerignore"
+      - "scripts/smoke.sh"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - ".github/workflows/image-smoke.yml"
 
 jobs:
   smoke:

@@ -4,6 +4,44 @@ Reviewed: the whole of `crates/box-egress-tunnel/` (server, client, http1, proto
 
 **Claims that check out** (no finding): the bearer compare is constant-time (`box_common::tokens_equal` → `subtle::ConstantTimeEq`, with a length-mismatch dummy compare); an empty/unset bearer cannot mean "no auth" (`load_bearer`/`from_env` both hard-error on empty, and `authorized()` returns `false` when no credential is presented); compose really does publish only `127.0.0.1:8790:8790` and nothing anywhere publishes 8791/8792; "tunnel server before Chromium" is a real readiness gate (`start_egress` polls `/v1/status` up to 5 s and `exit 1`s), not a `sleep`; the Rust tests do cover the fail-closed 503, the 403 allowlist reject and the wrong-bearer 401 — not only the happy round-trip; no token appears in argv or logs on the entrypoint path (`--bearer-file` with a staged 0400 copy).
 
+
+## Status
+
+Checked against the tree at `main` (58b639a). **fixed** was seen in the code; **open** was seen still true; **not rechecked** means this pass did not read the code for it, so treat it as open.
+
+| Finding | Status |
+| --- | --- |
+| CONNECT proxy has no destination filtering (critical) | **fixed.** `destination.rs`: the client vets the resolved address and the port before it dials, and dials that address. `BOX_EGRESS_ALLOW_PRIVATE` and `BOX_EGRESS_RELAY_PORTS` ([EGRESS.md](../EGRESS.md)). |
+| One `accept()` error takes down the container; no handshake timeout or cap | **fixed.** `accept_or_skip`, `HANDSHAKE_TIMEOUT`, `MAX_PENDING_HANDSHAKES` in `server.rs`. |
+| Absolute-form HTTP proxying pins a socket to the first host | **fixed.** The proxy answers `405` to anything but CONNECT. |
+| No WebSocket keepalive | **fixed.** The server pings and drops a silent client. |
+| A second WS client can inject into the first's streams | **fixed.** Sessions carry a generation, and the data and control paths check it. |
+| "Fail-closed" is a Chromium flag, not an enforced property | **open.** By design only Chromium is tunneled; [EGRESS.md](../EGRESS.md) says exec traffic is not. |
+| `?` on the "200 Connection Established" write leaks the slot | **fixed.** The stream is released on that path. |
+| `drop_stream` ignores the session generation | **fixed.** |
+| Laptop client leaks tasks and sockets; `TcpStream::connect` has no timeout | **open**, and the dial timeout is **fixing in feat/computer-improve**. The task and writer leaks were not rechecked. |
+| One slow TCP consumer blocks every stream | **partly fixed.** The server closes a stream whose consumer cannot keep up. The client side was not rechecked. |
+| Unbounded per-frame memory | **fixed.** 1 MiB messages, 256 KiB frames. |
+| Bearer brute force is unthrottled and invisible | **open.** A failed handshake gets `401` and no log line. |
+| `probe_egress` does blocking socket I/O in async handlers | **fixing in feat/computer-improve.** Still `std::net` in `status.rs` on `main`. |
+| The tunnel bearer is scrubbed from the environment only when the tunnel is on | **superseded.** `box-keeper` reads and stages it and `entrypoint.sh` holds no secret (README §Auth); x11vnc and websockify no longer exist. |
+| The allowlist matches the CONNECT string, not the address or port | **fixed.** The same address and port check as the first finding. |
+| `set_var` / `remove_var` inside a running tokio runtime | **open.** `config.rs` still calls them from the `#[tokio::main]` path. |
+| `--bearer` / `BOX_EGRESS_TUNNEL_BEARER` in argv, and `--help` prints the env value | **open.** The flag and env form remain, and clap does not hide the value. The `_FILE` form is the documented way. |
+| The server unlinks whatever `--bearer-file` points at | **open.** The server passes `unlink_file = true`; the client passes `false`. |
+| Admin listener: no read timeout, single-read matching | **open.** `handle_admin` does one `read` into 1 KiB. |
+| No timeout on the CONNECT proxy header read | **open.** |
+| Hand-rolled head parsing | **not rechecked.** Absolute-form requests are refused now, which removes most of the exposure. |
+| 503 body blames a missing client when streams ran out | **open.** Same message for both. |
+| `docker/box-chromium` builds proxy flags as strings | **not rechecked.** |
+| Reconnect logic matches error substrings, fixed 2 s backoff | **open.** |
+| Every CONNECT destination logged at `info` | **open.** `relaying CONNECT` is `info`. |
+| Non-loopback proxy/admin binds are only a warning | **open.** |
+| No half-close propagation | **not rechecked.** |
+| Test gaps | **not rechecked.** |
+| `docs/EGRESS.md` inaccuracies and missing threat model | **partly fixed.** The address filter and the new settings are documented; there is still no threat-model section. |
+| README duplicated table rows | **fixed.** |
+
 ---
 
 ## [SEVERITY: critical] [CONFIDENCE: high] CONNECT proxy has no destination filtering — any page in the guest browser can reach the operator's laptop localhost, home LAN and link-local

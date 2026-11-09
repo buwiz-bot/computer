@@ -55,8 +55,8 @@ impl BoxConfig {
         })?;
         let host_token = secret_from_env("BOX_HOST_TOKEN")?.unwrap_or_else(|| token.clone());
         let viewer_password = secret_from_env("BOX_VIEWER_PASSWORD")?;
-        let exec_bind = parse_addr("BOX_EXEC_BIND", "127.0.0.1:1337");
-        let host_bind = parse_addr("BOX_HOST_BIND", "127.0.0.1:1340");
+        let exec_bind = parse_addr("BOX_EXEC_BIND", "127.0.0.1:1337")?;
+        let host_bind = parse_addr("BOX_HOST_BIND", "127.0.0.1:1340")?;
 
         validate_token("BOX_TOKEN", &token, exec_bind, host_bind)?;
         if host_token != token {
@@ -84,14 +84,14 @@ impl BoxConfig {
             host_bind,
             exec_url: env::var("BOX_EXEC_URL")
                 .unwrap_or_else(|_| "http://127.0.0.1:1337".to_string()),
-            max_file_bytes: parse_u64("BOX_MAX_FILE_BYTES", 10 * 1024 * 1024),
-            default_timeout: Duration::from_millis(parse_u64("BOX_DEFAULT_TIMEOUT_MS", 30_000)),
-            max_timeout: Duration::from_millis(parse_u64("BOX_MAX_TIMEOUT_MS", 10 * 60 * 1000)),
-            max_output_bytes: parse_u64("BOX_MAX_OUTPUT_BYTES", 8 * 1024 * 1024) as usize,
-            max_concurrent_execs: parse_u64("BOX_MAX_CONCURRENT_EXECS", 8).clamp(1, 256) as usize,
-            max_dir_entries: parse_u64("BOX_MAX_DIR_ENTRIES", 4096).clamp(1, 100_000) as usize,
+            max_file_bytes: parse_u64("BOX_MAX_FILE_BYTES", 10 * 1024 * 1024)?,
+            default_timeout: Duration::from_millis(parse_u64("BOX_DEFAULT_TIMEOUT_MS", 30_000)?),
+            max_timeout: Duration::from_millis(parse_u64("BOX_MAX_TIMEOUT_MS", 10 * 60 * 1000)?),
+            max_output_bytes: parse_u64("BOX_MAX_OUTPUT_BYTES", 8 * 1024 * 1024)? as usize,
+            max_concurrent_execs: parse_u64("BOX_MAX_CONCURRENT_EXECS", 8)?.clamp(1, 256) as usize,
+            max_dir_entries: parse_u64("BOX_MAX_DIR_ENTRIES", 4096)?.clamp(1, 100_000) as usize,
             kill_grace: Duration::from_millis(
-                parse_u64("BOX_EXEC_KILL_GRACE_MS", 2_000).clamp(50, 30_000),
+                parse_u64("BOX_EXEC_KILL_GRACE_MS", 2_000)?.clamp(50, 30_000),
             ),
         };
 
@@ -193,13 +193,28 @@ fn validate_token(
     ensure_token_strength(name, token, binds_are_loopback(exec_bind, host_bind))
 }
 
-/// Reject empty, short, or well-known tokens unless `BOX_ALLOW_INSECURE_DEV=1`
-/// and every relevant bind is loopback.
+/// What `.env.example` puts in every secret it ships. A value still holding it is the sample.
+pub const PLACEHOLDER_MARKER: &str = "replace-with";
+
+/// Refuse a secret still holding the sample value from `.env.example`. Nothing exempts it:
+/// not `BOX_ALLOW_INSECURE_DEV`, and not a loopback bind.
+pub fn ensure_not_placeholder(name: &str, value: &str) -> Result<(), ConfigError> {
+    if value.to_ascii_lowercase().contains(PLACEHOLDER_MARKER) {
+        return Err(ConfigError(format!(
+            "{name} is still the sample value from .env.example ({PLACEHOLDER_MARKER}...). Generate one: openssl rand -base64 32"
+        )));
+    }
+    Ok(())
+}
+
+/// Reject the `.env.example` sample always, and empty, short, or well-known tokens unless
+/// `BOX_ALLOW_INSECURE_DEV=1` and every relevant bind is loopback.
 pub fn ensure_token_strength(
     name: &str,
     token: &str,
     binds_are_loopback: bool,
 ) -> Result<(), ConfigError> {
+    ensure_not_placeholder(name, token)?;
     if !token_is_insecure(token) {
         return Ok(());
     }
@@ -218,6 +233,7 @@ pub fn ensure_token_strength(
 /// loopback, and voxl always listens on every interface inside the box, so the port map, not the
 /// bind, is all that keeps it off the network.
 pub fn ensure_viewer_password_strength(password: &str) -> Result<(), ConfigError> {
+    ensure_not_placeholder("BOX_VIEWER_PASSWORD", password)?;
     if token_is_insecure(password) {
         return Err(ConfigError(format!(
             "BOX_VIEWER_PASSWORD is shorter than {MIN_TOKEN_LEN} characters or a well-known value. Set a long random one; BOX_ALLOW_INSECURE_DEV does not cover it."
@@ -251,18 +267,29 @@ fn default_box_id() -> String {
         .unwrap_or_else(|| "buwiz-computer".to_string())
 }
 
-fn parse_addr(var: &str, default: &str) -> SocketAddr {
-    env::var(var)
-        .unwrap_or_else(|_| default.to_string())
-        .parse()
-        .unwrap_or_else(|_| default.parse().expect("hardcoded bind addr"))
+/// `var` as a socket address. Unset or empty is `default`; anything else must parse, so a typo
+/// stops the daemon instead of quietly binding somewhere else.
+pub fn parse_addr(var: &str, default: &str) -> Result<SocketAddr, ConfigError> {
+    let Some(raw) = crate::env_nonempty(var) else {
+        return Ok(default.parse().expect("hardcoded bind addr"));
+    };
+    raw.trim().parse().map_err(|_| {
+        ConfigError(format!(
+            "{var} is set to {raw:?}, which is not an address and port like {default}"
+        ))
+    })
 }
 
-fn parse_u64(var: &str, default: u64) -> u64 {
-    env::var(var)
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(default)
+/// `var` as a whole number. Unset or empty is `default`; anything else must parse.
+fn parse_u64(var: &str, default: u64) -> Result<u64, ConfigError> {
+    let Some(raw) = crate::env_nonempty(var) else {
+        return Ok(default);
+    };
+    raw.trim().parse().map_err(|_| {
+        ConfigError(format!(
+            "{var} is set to {raw:?}, which is not a whole number (unset, it is {default})"
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -339,6 +366,73 @@ mod tests {
         ]);
         let err = BoxConfig::from_env().unwrap_err();
         assert!(err.0.contains("BOX_VIEWER_PASSWORD"), "{err}");
+    }
+
+    #[test]
+    fn the_sample_token_is_refused_even_with_insecure_dev() {
+        let (_lock, _guard) = isolate(&[
+            ("BOX_TOKEN", Some("replace-with-a-long-random-token")),
+            ("BOX_TOKEN_FILE", None),
+            ("BOX_HOST_TOKEN", None),
+            ("BOX_HOST_TOKEN_FILE", None),
+            ("BOX_VIEWER_PASSWORD", None),
+            ("BOX_VIEWER_PASSWORD_FILE", None),
+            ("BOX_EXEC_BIND", Some("127.0.0.1:1337")),
+            ("BOX_HOST_BIND", Some("127.0.0.1:1340")),
+            ("BOX_ALLOW_INSECURE_DEV", Some("1")),
+        ]);
+        let err = BoxConfig::from_env().unwrap_err();
+        assert!(
+            err.0.contains("BOX_TOKEN is still the sample value"),
+            "{err}"
+        );
+        assert!(err.0.contains("openssl rand"), "{err}");
+    }
+
+    #[test]
+    fn the_sample_host_token_is_refused() {
+        let (_lock, _guard) = isolate(&[
+            ("BOX_TOKEN", Some("long-enough-box-token")),
+            ("BOX_TOKEN_FILE", None),
+            ("BOX_HOST_TOKEN", Some("Replace-With-a-host-token")),
+            ("BOX_HOST_TOKEN_FILE", None),
+            ("BOX_VIEWER_PASSWORD", None),
+            ("BOX_VIEWER_PASSWORD_FILE", None),
+            ("BOX_ALLOW_INSECURE_DEV", None),
+        ]);
+        let err = BoxConfig::from_env().unwrap_err();
+        assert!(
+            err.0.contains("BOX_HOST_TOKEN is still the sample"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn the_sample_viewer_password_is_refused() {
+        let (_lock, _guard) = isolate(&[
+            ("BOX_TOKEN", Some("long-enough-box-token")),
+            ("BOX_TOKEN_FILE", None),
+            ("BOX_HOST_TOKEN", None),
+            ("BOX_HOST_TOKEN_FILE", None),
+            (
+                "BOX_VIEWER_PASSWORD",
+                Some("replace-with-a-long-random-password"),
+            ),
+            ("BOX_VIEWER_PASSWORD_FILE", None),
+            ("BOX_ALLOW_INSECURE_DEV", Some("1")),
+        ]);
+        let err = BoxConfig::from_env().unwrap_err();
+        assert!(
+            err.0.contains("BOX_VIEWER_PASSWORD is still the sample"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_placeholder_is_refused_wherever_a_token_is_checked() {
+        let err = ensure_token_strength("X", "replace-with-something-long", true).unwrap_err();
+        assert!(err.0.contains("X is still the sample"), "{err}");
+        assert!(ensure_not_placeholder("X", "a-real-random-token-value").is_ok());
     }
 
     #[test]
@@ -500,7 +594,52 @@ mod tests {
 
     #[test]
     fn rust_default_bind_is_loopback() {
-        let addr: SocketAddr = parse_addr("BOX_EXEC_BIND_MISSING_FOR_TEST", "127.0.0.1:1337");
+        let addr: SocketAddr =
+            parse_addr("BOX_EXEC_BIND_MISSING_FOR_TEST", "127.0.0.1:1337").unwrap();
         assert!(addr.ip().is_loopback());
+    }
+
+    fn base_env<'a>(extra: &[(&'a str, Option<&'a str>)]) -> Vec<(&'a str, Option<&'a str>)> {
+        let mut pairs = vec![
+            ("BOX_TOKEN", Some("long-enough-box-token")),
+            ("BOX_TOKEN_FILE", None),
+            ("BOX_HOST_TOKEN", None),
+            ("BOX_HOST_TOKEN_FILE", None),
+            ("BOX_VIEWER_PASSWORD", None),
+            ("BOX_VIEWER_PASSWORD_FILE", None),
+            ("BOX_ALLOW_INSECURE_DEV", None),
+            ("BOX_EXEC_BIND", None),
+            ("BOX_HOST_BIND", None),
+            ("BOX_MAX_FILE_BYTES", None),
+            ("BOX_EXEC_KILL_GRACE_MS", None),
+            ("WORKSPACE_ROOT", Some("/tmp")),
+        ];
+        pairs.extend_from_slice(extra);
+        pairs
+    }
+
+    #[test]
+    fn a_malformed_bind_stops_the_daemon_and_names_the_variable() {
+        let (_lock, _guard) = isolate(&base_env(&[("BOX_EXEC_BIND", Some("0.0.0.0:133x"))]));
+        let err = BoxConfig::from_env().unwrap_err();
+        assert!(err.0.contains("BOX_EXEC_BIND"), "{err}");
+        assert!(err.0.contains("0.0.0.0:133x"), "{err}");
+    }
+
+    #[test]
+    fn a_malformed_number_stops_the_daemon_and_names_the_variable() {
+        let (_lock, _guard) = isolate(&base_env(&[("BOX_EXEC_KILL_GRACE_MS", Some("2s"))]));
+        let err = BoxConfig::from_env().unwrap_err();
+        assert!(err.0.contains("BOX_EXEC_KILL_GRACE_MS"), "{err}");
+    }
+
+    #[test]
+    fn unset_or_empty_settings_are_the_defaults() {
+        let (_lock, _guard) = isolate(&base_env(&[("BOX_HOST_BIND", Some(""))]));
+        let config = BoxConfig::from_env().unwrap();
+        assert_eq!(config.exec_bind, "127.0.0.1:1337".parse().unwrap());
+        assert_eq!(config.host_bind, "127.0.0.1:1340".parse().unwrap());
+        assert_eq!(config.max_file_bytes, 10 * 1024 * 1024);
+        assert_eq!(config.kill_grace, Duration::from_millis(2_000));
     }
 }

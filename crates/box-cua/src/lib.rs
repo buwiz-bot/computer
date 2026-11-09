@@ -388,6 +388,12 @@ pub async fn screenshot(config: &CuaConfig) -> Result<ScreenshotResponse, CuaErr
     Ok(screenshot_from_png(config, png, None, true))
 }
 
+/// Where a keystroke sent now would go on this screen, as recipes observe it. `None` when it
+/// couldn't be read. `POST /v1/cua/tree` names its focused window by this.
+pub async fn keyboard_focus(config: &CuaConfig) -> Option<Focus> {
+    x11::observe_focus(config).await
+}
+
 fn validate_button(button: Option<u8>) -> Result<u8, CuaError> {
     let button = button.unwrap_or(1);
     if !(1..=7).contains(&button) {

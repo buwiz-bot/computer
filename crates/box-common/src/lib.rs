@@ -11,20 +11,23 @@ pub mod env;
 pub mod error;
 pub mod jail;
 pub mod listen;
+pub mod local_http;
+pub mod process;
 pub mod request_id;
 
 pub use alloc::GLOBAL_ALLOCATOR;
 pub use auth::{bearer_token, parse_bearer, tokens_equal};
 pub use config::{
-    ensure_token_strength, ensure_viewer_password_strength, read_secret_from_env,
-    token_is_insecure, wipe_secret_environ, BoxConfig, ConfigError, MIN_TOKEN_LEN, SECRET_ENV_KEYS,
-    SECRET_FILE_ENV_KEYS,
+    ensure_not_placeholder, ensure_token_strength, ensure_viewer_password_strength, parse_addr,
+    read_secret_from_env, token_is_insecure, wipe_secret_environ, BoxConfig, ConfigError,
+    MIN_TOKEN_LEN, PLACEHOLDER_MARKER, SECRET_ENV_KEYS, SECRET_FILE_ENV_KEYS,
 };
 pub use cors::layer as cors_layer;
 pub use env::{env_bool, env_nonempty};
 pub use error::{ApiError, ErrorBody, ErrorResponse};
 pub use jail::{resolve_in_canonical_jail, resolve_in_jail, JailError};
 pub use listen::{container_local_host, container_local_http_url};
+pub use local_http::{local_get, LocalResponse};
 pub use request_id::{echo_request_id, new_id, new_prefixed_id, RequestId, REQUEST_ID_HEADER};
 
 /// Where `box-keeper` takes screen requests. Its user alone can open it.

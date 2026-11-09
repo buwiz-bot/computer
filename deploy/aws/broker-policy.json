@@ -1,0 +1,64 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadEc2InSingapore",
+      "Effect": "Allow",
+      "Action": ["ec2:Describe*", "ec2:GetConsoleOutput"],
+      "Resource": "*",
+      "Condition": {"StringEquals": {"aws:RequestedRegion": "<REGION>"}}
+    },
+    {
+      "Sid": "LaunchOnlyTaggedComputers",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": ["arn:aws:ec2:<REGION>:*:instance/*", "arn:aws:ec2:<REGION>:*:volume/*"],
+      "Condition": {"StringEquals": {"aws:RequestTag/buwiz:managed": "true"}}
+    },
+    {
+      "Sid": "LaunchFromOurTemplateAndNetwork",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": [
+        "arn:aws:ec2:<REGION>:*:launch-template/*",
+        "arn:aws:ec2:<REGION>:*:subnet/*",
+        "arn:aws:ec2:<REGION>:*:security-group/*"
+      ],
+      "Condition": {"StringEquals": {"ec2:ResourceTag/buwiz:managed": "true"}}
+    },
+    {
+      "Sid": "LaunchWithItsOwnNetworkInterface",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": "arn:aws:ec2:<REGION>:*:network-interface/*"
+    },
+    {
+      "Sid": "LaunchOnlyCanonicalImages",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": "arn:aws:ec2:<REGION>::image/*",
+      "Condition": {"StringEquals": {"ec2:Owner": "099720109477"}}
+    },
+    {
+      "Sid": "TagOnlyAtLaunch",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": ["arn:aws:ec2:<REGION>:*:instance/*", "arn:aws:ec2:<REGION>:*:volume/*"],
+      "Condition": {"StringEquals": {"ec2:CreateAction": "RunInstances"}}
+    },
+    {
+      "Sid": "LifecycleOfOurComputersOnly",
+      "Effect": "Allow",
+      "Action": ["ec2:StartInstances", "ec2:StopInstances", "ec2:TerminateInstances", "ec2:RebootInstances"],
+      "Resource": "arn:aws:ec2:<REGION>:*:instance/*",
+      "Condition": {"StringEquals": {"ec2:ResourceTag/buwiz:managed": "true"}}
+    },
+    {
+      "Sid": "PassOnlyTheComputerRole",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::<ACCOUNT_ID>:role/buwiz-computer*",
+      "Condition": {"StringEquals": {"iam:PassedToService": "ec2.amazonaws.com"}}
+    }
+  ]
+}

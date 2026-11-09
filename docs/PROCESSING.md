@@ -21,13 +21,13 @@ The caller already has three values from **their** orchestrator:
 
 `GET {hostUrl}/v1/ready` requires Bearer. 200 when exec health OK, and X up when `BOX_DESKTOP_REQUIRED=1`.
 
-Compose healthcheck is `/v1/ready` on 1340 with `Authorization: Bearer`. Chrome is not required for ready.
+The Compose healthcheck is the public `/v1/health` on 1340 and on 1337, with no token, so the token is never in `curl`'s argv. `/v1/ready` is for callers. Chrome is not required for ready. The X probe has a time limit, and a missing `xdpyinfo` means the display is not ready; box-host warns once at startup when `BOX_DESKTOP` is on and `xdpyinfo` isn't on `PATH`.
 
 ## Authenticated calls
 
 All other routes require `Authorization: Bearer <token>`, including `/v1/ready`.
 
-box-host uses `BOX_HOST_TOKEN` if set, otherwise `BOX_TOKEN`.
+box-host uses `BOX_HOST_TOKEN` if set, otherwise `BOX_TOKEN`, on every route but `/v1/health`.
 
 Failures use a single JSON envelope:
 
@@ -106,4 +106,4 @@ Default `screenshot` is `end` (one PNG on the receipt, and a file when `artifact
 
 `GET /v1/info` (bearer) returns box id, capability flags, workspace path, and **container-local** endpoint URLs (`scope: container-local`). Use it to see whether desktop/chrome/CUA/egress_tunnel are up. Do not dial those URLs from another machine; dial the URLs you published.
 
-`GET /v1/desktop`, `GET /v1/chrome`, and `GET /v1/egress` are the same: status inside the guest. Viewer and CDP addresses are loopback unless you published them yourself. `GET /v1/screens` lists every screen with its viewer port, state and folder. Egress `ws` is the guest listen; the laptop dials the URL **you** published or SSH-forwarded.
+`GET /v1/desktop`, `GET /v1/chrome`, `GET /v1/chrome/active-tab` and `GET /v1/egress` are the same: status inside the guest. Viewer addresses are loopback unless you published them yourself. `GET /v1/screens` lists every screen with its viewer port, state and folder. Egress `ws` is the guest listen; the laptop dials the URL **you** published or SSH-forwarded.

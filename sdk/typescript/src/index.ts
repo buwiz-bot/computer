@@ -87,6 +87,18 @@ export type ScreenshotResponse = {
 
 export type CuaOk = { ok: boolean };
 
+/** The page in front of Chromium, as the box's extension last reported it. */
+export type ActiveTab = {
+  /** `null` when nothing has reported (no Chromium, or one without the extension). */
+  url: string | null;
+  /** When the extension last reported, in ms since the epoch. */
+  atMs?: number;
+  /** The kind of box focused on the page: `password`, `text`, `other` or `none`. */
+  focus?: string;
+  /** How many reports this browser has made. */
+  seq?: number;
+};
+
 export type RecipeScreenshot = "none" | "end" | "each";
 
 export type RecipeStep =
@@ -206,6 +218,83 @@ export type RecipeResponse = {
   recording_error?: string;
 };
 
+/** `POST /v1/cua/tree`. Every field is optional; `{}` is the focused window with the defaults. */
+export type A11yTreeRequest = {
+  /** `focused_window` (default): the window with the keyboard focus. `desktop`: every application. */
+  scope?: "focused_window" | "desktop";
+  /** Levels below the top nodes, 0–40 (default 12). */
+  max_depth?: number;
+  /** 1–2000 (default 400). */
+  max_nodes?: number;
+  /** The walk's budget, 1–10000 ms (default 3000). What's read by then is returned. */
+  timeout_ms?: number;
+  /** Also nodes that are neither showing nor visible, and what's under them. */
+  include_hidden?: boolean;
+  /** Nameless containers with nothing to act on give their place to their children (default true). */
+  compact?: boolean;
+};
+
+/** Screen pixels, the space `click` takes. */
+export type A11yBounds = { x: number; y: number; width: number; height: number };
+
+export type A11yNode = {
+  /** `<snapshot>:<n>`, for `cuaElement`; good for this tree only. */
+  ref: string;
+  /** AT-SPI's role in snake case: `push_button`, `entry`, `frame`, `page_tab`, … */
+  role: string;
+  /** May be empty. */
+  name: string;
+  description?: string;
+  /** A text node's contents when they aren't its name. Never a password field's. */
+  text?: string;
+  /** `focused`, `enabled`, `checked`, `selected`, `editable`, … */
+  states: string[];
+  bounds?: A11yBounds;
+  /** AT-SPI action names. Chromium's are unnamed and not listed; `press` still runs them. */
+  actions?: string[];
+  children?: A11yNode[];
+  /** Children a limit left out. */
+  children_omitted?: number;
+};
+
+export type A11yTreeResponse = {
+  /** This tree's number. Only a screen's latest tree can be acted on. */
+  snapshot: number;
+  display: string;
+  scope: "focused_window" | "desktop";
+  nodes: A11yNode[];
+  count: number;
+  truncated: boolean;
+  truncated_by: ("max_nodes" | "max_depth" | "time")[];
+  /** Nodes whose application failed to answer, left out with what's under them. */
+  skipped: number;
+  /** Why `nodes` is empty, when it is. */
+  reason?: string;
+  elapsed_ms: number;
+};
+
+/**
+ * `press`: the element's own AT-SPI action (the app says it took it, not that anything happened).
+ * `click`: a real click in the middle of the element, where it is now. `focus`: the keyboard
+ * focus. `set_text`: replace an editable field's text.
+ */
+export type A11yElementAction = "press" | "click" | "focus" | "set_text";
+
+export type A11yElementResponse = {
+  ok: boolean;
+  ref: string;
+  action: A11yElementAction;
+  /** For `press`: the AT-SPI action run. */
+  performed?: string;
+  /** For `click`: where the click went. */
+  at?: { x: number; y: number };
+};
+
+/** Another of the box's screens (`:N`) for a call; without it, the box's own. */
+function onScreen(url: string, display?: string): string {
+  return display ? `${url}?display=${encodeURIComponent(display)}` : url;
+}
+
 export class BuwizComputer {
   private constructor(
     readonly execUrl: string,
@@ -319,7 +408,9 @@ export class BuwizComputer {
     const query = new URLSearchParams({ path });
     const response = await this.raw("PUT", `${this.execUrl}/v1/files/raw?${query.toString()}`, {
       headers: { "content-type": "application/octet-stream", accept: "application/json" },
-      body: body instanceof Uint8Array ? body : new Uint8Array(body),
+      // A Uint8Array may sit on a SharedArrayBuffer, which the DOM types leave out of BodyInit;
+      // fetch takes the bytes either way.
+      body: (body instanceof Uint8Array ? body : new Uint8Array(body)) as BodyInit,
     });
     const parsed = await parseBody(response);
     if (!response.ok) {
@@ -364,6 +455,15 @@ export class BuwizComputer {
 
   async chrome(): Promise<unknown> {
     return this.authJson("GET", `${this.hostUrl}/v1/chrome`);
+  }
+
+  /**
+   * The page in front of Chromium, as the box's extension last reported it. `url` is null when
+   * nothing has. `display` (`":2"`) asks for a Bot's own screen instead of the box's own.
+   */
+  async activeTab(display?: string): Promise<ActiveTab> {
+    const query = display ? `?display=${encodeURIComponent(display)}` : "";
+    return this.authJson("GET", `${this.hostUrl}/v1/chrome/active-tab${query}`);
   }
 
   async egress(): Promise<unknown> {
@@ -453,6 +553,37 @@ export class BuwizComputer {
   /** Many CUA steps in one request. The guest lints the plan before actuating. */
   async recipe(request: RecipeRequest): Promise<RecipeResponse> {
     return this.authJson("POST", `${this.execUrl}/v1/cua/recipe`, request, 120_000);
+  }
+
+  /**
+   * The screen's accessibility tree (AT-SPI): native apps' and Chromium's buttons, fields and
+   * tabs as text, with bounds in screen pixels. Bounded, and never an error for being cut.
+   */
+  async cuaTree(request: A11yTreeRequest = {}, display?: string): Promise<A11yTreeResponse> {
+    const budget = request.timeout_ms ?? 3_000;
+    return this.authJson(
+      "POST",
+      onScreen(`${this.execUrl}/v1/cua/tree`, display),
+      request,
+      budget + 10_000,
+    );
+  }
+
+  /**
+   * An action on a node of the screen's latest tree, by `ref`. A ref from an older tree is
+   * refused with `409 stale_ref`: read the tree again.
+   */
+  async cuaElement(
+    ref: string,
+    action: A11yElementAction,
+    text?: string,
+    display?: string,
+  ): Promise<A11yElementResponse> {
+    return this.authJson("POST", onScreen(`${this.execUrl}/v1/cua/element`, display), {
+      ref,
+      action,
+      text,
+    });
   }
 
   private async publicJson(url: string): Promise<unknown> {

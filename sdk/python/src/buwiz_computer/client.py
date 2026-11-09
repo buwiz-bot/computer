@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Mapping
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -173,6 +173,14 @@ class BuwizComputer:
     def chrome(self) -> Any:
         return self._auth("GET", f"{self.host_url}/v1/chrome")
 
+    def active_tab(self, display: str | None = None) -> Any:
+        """The page in front of Chromium, as the box's extension last reported it.
+
+        `url` is None when nothing has. `display` (":2") asks for a Bot's own screen.
+        """
+        query = f"?display={quote(display, safe='')}" if display else ""
+        return self._auth("GET", f"{self.host_url}/v1/chrome/active-tab{query}")
+
     def egress(self) -> Any:
         return self._auth("GET", f"{self.host_url}/v1/egress")
 
@@ -292,6 +300,36 @@ class BuwizComputer:
     def recipe(self, request: Mapping[str, Any]) -> Any:
         """Run many CUA steps in one request. The guest lints the plan first."""
         return self._auth("POST", f"{self.exec_url}/v1/cua/recipe", dict(request))
+
+    def cua_tree(self, display: str | None = None, **fields: Any) -> Any:
+        """The screen's accessibility tree (AT-SPI): buttons, fields and tabs as text.
+
+        ``fields`` are ``scope`` (``"focused_window"``, the default, or ``"desktop"``),
+        ``max_depth``, ``max_nodes``, ``timeout_ms``, ``include_hidden`` and ``compact``.
+        Each node's ``ref`` is for ``cua_element``, on this tree only; ``bounds`` are screen
+        pixels, as ``click`` takes them. ``display`` is another of the box's screens (``:N``).
+        """
+        url = self._on_screen(f"{self.exec_url}/v1/cua/tree", display)
+        return self._auth("POST", url, dict(fields))
+
+    def cua_element(
+        self,
+        ref: str,
+        action: str,
+        text: str | None = None,
+        display: str | None = None,
+    ) -> Any:
+        """``press``, ``click``, ``focus`` or ``set_text`` (with ``text``) on a node of the
+        screen's latest tree. A ref from an older tree fails with 409 ``stale_ref``."""
+        body: dict[str, Any] = {"ref": ref, "action": action}
+        if text is not None:
+            body["text"] = text
+        url = self._on_screen(f"{self.exec_url}/v1/cua/element", display)
+        return self._auth("POST", url, body)
+
+    @staticmethod
+    def _on_screen(url: str, display: str | None) -> str:
+        return f"{url}?{urlencode({'display': display})}" if display else url
 
     def _public(self, url: str) -> Any:
         response = self._http.get(url)

@@ -66,7 +66,7 @@ CUA coordinate space is **1280×800**, origin top-left. Known click/type/key seq
 
 A receipt's `ok` means **no step returned an error**, not that the recipe achieved anything: a taped plan whose fixed coordinates have drifted onto another window plays every step cleanly. Ask for `observe: "input"` (or `"page"`) and each step also reports the window it aimed at, where the keys were about to go, and the page URL either side of it, so a caller can tell a run that worked from a run that did not.
 
-Live view: `http://127.0.0.1:6901/` (loopback publish). voxl asks for `BOX_VIEWER_PASSWORD`, and `?token=<password>` signs a link in. It is independent of `BOX_TOKEN`. `/healthz` is the only thing voxl answers without it. Decoding uses WebCodecs, so open it on `localhost` or over HTTPS.
+Live view: `http://127.0.0.1:6901/` (loopback publish). voxl asks for `BOX_VIEWER_PASSWORD`, and `?token=<password>` signs a link in. It is independent of `BOX_TOKEN`. Only `/healthz` and the viewer page's static assets load without it; a session needs the password. Decoding uses WebCodecs, so open it on `localhost` or over HTTPS.
 
 ```bash
 ./scripts/smoke.sh
@@ -76,13 +76,17 @@ Live view: `http://127.0.0.1:6901/` (loopback publish). voxl asks for `BOX_VIEWE
 
 After the guest is up, your orchestrator already has an exec URL, host URL, and token. Point the client at those. The SDKs **do not** start Docker and **ignore** `/v1/info` advertised URLs (those are container-local listen addresses).
 
+The token goes in the environment, not argv, where `ps` would show it. Every global flag has an environment form: `BUWIZ_COMPUTER_EXEC_URL`, `BUWIZ_COMPUTER_HOST_URL`, `BUWIZ_COMPUTER_TOKEN`, `BUWIZ_COMPUTER_REQUEST_TIMEOUT_SECS`.
+
 ```bash
+export BUWIZ_COMPUTER_TOKEN="$BOX_TOKEN"
 cargo run -p buwiz-computer -- \
   --exec-url http://127.0.0.1:1337 \
   --host-url http://127.0.0.1:1340 \
-  --token "$BOX_TOKEN" \
   exec -- echo ok
 ```
+
+Every subcommand and flag is in [CLI.md](docs/CLI.md). Each request has a bound on its whole round trip: `DEFAULT_TIMEOUT`, 120 s, unless the CLI's global `--request-timeout-secs` (env `BUWIZ_COMPUTER_REQUEST_TIMEOUT_SECS`) or the library's `BuwizComputer::with_timeout(Duration)` sets another. An exec with `timeout_ms` gets at least that plus `EXEC_MARGIN` (35 s), a `cua wait` at least its own wait plus `WAIT_MARGIN` (5 s), and a `cua tree` at least its `timeout_ms` plus `TREE_MARGIN` (5 s). A file read or write gets one more second for every `TRANSFER_FLOOR` (64 KiB) it sends and, from its `content-length`, receives; a read with no `content-length` is bounded instead by the timeout between pieces of the answer. A request that runs out of time is `Error::Timeout`.
 
 Workspace packages (not published):
 
@@ -99,7 +103,7 @@ Workspace packages (not published):
 cargo test --workspace
 ```
 
-Native mode sets `BOX_DESKTOP=0`. CUA screenshot needs the container (or a local Xvfb).
+Native mode sets `BOX_DESKTOP=0`. CUA screenshot needs the container (or a local Xvfb). With the desktop on, a box without `xdpyinfo` is never desktop-ready: box-host logs a warning at startup when it isn't on `PATH`.
 
 ## How an orchestrator should plug in
 
@@ -116,19 +120,19 @@ Native mode sets `BOX_DESKTOP=0`. CUA screenshot needs the container (or a local
 | **1340** | host `127.0.0.1` | `box-host` | health, ready, info, desktop, chrome, egress. |
 | **6901** | host `127.0.0.1` | `voxl` | The box's own screen. voxl's own password, not Bearer. |
 | **6902–6905** | host `127.0.0.1` | `voxl` | The Bots' own screens: `6900+N` for display `:N`. |
-| **8790** | host `127.0.0.1` | `box-egress-tunnel` WS | Laptop client. Off unless `BOX_EGRESS_TUNNEL=1`. See [EGRESS.md](docs/EGRESS.md). |
+| **8790** | host `127.0.0.1` | `box-egress-tunnel` WS | Laptop client. Compose always publishes it; nothing listens unless `BOX_EGRESS_TUNNEL=1`. See [EGRESS.md](docs/EGRESS.md). |
 | 8791 | **no** | CONNECT proxy | Chromium only, `127.0.0.1` inside the image. Never publish. |
 | 8792 | **no** | tunnel admin | Status for box-host. Loopback. Never publish. |
 
-Compose also sets `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, `pids_limit: 1024`, and `mem_limit: 4g`. That is **not** a kernel sandbox. The guest is an unprivileged uid-1000 container; Chromium still uses `--no-sandbox`.
+Compose also sets `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, `pids_limit: 2048`, and `mem_limit: 4g`. That is **not** a kernel sandbox. The container starts as root; only `box-keeper` stays root, and everything the model runs is a user of its own ([USERS.md](docs/USERS.md)). Chromium still uses `--no-sandbox`.
 
 ## Environment
 
 | Variable | Default (image) | Meaning |
 | --- | --- | --- |
-| `BOX_TOKEN` | **required** | Bearer token for exec, CUA, and host `/v1/info` / `/v1/ready`. No silent default. |
+| `BOX_TOKEN` | **required** | Bearer token for exec, CUA, and the host routes. No silent default. At least 16 characters, and not the `.env.example` placeholder (`replace-with…`), even with `BOX_ALLOW_INSECURE_DEV=1`. |
 | `BOX_TOKEN_FILE` | unset | Path to a file holding `BOX_TOKEN`. **Preferred**: wins over `BOX_TOKEN`, and keeps the value out of `/proc/<pid>/environ`. |
-| `BOX_HOST_TOKEN` | same as `BOX_TOKEN` | Optional split token for host info/desktop/chrome |
+| `BOX_HOST_TOKEN` | same as `BOX_TOKEN` | Optional split token. When set it **replaces** `BOX_TOKEN` on every `box-host` route except `/v1/health`, `/v1/ready` included; `box-exec` keeps `BOX_TOKEN`. The CLI and SDKs send one token to both. |
 | `BOX_HOST_TOKEN_FILE` | unset | Path to a file holding `BOX_HOST_TOKEN` |
 | `BOX_ALLOW_INSECURE_DEV` | unset | `1` allows short/well-known tokens **only** when both daemon binds are loopback |
 | `BOX_ID` | hostname / `buwiz-computer` | Reported by `/v1/info` |
@@ -141,7 +145,7 @@ Compose also sets `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, `
 | `BOX_DISPLAY_GEOM` | `1280x800x24` | Xvfb geometry; **CUA coordinate space is 1280×800** |
 | `BOX_DESKTOP` | `1` | Start Xvfb + xfce + voxl |
 | `BOX_DESKTOP_REQUIRED` | `1` when desktop on | `/v1/ready` waits for the display |
-| `BOX_VIEWER_PASSWORD` | **required when desktop on** | Viewer password, for every screen; independent of `BOX_TOKEN`. At least 16 characters, with no `BOX_ALLOW_INSECURE_DEV` exemption: voxl listens on every interface inside the box |
+| `BOX_VIEWER_PASSWORD` | **required when desktop on** | Viewer password, for every screen; independent of `BOX_TOKEN`. At least 16 characters, and not the `.env.example` placeholder, with no `BOX_ALLOW_INSECURE_DEV` exemption: voxl listens on every interface inside the box |
 | `BOX_VIEWER_PASSWORD_FILE` | unset | Path to a file holding `BOX_VIEWER_PASSWORD`. Preferred, same reason. |
 | `BOX_CHROME` | `1` | Launch Chromium on `:1` |
 | `BOX_CHROME_PROFILE` | `/home/box/desktops/main/chrome-profile` | Persistent profile (compose volume) |
@@ -153,14 +157,24 @@ Compose also sets `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, `
 | `BOX_EGRESS_TUNNEL_BEARER` | required when tunnel on | WS Bearer. Prefer `_FILE`. Independent of `BOX_TOKEN`. |
 | `BOX_EGRESS_TUNNEL_BEARER_FILE` | unset | Preferred file form (same story as `BOX_TOKEN_FILE`) |
 | `BOX_EGRESS_RELAY_HOSTS` | empty = all | Optional CONNECT host allowlist (`*.example.com` ok) |
-| `BOX_MAX_CONCURRENT_EXECS` | `8` | Max simultaneous `POST /v1/exec` (and stream/detach). Extra calls get `429 busy`. |
+| `BOX_EGRESS_RELAY_PORTS` | `80,443` | Ports the egress client will dial; `*` is any. See [EGRESS.md](docs/EGRESS.md). |
+| `BOX_EGRESS_ALLOW_PRIVATE` | unset | `1` lets the egress client dial non-public addresses. Leave off. See [EGRESS.md](docs/EGRESS.md). |
 | `BOX_MAX_CONCURRENT_EXECS` | `8` | Max simultaneous `POST /v1/exec` (and stream/detach). Extra calls get `429 busy`. |
 | `BOX_MAX_DIR_ENTRIES` | `4096` | Cap on directory listings (`truncated: true` if hit) |
 | `BOX_EXEC_KILL_GRACE_MS` | `2000` | After exec timeout, wait this long after SIGTERM before SIGKILL |
+| `BOX_MAX_OUTPUT_BYTES` | `8388608` | Cap on each of an exec's stdout and stderr |
+| `BOX_MAX_FILE_BYTES` | `10485760` | Cap on a file written through `/v1/files` |
+| `BOX_DEFAULT_TIMEOUT_MS` / `BOX_MAX_TIMEOUT_MS` | `30000` / `600000` | Exec timeout when none is asked for, and the most that can be asked for |
+| `BOX_MAX_OWN_SCREENS` | `4` | Most Bot screens `box-screen` will run at once |
+| `BOX_SHARED_DISPLAY` | `:1` | The box's own display, which `?display=` falls back to and where its report of the page in front is kept. Set by the image; not for you to change. |
+| `BOX_SCREEN_WORKSPACE` | the screen's folder | The folder a screen's browser downloads to and its Files launcher opens. Set per screen by `box-screen`; not for you to set. |
+| `BOX_VIEWER_CTL` | `/run/box/viewer.ctl` | The root-only fifo through which `box-screen` asks `box-keeper` for a viewer. Set by the image. |
+
+A bind (`BOX_EXEC_BIND`, `BOX_HOST_BIND`, the egress binds) or a number the daemons read (`BOX_MAX_*`, `*_MS`) that does not parse stops the daemon at startup. It is not replaced by the default.
 
 ## Auth
 
-Send `Authorization: Bearer <token>`. `GET /v1/health` is public and returns only `{"status":"ok"}`. `GET /v1/ready` requires Bearer (Compose healthcheck sends it). A token must be set — as `BOX_TOKEN` or as `BOX_TOKEN_FILE`; `dev-box-token` and other short/well-known values are rejected unless `BOX_ALLOW_INSECURE_DEV=1` **and** both daemon binds are loopback.
+Send `Authorization: Bearer <token>`. `GET /v1/health` is public and returns only `{"status":"ok"}`. `GET /v1/ready` requires Bearer. The Compose healthcheck does not send one: it checks the public `/v1/health` on both daemons, so the token is never in `curl`'s argv. A token must be set — as `BOX_TOKEN` or as `BOX_TOKEN_FILE`; `dev-box-token` and other short/well-known values are rejected unless `BOX_ALLOW_INSECURE_DEV=1` **and** both daemon binds are loopback.
 
 ### Delivering the secrets
 
@@ -231,7 +245,7 @@ Screens keep agents apart through `/v1/cua` and the viewer; they are not a secur
 - [Startup](docs/STARTUP.md)
 - [Request processing](docs/PROCESSING.md)
 - [Terminology](docs/TERMINOLOGY.md)
-- [HTTP API](docs/API.md) · [OpenAPI](docs/openapi.yaml)
+- [HTTP API](docs/API.md) · [OpenAPI](docs/openapi.yaml) · [CLI](docs/CLI.md)
 - [CUA recipes](docs/RECIPES.md) — one request, many pointer steps (vs reverse-web-mcp)
 
 ## What this is not

@@ -67,7 +67,7 @@ async fn wait_admin(admin: std::net::SocketAddr, want_ready: bool) {
         admin_bind: admin,
     };
     for _ in 0..80 {
-        let st = probe_egress(&cfg);
+        let st = probe_egress(&cfg).await;
         if st.enabled && st.ready == want_ready {
             return;
         }
@@ -75,7 +75,7 @@ async fn wait_admin(admin: std::net::SocketAddr, want_ready: bool) {
     }
     panic!(
         "admin never reached ready={want_ready}: {:?}",
-        probe_egress(&cfg)
+        probe_egress(&cfg).await
     );
 }
 
@@ -143,7 +143,8 @@ async fn connect_fail_closed_without_client() {
         ws_bind: "127.0.0.1:0".parse().unwrap(),
         proxy_bind: proxy,
         admin_bind: admin,
-    });
+    })
+    .await;
     assert!(st.enabled);
     assert!(!st.ready);
     assert!(!st.client_attached);
