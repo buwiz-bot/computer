@@ -186,9 +186,30 @@ async fn health() -> Json<HealthResponse> {
     Json(HealthResponse { status: "ok" })
 }
 
+/// Run a probe that may block (an X helper, a loopback connect) off the async workers. The X
+/// helpers are bounded by [`box_desktop::TOOL_TIMEOUT`], so this always comes back.
+async fn blocking<T: Send + 'static>(probe: impl FnOnce() -> T + Send + 'static) -> T {
+    match tokio::task::spawn_blocking(probe).await {
+        Ok(value) => value,
+        Err(err) => std::panic::resume_unwind(err.into_panic()),
+    }
+}
+
+/// Whether the display answers.
+async fn display_ready(desktop: &DesktopConfig) -> bool {
+    let desktop = desktop.clone();
+    blocking(move || desktop.probe_display()).await
+}
+
+/// Whether the display answers, and whether its viewer does.
+async fn desktop_probe(desktop: &DesktopConfig) -> (bool, bool) {
+    let desktop = desktop.clone();
+    blocking(move || (desktop.probe_display(), desktop.viewer_ready())).await
+}
+
 async fn ready(State(state): State<AppState>) -> Result<Json<ReadyResponse>, ApiError> {
     let exec_ready = probe_exec_health(&state.exec_url).await;
-    let desktop_ready = state.desktop.probe_display();
+    let (desktop_ready, viewer_ready) = desktop_probe(&state.desktop).await;
     if !exec_ready {
         return Err(ApiError::new(
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -208,11 +229,12 @@ async fn ready(State(state): State<AppState>) -> Result<Json<ReadyResponse>, Api
         service: "box-host",
         exec_ready: true,
         desktop_ready,
-        viewer_ready: state.desktop.viewer_ready(),
+        viewer_ready,
     }))
 }
 
 async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
+    let (desktop_ready, viewer_ready) = desktop_probe(&state.desktop).await;
     Json(InfoResponse {
         box_id: state.box_id.clone(),
         service: "box-host",
@@ -233,13 +255,13 @@ async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
             },
             desktop: Capability {
                 enabled: state.desktop.enabled,
-                ready: state.desktop.probe_display(),
+                ready: desktop_ready,
             },
             viewer: ViewerCapability {
                 kind: VIEWER_KIND,
                 port: state.desktop.viewer_port(),
                 enabled: state.desktop.enabled,
-                ready: state.desktop.viewer_ready(),
+                ready: viewer_ready,
             },
             chrome: {
                 let st = probe_chrome(&state.chrome);
@@ -271,12 +293,12 @@ async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
 
 async fn desktop(State(state): State<AppState>) -> Json<DesktopStatus> {
     let host = container_local_host(state.host_bind);
-    Json(DesktopStatus::from_config(&state.desktop, &host))
+    Json(blocking(move || DesktopStatus::from_config(&state.desktop, &host)).await)
 }
 
 /// The box's own screen and every Bot's, with each one's viewer port and state.
 async fn screens(State(state): State<AppState>) -> Json<ScreenList> {
-    Json(ScreenList::from_config(&state.desktop, &slots_dir()))
+    Json(blocking(move || ScreenList::from_config(&state.desktop, &slots_dir())).await)
 }
 
 async fn chrome(State(state): State<AppState>) -> Json<ChromeStatus> {
@@ -301,7 +323,7 @@ async fn active_tab_now(Query(on): Query<OnScreen>) -> Json<active_tab::ActiveTa
 }
 
 async fn windows(State(state): State<AppState>) -> Json<WindowList> {
-    Json(WindowList::from_config(&state.desktop))
+    Json(blocking(move || WindowList::from_config(&state.desktop)).await)
 }
 
 #[derive(Serialize)]
@@ -335,7 +357,7 @@ async fn busy(State(state): State<AppState>) -> Json<HostBusy> {
             .shutting_down
             .load(std::sync::atomic::Ordering::Relaxed),
         exec_ready: probe_exec_health(&state.exec_url).await,
-        desktop_ready: state.desktop.probe_display(),
+        desktop_ready: display_ready(&state.desktop).await,
         chrome_ready: chrome.ready,
     })
 }
@@ -359,7 +381,7 @@ async fn metrics(State(state): State<AppState>) -> Json<HostMetrics> {
     Json(HostMetrics {
         service: "box-host",
         uptime_ms: state.started_at.elapsed().as_millis() as u64,
-        desktop_ready: state.desktop.probe_display(),
+        desktop_ready: display_ready(&state.desktop).await,
         chrome_ready: probe_chrome(&state.chrome).ready,
     })
 }
