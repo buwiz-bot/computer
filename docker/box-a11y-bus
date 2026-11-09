@@ -15,9 +15,16 @@
 # before it says a word: see crates/box-a11y.
 set -eu
 sock="${1:?box-a11y-bus <socket>}"
+not_a_bus() { echo "box-a11y-bus: ${sock} is not a screen's bus" >&2; exit 2; }
 case "${sock}" in
   /run/box/x/*/run/a11y-bus) ;;
-  *) echo "box-a11y-bus: ${sock} is not a screen's bus" >&2; exit 2 ;;
+  *) not_a_bus ;;
+esac
+# `*` above matches `/` and `..` too: the screen's part must be one segment, its number alone.
+slot="${sock#/run/box/x/}"
+slot="${slot%/run/a11y-bus}"
+case "${slot}" in
+  '' | *[!0-9]*) not_a_bus ;;
 esac
 rm -f "${sock}"
 # --fork returns once the daemon listens.
