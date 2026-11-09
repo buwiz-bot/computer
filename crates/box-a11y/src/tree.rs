@@ -494,7 +494,7 @@ pub struct Node {
     pub name: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub description: String,
-    /// What a text node holds, when it isn't its name. A password field's never is.
+    /// What a text node holds, when it isn't its name. A password field's, or an unknown role's, never is.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     pub states: Vec<&'static str>,
@@ -550,6 +550,9 @@ const WRAPPERS: &[&str] = &[
     "invalid",
 ];
 
+/// Roles whose text is never sent: a password field's, and one that couldn't be told apart from it.
+const TEXTLESS: &[&str] = &["password_text", "unknown", "invalid"];
+
 impl Node {
     /// A container with nothing of its own to say or do.
     fn is_wrapper(&self) -> bool {
@@ -573,7 +576,7 @@ impl Node {
         }
         let text = info
             .text
-            .filter(|_| role != "password_text")
+            .filter(|_| !TEXTLESS.contains(&role.as_str()))
             .map(|text| clip(&text, MAX_TEXT_CHARS))
             .filter(|text| !text.is_empty() && *text != name);
         let states = STATES

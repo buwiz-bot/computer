@@ -385,7 +385,7 @@ A screen's accessibility tree, over AT-SPI: native apps' buttons, fields, menus 
 ```
 
 - `ref` is `<snapshot>:<n>`, good for this tree only: `POST /v1/cua/element` takes refs from the screen's **latest** tree and refuses older ones.
-- `role` is AT-SPI's in snake case (`push_button`, `entry`, `page_tab`, `document_web`). `name` is always there and may be empty; `description` and `text` only when they say something new. `text` is a text node's contents, clipped; a password field's never comes.
+- `role` is AT-SPI's in snake case (`push_button`, `entry`, `page_tab`, `document_web`). `name` is always there and may be empty; `description` and `text` only when they say something new. `text` is a text node's contents, clipped; a password field's never comes, nor that of a node whose role is `unknown`.
 - `states` is the useful subset: `active`, `checked`, `editable`, `enabled`, `expanded`, `focusable`, `focused`, `pressed`, `selected` and a few more ([`openapi.yaml`](openapi.yaml)).
 - `bounds` are screen pixels, the space `/v1/cua/click` takes; absent when the element takes no space. `actions` are AT-SPI's action names. Chromium names none of its, so its buttons list none, and `press` still runs their first, the default action.
 - Bounded everywhere: names and descriptions at 160 characters, text at 400, 8 actions. The walk is breadth first, so a cut tree still has the top of every window. A cut sets `truncated`, lists the limits in `truncated_by` (`max_nodes`, `max_depth`, `time`), and puts `children_omitted` on each node that lost children. An application that hangs costs the time budget and no more. `skipped` counts nodes whose application answered with an error.

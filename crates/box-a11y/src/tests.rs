@@ -394,6 +394,43 @@ async fn shaping_drops_noise() {
     assert_eq!(keys, vec!["name", "ref", "role", "states"]);
 }
 
+#[tokio::test]
+async fn a_node_whose_role_is_unknown_or_unread_sends_no_text() {
+    let mut fake = Fake::default();
+    fake.app("/app");
+    fake.add("/app", Info::default(), &["/win"]);
+    fake.add(
+        "/win",
+        Info {
+            states: vec!["showing", "active"],
+            ..shown("frame", "W")
+        },
+        &["/unknown", "/unread", "/pw"],
+    );
+    // `bus` reports a role it couldn't read as "unknown"; an empty one is shaped as unknown too.
+    for (path, role, name) in [
+        ("/unknown", "unknown", "A"),
+        ("/unread", "", "B"),
+        ("/pw", "password text", "C"),
+    ] {
+        fake.add(
+            path,
+            Info {
+                text: Some("hunter2".into()),
+                ..shown(role, name)
+            },
+            &[],
+        );
+    }
+    let shaped = walk(&fake, &limits(), None).await.unwrap().shape(1);
+    for name in ["A", "B", "C"] {
+        assert!(find(&shaped.nodes, name).unwrap().text.is_none(), "{name}");
+    }
+    assert!(!serde_json::to_string(&shaped.nodes)
+        .unwrap()
+        .contains("hunter2"));
+}
+
 #[test]
 fn limits_are_checked() {
     let bad = |req: TreeRequest| matches!(req.limits(), Err(A11yError::Invalid(_)));

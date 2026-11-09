@@ -16,7 +16,7 @@ use atspi::proxy::action::ActionProxy;
 use atspi::proxy::component::ComponentProxy;
 use atspi::proxy::editable_text::EditableTextProxy;
 use atspi::proxy::text::TextProxy;
-use atspi::{CoordType, Interface, ObjectRefOwned, Role, State};
+use atspi::{CoordType, Interface, InterfaceSet, ObjectRefOwned, Role, State};
 use tokio::net::UnixStream;
 use zbus::proxy::CacheProperties;
 
@@ -251,6 +251,14 @@ fn handle(object: ObjectRefOwned) -> Option<Handle> {
     })
 }
 
+/// Whether a node's text may be read: only when it has the Text interface and a role that is known
+/// and isn't a password field's. A role that can't be read, or reads as unknown, could be one.
+fn may_read_text(interfaces: InterfaceSet, role: Option<Role>) -> bool {
+    interfaces.contains(Interface::Text)
+        && role
+            .is_some_and(|role| !matches!(role, Role::PasswordText | Role::Unknown | Role::Invalid))
+}
+
 impl Source for Screen {
     async fn applications(&self) -> Result<Vec<Handle>, A11yError> {
         let root = Handle {
@@ -280,7 +288,8 @@ impl Source for Screen {
         );
         let name = name.map_err(gone)?;
         let interfaces = interfaces.map_err(gone)?;
-        // A role or state this crate doesn't know yet is no reason to lose the node.
+        // A role this crate doesn't know yet is no reason to lose the node, but it is a reason not
+        // to read its text: it could be a password field.
         let role = role.ok();
         let states = states
             .map(|set| set.iter().map(|s| s.to_static_str()).collect())
@@ -313,7 +322,7 @@ impl Source for Screen {
                 .unwrap_or_default()
         };
         let text = async {
-            if !interfaces.contains(Interface::Text) || role == Some(Role::PasswordText) {
+            if !may_read_text(interfaces, role) {
                 return None;
             }
             let text = proxy::<TextProxy>(&self.conn, node).await.ok()?;
@@ -342,5 +351,22 @@ impl Source for Screen {
             .await
             .map_err(gone)?;
         Ok(children.into_iter().filter_map(handle).collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_is_read_only_for_a_known_role_that_is_not_a_password() {
+        let text = InterfaceSet::new(Interface::Text);
+        assert!(may_read_text(text, Some(Role::Entry)));
+        // A role that couldn't be read.
+        assert!(!may_read_text(text, None));
+        assert!(!may_read_text(text, Some(Role::PasswordText)));
+        assert!(!may_read_text(text, Some(Role::Unknown)));
+        assert!(!may_read_text(text, Some(Role::Invalid)));
+        assert!(!may_read_text(InterfaceSet::empty(), Some(Role::Entry)));
     }
 }
