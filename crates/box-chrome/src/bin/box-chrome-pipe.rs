@@ -158,7 +158,7 @@ fn run(offer: Offer, program: &OsString, rest: &[OsString]) -> ExitCode {
     } = offer;
     let raw = browser_end.as_raw_fd();
     let mut command = Command::new(program);
-    command.args(rest).arg("--remote-debugging-pipe");
+    command.arg("--remote-debugging-pipe").args(rest);
     // SAFETY: only async-signal-safe calls (fcntl, dup2, close) run between fork and exec.
     unsafe {
         command.pre_exec(move || {
