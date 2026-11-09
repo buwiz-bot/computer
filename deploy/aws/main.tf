@@ -7,6 +7,11 @@ locals {
   zone         = var.local_zone != null ? var.local_zone : (var.availability_zone != null ? var.availability_zone : data.aws_availability_zones.here.names[0])
   subnet_id    = local.make_network ? aws_subnet.computers[0].id : var.subnet_id
   vpc_id       = local.make_network ? aws_vpc.computers[0].id : data.aws_subnet.given[0].vpc_id
+
+  # The broker's policy lets it launch only into a subnet, security group and launch template with
+  # this tag, and only images of the account the AMI lookup asks for.
+  managed   = { "buwiz:managed" = "true" }
+  ami_owner = "099720109477"
 }
 
 # The public address this is applied from, when no CIDR is given: the Mac the broker runs on, as a rule.
@@ -24,6 +29,14 @@ data "aws_subnet" "given" {
   id    = var.subnet_id
 }
 
+# A given subnet gets the tag too, or the broker may not launch into it.
+resource "aws_ec2_tag" "given_subnet" {
+  count       = local.make_network ? 0 : 1
+  resource_id = var.subnet_id
+  key         = "buwiz:managed"
+  value       = "true"
+}
+
 # Ubuntu 24.04 LTS, from Canonical, for the instance type's architecture.
 data "aws_ec2_instance_type" "chosen" {
   instance_type = var.instance_type
@@ -31,7 +44,7 @@ data "aws_ec2_instance_type" "chosen" {
 
 data "aws_ami" "ubuntu" {
   most_recent = true
-  owners      = ["099720109477"]
+  owners      = [local.ami_owner]
 
   filter {
     name   = "name"
@@ -75,7 +88,7 @@ resource "aws_subnet" "computers" {
   availability_zone       = local.zone
   map_public_ip_on_launch = true
 
-  tags = { Name = var.name }
+  tags = merge({ Name = var.name }, local.managed)
 
   depends_on = [aws_ec2_availability_zone_group.local_zone]
 }
@@ -104,7 +117,7 @@ resource "aws_security_group" "computers" {
   description = "Buwiz computers: SSH from the broker, nothing else in"
   vpc_id      = local.vpc_id
 
-  tags = { Name = var.name }
+  tags = merge({ Name = var.name }, local.managed)
 }
 
 resource "aws_vpc_security_group_ingress_rule" "ssh" {
@@ -161,6 +174,7 @@ resource "aws_launch_template" "computer" {
   image_id               = data.aws_ami.ubuntu.id
   instance_type          = var.instance_type
   update_default_version = true
+  tags                   = local.managed
   user_data              = base64encode(templatefile("${path.module}/user-data.yaml", { image = "${var.image}:${var.image_tag}" }))
 
   block_device_mappings {

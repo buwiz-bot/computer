@@ -64,7 +64,7 @@ variable "vpc_cidr" {
 }
 
 variable "subnet_id" {
-  description = "A public subnet to use instead of making a VPC. It must give instances a public IPv4 address."
+  description = "A public subnet to use instead of making a VPC. It must give instances a public IPv4 address. It is tagged buwiz:managed=true, which the broker's policy needs."
   type        = string
   default     = null
 }

@@ -29,10 +29,14 @@ the broker adds one more part, the computer's SSH **public** key.
 
 `broker-policy.json` is the managed policy of the broker's IAM user, `buwiz-computer-broker`. It
 allows describing and reading the console in the region. It allows RunInstances only with
-`buwiz:managed=true` set at launch on the instance and its volume, and CreateTags only as part of
+`buwiz:managed=true` set at launch on the instance and its volume, from a launch template, subnet
+and security group tagged `buwiz:managed=true` (this module and the stack tag theirs, and a given
+`subnet_id` too), with an image Canonical (`099720109477`) owns, and CreateTags only as part of
 RunInstances. It allows start, stop, terminate and reboot only on instances tagged
 `buwiz:managed=true`, and PassRole only on `buwiz-computer*` roles. The broker uses nothing else:
-it imports no key pairs and adds no tags after launch.
+it passes no key pair (the policy allows none), and adds no tags after launch. A setup made before
+these tags were added must be applied again (or its stack updated) before this policy replaces the
+old one, or RunInstances is refused.
 
 The checked-in file has `<ACCOUNT_ID>` and `<REGION>` where the account and region go, because each
 client runs this in their own AWS account. `tofu output -raw broker_policy_json` prints it filled in

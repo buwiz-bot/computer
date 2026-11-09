@@ -47,6 +47,7 @@ Metadata:
         Parameters:
           - UbuntuAmiAmd64
           - UbuntuAmiArm64
+          - UbuntuAmiOwner
 
 Parameters:
   AllowedSshCidr:
@@ -113,6 +114,14 @@ Parameters:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id
     Description: Canonical's public parameter for the latest Ubuntu 24.04 LTS AMI, arm64.
+  UbuntuAmiOwner:
+    Type: String
+    Default: "099720109477"
+    AllowedPattern: '^\d{12}$'
+    ConstraintDescription: Must be a 12-digit AWS account ID.
+    Description: >-
+      The account that owns the AMIs the two parameters above name: Canonical's, 099720109477. The
+      broker's policy lets it launch images of this owner only, so change it only with them.
 
 Conditions:
   HasKmsKey: !Not [!Equals [!Ref KmsKeyId, ""]]
@@ -154,9 +163,13 @@ Resources:
       CidrBlock: !Select [1, !Cidr [!GetAtt Vpc.CidrBlock, 256, 8]]
       AvailabilityZone: !If [HasAvailabilityZone, !Ref AvailabilityZone, !Select [0, !GetAZs ""]]
       MapPublicIpOnLaunch: true
+      # The broker's policy lets it launch only into a subnet, security group and launch template
+      # with this tag.
       Tags:
         - Key: Name
           Value: buwiz-computer
+        - Key: buwiz:managed
+          Value: "true"
 
   RouteTable:
     Type: AWS::EC2::RouteTable
@@ -200,6 +213,8 @@ Resources:
       Tags:
         - Key: Name
           Value: buwiz-computer
+        - Key: buwiz:managed
+          Value: "true"
 
   # ---- an optional role: SSM Session Manager, and nothing else ----
 
@@ -233,6 +248,11 @@ Resources:
     DependsOn: SubnetRouteTableAssociation
     Properties:
       LaunchTemplateName: buwiz-computer
+      TagSpecifications:
+        - ResourceType: launch-template
+          Tags:
+            - Key: buwiz:managed
+              Value: "true"
       LaunchTemplateData:
         ImageId: !If [IsArm64, !Ref UbuntuAmiArm64, !Ref UbuntuAmiAmd64]
         InstanceType: !Ref InstanceType
@@ -319,11 +339,22 @@ Resources:
               "Resource": [
                 "arn:aws:ec2:${AWS::Region}:*:launch-template/*",
                 "arn:aws:ec2:${AWS::Region}:*:subnet/*",
-                "arn:aws:ec2:${AWS::Region}:*:security-group/*",
-                "arn:aws:ec2:${AWS::Region}:*:network-interface/*",
-                "arn:aws:ec2:${AWS::Region}:*:key-pair/*",
-                "arn:aws:ec2:${AWS::Region}::image/*"
-              ]
+                "arn:aws:ec2:${AWS::Region}:*:security-group/*"
+              ],
+              "Condition": {"StringEquals": {"ec2:ResourceTag/buwiz:managed": "true"}}
+            },
+            {
+              "Sid": "LaunchWithItsOwnNetworkInterface",
+              "Effect": "Allow",
+              "Action": "ec2:RunInstances",
+              "Resource": "arn:aws:ec2:${AWS::Region}:*:network-interface/*"
+            },
+            {
+              "Sid": "LaunchOnlyCanonicalImages",
+              "Effect": "Allow",
+              "Action": "ec2:RunInstances",
+              "Resource": "arn:aws:ec2:${AWS::Region}::image/*",
+              "Condition": {"StringEquals": {"ec2:Owner": "${UbuntuAmiOwner}"}}
             },
             {
               "Sid": "TagOnlyAtLaunch",
@@ -415,11 +446,22 @@ Outputs:
               "Resource": [
                 "arn:aws:ec2:${AWS::Region}:*:launch-template/*",
                 "arn:aws:ec2:${AWS::Region}:*:subnet/*",
-                "arn:aws:ec2:${AWS::Region}:*:security-group/*",
-                "arn:aws:ec2:${AWS::Region}:*:network-interface/*",
-                "arn:aws:ec2:${AWS::Region}:*:key-pair/*",
-                "arn:aws:ec2:${AWS::Region}::image/*"
-              ]
+                "arn:aws:ec2:${AWS::Region}:*:security-group/*"
+              ],
+              "Condition": {"StringEquals": {"ec2:ResourceTag/buwiz:managed": "true"}}
+            },
+            {
+              "Sid": "LaunchWithItsOwnNetworkInterface",
+              "Effect": "Allow",
+              "Action": "ec2:RunInstances",
+              "Resource": "arn:aws:ec2:${AWS::Region}:*:network-interface/*"
+            },
+            {
+              "Sid": "LaunchOnlyCanonicalImages",
+              "Effect": "Allow",
+              "Action": "ec2:RunInstances",
+              "Resource": "arn:aws:ec2:${AWS::Region}::image/*",
+              "Condition": {"StringEquals": {"ec2:Owner": "${UbuntuAmiOwner}"}}
             },
             {
               "Sid": "TagOnlyAtLaunch",

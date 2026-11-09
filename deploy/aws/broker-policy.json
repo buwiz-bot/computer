@@ -22,11 +22,22 @@
       "Resource": [
         "arn:aws:ec2:<REGION>:*:launch-template/*",
         "arn:aws:ec2:<REGION>:*:subnet/*",
-        "arn:aws:ec2:<REGION>:*:security-group/*",
-        "arn:aws:ec2:<REGION>:*:network-interface/*",
-        "arn:aws:ec2:<REGION>:*:key-pair/*",
-        "arn:aws:ec2:<REGION>::image/*"
-      ]
+        "arn:aws:ec2:<REGION>:*:security-group/*"
+      ],
+      "Condition": {"StringEquals": {"ec2:ResourceTag/buwiz:managed": "true"}}
+    },
+    {
+      "Sid": "LaunchWithItsOwnNetworkInterface",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": "arn:aws:ec2:<REGION>:*:network-interface/*"
+    },
+    {
+      "Sid": "LaunchOnlyCanonicalImages",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": "arn:aws:ec2:<REGION>::image/*",
+      "Condition": {"StringEquals": {"ec2:Owner": "099720109477"}}
     },
     {
       "Sid": "TagOnlyAtLaunch",

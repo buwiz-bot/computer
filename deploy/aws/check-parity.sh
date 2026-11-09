@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fails when deploy/aws (OpenTofu) and deploy/aws/cloudformation/buwiz-computer.yaml disagree on what
 # a client gets: the defaults, the launch template's settings, the security group, the role, the
-# broker's policy, the user data and the broker's env lines. Stdlib Python, no AWS calls.
+# broker's policy, the tags and image owner it depends on, the user data and the broker's env lines. Stdlib Python, no AWS calls.
 # Known differences, not checked: tofu's region default (CloudFormation uses the stack's region),
 # tofu's subnet_id / local_zone / availability_zone inputs and existing-subnet mode (CloudFormation
 # always makes the VPC), and the broker's IAM user (CloudFormation makes it; tofu leaves it to you).
@@ -140,11 +140,58 @@ if cf_user is not None:
 
 # ---- broker policy ----
 tf_policy = json.loads(read(tofu / "broker-policy.json"))
+cf_owner = re.search(r'UbuntuAmiOwner:\n\s+Type: String\n\s+Default: "(\d+)"', cf)
+cf_owner = cf_owner.group(1) if cf_owner else None
+
+
+def cfn_sub(text):
+    """A CloudFormation copy of the policy, with broker-policy.json's placeholders and its defaults."""
+    return (text.replace("${AWS::AccountId}", "<ACCOUNT_ID>").replace("${AWS::Region}", "<REGION>")
+            .replace("${UbuntuAmiOwner}", cf_owner or "?"))
+
+
+def statement(sid):
+    return next((st for st in tf_policy["Statement"] if st.get("Sid") == sid), {})
+
+
+# The broker may launch only from tagged network and template, and only Canonical's images.
+canonical = "099720109477"
+tf_owner = re.search(r'ami_owner\s*=\s*"(\d+)"', tf_main)
+check("AMI owner is Canonical's in both and in the policy",
+      tf_owner is not None and tf_owner.group(1) == canonical and "owners      = [local.ami_owner]" in tf_main
+      and cf_owner == canonical
+      and statement("LaunchOnlyCanonicalImages").get("Condition") == {"StringEquals": {"ec2:Owner": canonical}},
+      f"tofu={tf_owner and tf_owner.group(1)} cfn={cf_owner}")
+gated = statement("LaunchFromOurTemplateAndNetwork")
+check("launch template, subnet and security group need buwiz:managed=true in the policy",
+      gated.get("Condition") == {"StringEquals": {"ec2:ResourceTag/buwiz:managed": "true"}}
+      and sorted(r.split(":")[-1].split("/")[0] for r in gated.get("Resource", [])) == ["launch-template", "security-group", "subnet"])
+check("the policy names no key pair", "key-pair" not in json.dumps(tf_policy))
+check("tofu tags subnet, security group, launch template and a given subnet buwiz:managed=true",
+      'managed   = { "buwiz:managed" = "true" }' in tf_main
+      and "merge({ Name = var.name }, local.managed)" in tf_block(tf_main, 'resource "aws_subnet" "computers"')
+      and "merge({ Name = var.name }, local.managed)" in tf_block(tf_main, 'resource "aws_security_group" "computers"')
+      and attr(tf_block(tf_main, 'resource "aws_launch_template" "computer"'), "tags") == "local.managed"
+      and attr(tf_block(tf_main, 'resource "aws_ec2_tag" "given_subnet"'), "key") == "buwiz:managed"
+      and attr(tf_block(tf_main, 'resource "aws_ec2_tag" "given_subnet"'), "value") == "true")
+managed_tag = r'- Key: buwiz:managed\n\s+Value: "true"'
+
+
+def cfn_resource(name):
+    m = re.search(r"^  %s:\n((?:    .*\n|\n)*)" % re.escape(name), cf, re.M)
+    return m.group(1) if m else ""
+
+
+check("CloudFormation tags subnet, security group and launch template buwiz:managed=true",
+      re.search(managed_tag, cfn_resource("Subnet")) is not None
+      and re.search(managed_tag, cfn_resource("SecurityGroup")) is not None
+      and re.search(r"TagSpecifications:\n\s+- ResourceType: launch-template\n\s+Tags:\n\s+" + managed_tag,
+                    cfn_resource("LaunchTemplate")) is not None)
 cf_policy_text = cfn_block(cf, "PolicyDocument: !Sub |")
 if cf_policy_text is None:
     check("broker policy in the template", False, "no PolicyDocument !Sub block")
 else:
-    cf_policy_text = cf_policy_text.replace("${AWS::AccountId}", "<ACCOUNT_ID>").replace("${AWS::Region}", "<REGION>")
+    cf_policy_text = cfn_sub(cf_policy_text)
     check("broker policy is broker-policy.json", json.loads(cf_policy_text) == tf_policy,
           "statements differ between broker-policy.json and the template")
 
@@ -153,7 +200,7 @@ cf_out_policy = cfn_block(cf_out_policy, "Value: !Sub |")
 if cf_out_policy is None:
     check("broker policy as an output", False, "no BrokerPolicyJson output")
 else:
-    check("broker policy output is broker-policy.json", json.loads(cf_out_policy.replace("${AWS::AccountId}", "<ACCOUNT_ID>").replace("${AWS::Region}", "<REGION>")) == tf_policy,
+    check("broker policy output is broker-policy.json", json.loads(cfn_sub(cf_out_policy)) == tf_policy,
           "the BrokerPolicyJson output differs from broker-policy.json")
 
 # ---- the broker's env lines ----
