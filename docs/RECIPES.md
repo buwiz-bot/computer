@@ -44,7 +44,7 @@ There was **no** preceding batch/recipe endpoint on this guest. Single-op CUA (i
 
 The guest **lints the whole plan first** (empty, >256 steps, out-of-range coordinates, bad keys). If lint fails, **nothing** moves. Then it runs in order. Default screenshot is `end` (one PNG on the receipt, and a file under `artifact_dir` when that field is set). `none` skips it. `each` attaches a PNG after every non-wait step (heavy). `settle: "raw"` waits until Chromium is mapped and the title/URL changes after Return; `compressed` uses shorter timeouts. Default is **`off`** (no extra Chromium waits and no launch/close side effects). `wait` steps are always honored.
 
-`record: true` starts ffmpeg/x11grab on the same X display **before the first CUA step** (before `warmup_pointer`) and sends SIGINT after the last step so the MP4 is finalized. There is no `-t` duration cap (that is what made tapes stop at 1s). Live capture is fragmented so SIGINT can finish the file; a second pass remuxes to progressive `+faststart`. The live tape is `frag_keyframe+empty_moov` x264; the remux to `+faststart` is what makes the saved file seekable. Exact commands:
+`record: true` starts ffmpeg/x11grab on the same X display **before the first CUA step** (before `warmup_pointer`) and sends SIGINT after the last step so the MP4 is finalized. There is no `-t` duration cap (that is what made tapes stop at 1s). Live capture is fragmented so SIGINT can finish the file; a second pass remuxes to progressive `+faststart`. Exact commands:
 
 ```bash
 ffmpeg -nostdin -hide_banner -loglevel error -y \
