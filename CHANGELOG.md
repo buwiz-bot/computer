@@ -4,17 +4,24 @@
 
 | Item | Where |
 | --- | --- |
+| `POST /v1/cua/tree` and `POST /v1/cua/element`: a screen's widgets as text over AT-SPI, Chromium's own included, and press, click, focus or set text on one by `ref`. Each screen has its own accessibility bus that only its desktop and `box-exec` can reach. In the Rust client and CLI (`cua tree`, `cua element`), both SDKs, the API doc, the OpenAPI spec and the image smoke | `crates/box-a11y`, `crates/box-exec`, `crates/box-cua`, `docker/box-a11y-bus`, `docker/a11y-bus.conf`, `crates/buwiz-computer`, `sdk/`, `scripts/smoke.sh` |
+| `deploy/aws`: an OpenTofu module for what Buwiz Bot's EC2 computers launch into (launch template, network, SSH-only security group), and the broker's IAM policy with the account left as `<ACCOUNT_ID>`; `tofu output -raw broker_policy_json` fills it in for the account it runs in | `deploy/aws/`, `docs/DEPLOY.md` |
+| Startup refuses a `BOX_TOKEN` or `BOX_VIEWER_PASSWORD` containing `replace-with` (the `.env.example` placeholders), even with `BOX_ALLOW_INSECURE_DEV=1` | `crates/box-common` |
+| A malformed `BOX_*_BIND` (the egress binds included) or numeric `BOX_*` value is a startup error naming the variable; unset or empty means the default | `crates/box-common`, `crates/box-egress-tunnel`, `crates/box-host` |
+| The Rust client and the CLI bound every request: `DEFAULT_TIMEOUT` (120 s) unless `BuwizComputer::with_timeout` or `--request-timeout-secs` / `BUWIZ_COMPUTER_REQUEST_TIMEOUT_SECS` says otherwise; an exec gets its `timeout_ms` plus `EXEC_MARGIN` (35 s), a wait its own plus `WAIT_MARGIN` (5 s); running out is `Error::Timeout` | `crates/buwiz-computer` |
+| The ready check times out its X probe, and a missing `xdpyinfo` means not ready; no X tool the actions fall back on can hang a request | `crates/box-desktop`, `crates/box-host`, `crates/box-cua` |
+| What a daemon reads from a peer on the box's loopback has a deadline and a size cap, and `probe_egress` no longer blocks an async handler | `crates/box-common/src/local_http.rs`, `crates/box-egress-tunnel`, `crates/box-host` |
+| The egress client gives up dialling a destination after 10 s, before the guest stops waiting for it | `crates/box-egress-tunnel` |
+| No secret written for Compose can end up in the Docker build context | `.dockerignore` |
+| The image is built and smoke-tested when its Rust code changes, and again on `main` | `.github/workflows/image-smoke.yml` |
+| Removed: the standalone Chromium launch script nothing ran. Each crate depends on what it uses, once, and no daemon can be published | `docker/`, `crates/*/Cargo.toml` |
 | `hexuria/box` is frozen. `buwiz-bot/computer` is the one name for this repo, the image (`ghcr.io/buwiz-bot/computer`) and the docs | everywhere |
-| Docs match the code: the Compose healthcheck is the public `/v1/health` with no token, `pids_limit` is 2048, `BOX_HOST_TOKEN` replaces `BOX_TOKEN` on every host route, the CLI shows the token as `BUWIZ_COMPUTER_TOKEN` and not in argv, the `connect(...)` examples handle its `Result`, token rotation goes through `scripts/write-secrets.sh`, the deploy doc clones into `computer` | `README.md`, `docs/` |
+| Docs match the code: the Compose healthcheck is the public `/v1/health` with no token, `pids_limit` is 2048, `BOX_HOST_TOKEN` replaces `BOX_TOKEN` on every host route, the CLI shows the token as `BUWIZ_COMPUTER_TOKEN` and not in argv, the `connect(...)` examples handle its `Result`, token rotation goes through `scripts/write-secrets.sh`, the deploy doc clones into `computer`, the token compare says what it hides | `README.md`, `docs/`, `crates/box-common/src/auth.rs` |
 | `docs/CLI.md`, generated from `--help` by `scripts/gen-cli-docs.sh`; CI fails when it is stale (`scripts/check-cli-docs.sh`) | `docs/CLI.md`, `scripts/`, `.github/workflows/ci.yml` |
 | `GET /v1/chrome/active-tab` is in the API doc, the OpenAPI spec and both SDKs (`activeTab`, `active_tab`), with its trust limit | `docs/API.md`, `docs/openapi.yaml`, `sdk/` |
 | Documented: `BOX_EGRESS_ALLOW_PRIVATE`, `BOX_EGRESS_RELAY_PORTS` and that the address filter applies to every relay; `BOX_SHARED_DISPLAY`, `BOX_SCREEN_WORKSPACE`, `BOX_VIEWER_CTL`, `BOX_EGRESS_BEARER_STAGED`, `BOX_MAX_OWN_SCREENS` and the exec size and timeout limits; the helpers `box-active-tab`, `box-refresh-extension` and `box-screen` | `README.md`, `docs/EGRESS.md`, `docs/ARCHITECTURE.md` |
 | `docs/review/findings-box30.md` says which findings are fixed and which are open; `docs/REVIEW-STATUS.md` is current | `docs/review/`, `docs/REVIEW-STATUS.md` |
-| Startup refuses a `BOX_TOKEN` or `BOX_VIEWER_PASSWORD` containing `replace-with` (the `.env.example` placeholders), even with `BOX_ALLOW_INSECURE_DEV=1` | `crates/box-common` |
-| The Rust client and the CLI time out a request after 120 s by default; the limit is configurable | `crates/buwiz-computer` |
-| The ready check times out its X probe, and a missing `xdpyinfo` means not ready | `crates/box-desktop`, `crates/box-host` |
-| A malformed `BOX_*_BIND` or numeric `BOX_*` value is a startup error, not a silent default | `crates/box-common` |
-| The egress client has a dial timeout, and `probe_egress` no longer blocks an async handler | `crates/box-egress-tunnel` |
+| The TypeScript SDK type-checks (`filesPutRaw`) | `sdk/typescript` |
 
 ## The Bot's computer
 
@@ -37,7 +44,6 @@ Imported from `hexuria/box` at `64f2b13` with its history, as `buwiz-bot/compute
 | Chromium has no DevTools port: `/v1/chrome` reads its process, `BOX_CDP_PORT` and `cdp` are gone, and each screen's page comes from its own extension report | `crates/box-chrome`, `crates/box-cua`, `docker/entrypoint.sh` |
 | Multi-arch publish to `ghcr.io/buwiz-bot/computer` on native runners, and an image smoke on PRs | `.github/workflows/` |
 | Removed: the frozen `ensurebox/` and `l1/` demos, `docker/Dockerfile.remasure`, `box-release-keys` (voxl lets go of held keys when a viewer leaves) | history keeps them |
-| `POST /v1/cua/tree` and `POST /v1/cua/element`: a screen's widgets as text over AT-SPI, Chromium's own included, and press, click, focus or set text on one by `ref`. Each screen has its own accessibility bus that only its desktop and `box-exec` can reach | `crates/box-a11y`, `crates/box-exec`, `docker/box-a11y-bus` |
 
 Compose's `pids_limit` is 2048. Measured per screen with Chromium: about 510 MiB and 180 processes and threads.
 
