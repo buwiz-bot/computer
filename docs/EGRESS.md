@@ -81,7 +81,8 @@ The Bot:
    exposure). Prefer a file:
 
    ```bash
-   openssl rand -base64 32 > /tmp/egress-bearer
+   umask 077
+   mkdir -p ~/.config/buwiz && openssl rand -base64 32 > ~/.config/buwiz/egress-bearer
    # compose / k8s: mount it and set BOX_EGRESS_TUNNEL_BEARER_FILE
    ```
 
@@ -97,6 +98,12 @@ The Bot:
    | `BOX_EGRESS_TUNNEL_BEARER` | required when enabled | WS Bearer. Prefer `_FILE`. |
    | `BOX_EGRESS_TUNNEL_BEARER_FILE` | unset | Preferred. Wins over the value. Guest daemon unlinks a **staged** copy. |
    | `BOX_EGRESS_RELAY_HOSTS` | empty = allow all | Comma-separated CONNECT hosts; `*.fbcdn.net` ok |
+   | `BOX_EGRESS_RELAY_PORTS` | `80,443` | Comma-separated ports the client will dial; `*` is any port. Read by the client. |
+   | `BOX_EGRESS_ALLOW_PRIVATE` | unset | `1` lets the client dial loopback, private, link-local and other non-public addresses. Leave it off. Read by the client. |
+   | `BOX_EGRESS_BEARER_STAGED` | set by `box-keeper` | The staged copy of the bearer that the entrypoint hands to the server. Do not set it. |
+
+   The two `RELAY` filters and the address filter run in the **client**, on the
+   operator's machine, before it dials. Set them in the client's environment.
 
    Short / well-known bearers follow `BOX_TOKEN`: rejected unless
    `BOX_ALLOW_INSECURE_DEV=1` **and** the WS bind is loopback.
@@ -156,6 +163,15 @@ Flags / env:
 | `--relay-hosts` | `BOX_EGRESS_RELAY_HOSTS` | Optional second allowlist (also enforced on the server). |
 | `--allow-host` | (repeatable) | Extra host patterns. |
 | `--reconnect` | `BOX_EGRESS_RECONNECT=1` | Retry on drop; **not** on `401`. |
+
+**The address filter applies to every relay.** The host allowlist matches the
+name Chromium asked for, which a page chooses, so it is not a boundary. The
+client resolves the name itself, drops every address that is not public
+unicast (loopback, private, link-local including `169.254.169.254`, carrier-grade
+NAT, multicast, unique-local, reserved), and dials only an address it vetted,
+never the name a second time. A refused destination is answered with an `error`
+control message and a warning in the client's log. `BOX_EGRESS_ALLOW_PRIVATE=1`
+turns the address check off; the port check stays.
 
 Auth: `Authorization: Bearer …` on the WS handshake. `X-Box-Egress-Bearer` is
 accepted if a proxy eats `Authorization`. No query-string token (logs).
