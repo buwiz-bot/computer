@@ -21,13 +21,13 @@ The caller already has three values from **their** orchestrator:
 
 `GET {hostUrl}/v1/ready` requires Bearer. 200 when exec health OK, and X up when `BOX_DESKTOP_REQUIRED=1`.
 
-Compose healthcheck is `/v1/ready` on 1340 with `Authorization: Bearer`. Chrome is not required for ready.
+The Compose healthcheck is the public `/v1/health` on 1340 and on 1337, with no token, so the token is never in `curl`'s argv. `/v1/ready` is for callers. Chrome is not required for ready. The X probe has a time limit, and a missing `xdpyinfo` means the display is not ready.
 
 ## Authenticated calls
 
 All other routes require `Authorization: Bearer <token>`, including `/v1/ready`.
 
-box-host uses `BOX_HOST_TOKEN` if set, otherwise `BOX_TOKEN`.
+box-host uses `BOX_HOST_TOKEN` if set, otherwise `BOX_TOKEN`, on every route but `/v1/health`.
 
 Failures use a single JSON envelope:
 
