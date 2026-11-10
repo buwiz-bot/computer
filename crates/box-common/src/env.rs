@@ -32,7 +32,7 @@ pub fn browser_layer_on() -> bool {
 }
 
 /// [`browser_layer_on`] over a lookup of the box's on/off flags.
-pub fn browser_layer_on_by(on: impl Fn(&str) -> bool) -> bool {
+fn browser_layer_on_by(on: impl Fn(&str) -> bool) -> bool {
     on("BOX_BROWSER") && on("BOX_DESKTOP")
 }
 
