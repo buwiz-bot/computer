@@ -221,13 +221,16 @@ pub struct ScreenList {
 
 impl ScreenList {
     /// The box's own screen, then every Bot's, by display number. Empty with the desktop off.
+    /// A `BOX_DISPLAY` that isn't a display name names no screen of the box's: box-keeper refuses
+    /// to start with one, so in the box this is only a box-host run on its own.
     pub fn from_config(config: &DesktopConfig, slots_dir: &Path) -> Self {
         let mut screens = Vec::new();
         if !config.enabled {
             return Self { screens };
         }
-        let slot = display_number(&config.display).unwrap_or(1);
-        screens.push(screen(slot, None));
+        if let Some(slot) = display_number(&config.display) {
+            screens.push(screen(slot, None));
+        }
         let mut bots = read_slots(slots_dir);
         bots.sort_by_key(|(_, slot)| *slot);
         screens.extend(bots.into_iter().map(|(bot, n)| screen(n, Some(bot))));
@@ -631,6 +634,24 @@ mod tests {
     fn no_screens_with_the_desktop_off() {
         let list = ScreenList::from_config(&DesktopConfig::disabled(), Path::new("/nowhere"));
         assert!(list.screens.is_empty());
+    }
+
+    #[test]
+    fn a_display_that_is_not_a_display_name_is_no_screen_of_the_boxs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("zed"), "2\n").unwrap();
+        let config = DesktopConfig {
+            enabled: true,
+            display: "screen-one".into(),
+            ..DesktopConfig::disabled()
+        };
+        let list = ScreenList::from_config(&config, dir.path());
+        let shape: Vec<_> = list
+            .screens
+            .iter()
+            .map(|s| (s.display.as_str(), s.bot.as_deref()))
+            .collect();
+        assert_eq!(shape, [(":2", Some("zed"))]);
     }
 
     #[test]

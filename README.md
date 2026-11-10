@@ -141,7 +141,7 @@ Compose also sets `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, `
 | `BOX_HOST_BIND` | `0.0.0.0:1340` in image; `127.0.0.1:1340` native | Host listen address |
 | `BOX_EXEC_URL` | `http://127.0.0.1:1337` | URL host uses to probe exec (container-local) |
 | `BOX_CORS_ORIGINS` | empty (no browser origins) | Comma-separated allowlist; `*` is ignored |
-| `BOX_DISPLAY` | `:1` | X display |
+| `BOX_DISPLAY` | `:1` | X display, `:N`: anything else stops the box at start |
 | `BOX_DISPLAY_GEOM` | `1280x800x24` | Xvfb geometry; **CUA coordinate space is 1280×800** |
 | `BOX_DESKTOP` | `1` | Start Xvfb + xfce + voxl |
 | `BOX_DESKTOP_REQUIRED` | `1` when desktop on | `/v1/ready` waits for the display |
