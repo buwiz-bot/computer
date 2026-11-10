@@ -293,10 +293,7 @@ async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
                     ready: st.ready,
                 }
             },
-            browser: Capability {
-                enabled: state.browser,
-                ready: state.browser && desktop_ready,
-            },
+            browser: browser_capability(state.browser, desktop_ready),
             cua: Capability {
                 enabled: state.cua.enabled,
                 ready: state.cua.capability_ready(),
@@ -316,6 +313,15 @@ async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
         },
         workspace: state.workspace.clone(),
     })
+}
+
+/// `capabilities.browser`: the layer on (`BOX_BROWSER` and `BOX_DESKTOP`, whatever `BOX_CHROME`
+/// says), and ready once the desktop is. Ready says nothing of any one screen's browser.
+fn browser_capability(on: bool, desktop_ready: bool) -> Capability {
+    Capability {
+        enabled: on,
+        ready: on && desktop_ready,
+    }
 }
 
 async fn desktop(State(state): State<AppState>) -> Json<DesktopStatus> {
@@ -600,6 +606,34 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert_eq!(body["error"]["code"], "unauthorized");
+    }
+
+    #[tokio::test]
+    async fn the_browser_capability_is_on_with_chrome_off_and_ready_with_the_desktop() {
+        let mut on = state();
+        on.browser = true;
+        let response = app(on)
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/info")
+                    .header("authorization", "Bearer host-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["capabilities"]["chrome"]["enabled"], false);
+        assert_eq!(body["capabilities"]["browser"]["enabled"], true);
+        assert_eq!(
+            body["capabilities"]["browser"]["ready"], false,
+            "no desktop up here"
+        );
+        let up = browser_capability(true, true);
+        assert!(up.enabled && up.ready, "ready tracks the desktop");
+        let off = browser_capability(false, true);
+        assert!(!off.enabled && !off.ready);
     }
 
     #[tokio::test]
