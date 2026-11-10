@@ -38,7 +38,7 @@ Inside (see [`docs/ARCHITECTURE.md`](ARCHITECTURE.md)):
 - Xvfb **1280×800**, xfce, voxl **6901** (and **6902–6905** for the Bots' own screens)
 - Chromium, with no DevTools port
 
-Compose publishes **1337, 1340, 6901–6905** as `127.0.0.1:1337:1337` (loopback on the VM). Reach them with an SSH tunnel, Tailscale, or similar. Healthcheck: `curl -fsS` on the public `/v1/health` of 1340 and 1337, with no token, so it never puts one in argv (start period 25s, 5s interval, 12 retries). `/v1/ready` is for callers. `shm_size` is **256mb**. Bind mounts: `./workspace-data:/workspace`, `./chrome-profile:/home/box/desktops/main/chrome-profile`.
+Compose publishes **1337, 1340, 6901–6905** as `127.0.0.1:1337:1337` (loopback on the VM). Reach them with an SSH tunnel, Tailscale, or similar. Healthcheck: `curl -fsS` on the public `/v1/health` of 1340 and 1337, with no token, so it never puts one in argv (start period 25s, 5s interval, 12 retries). `/v1/ready` is for callers. `shm_size` is **256mb**. Mounts: `./workspace-data:/workspace` (a host folder) and `box-home:/home/box` (a named volume: every screen's browser profile, saved logins, the Bots' slots and users). `docker compose down -v` deletes `box-home`; see [§G](#g-security-and-ops).
 
 `BOX_CORS_ORIGINS` is an explicit allowlist (`*` is ignored). Compose does **not** currently pass that env into the container; laptop CLI/SDK does not need CORS. Leave it unset unless a **browser** will call the guest directly (unusual).
 
@@ -95,7 +95,7 @@ This guest is **RAM-heavy**: Debian + Xvfb + xfce + voxl + Chromium + two Rust d
 
 **Swap is a last resort, not a plan.** Do not size a 4 GB box and “add 8 GB swap” so Chromium and `cargo` can page. If the build OOMs on 8 GB (unlucky), resize up to **Linode 16 GB** (`g6-standard-6`) for the build, then you can resize down for idle runtime.
 
-**Disk:** 160 GB is plenty: Docker builder layers (Rust image is large), Chromium in the runtime, Compose volumes, a bit of workspace. The bind mounts are your data; the image layers are disposable.
+**Disk:** 160 GB is plenty: Docker builder layers (Rust image is large), Chromium in the runtime, Compose volumes, a bit of workspace. The workspace folder and the `box-home` volume are your data; the image layers are disposable.
 
 **Runtime-only later** (pull a prebuilt image, no compiler): **4 GB** can work for one desktop guest. Still skip 2 GB.
 
@@ -235,8 +235,7 @@ Akamai Cloud Compute **is** Linode. The OpenTofu/Terraform provider for **VMs** 
    EOF
    chmod 600 .env
    shred -u /tmp/box-token
-   mkdir -p workspace-data chrome-profile
-   sudo chown -R 1000:1000 workspace-data chrome-profile
+   mkdir -p workspace-data   # box-prepare gives it its owners at start; the home is a named volume
    bash scripts/write-secrets.sh   # ./secrets/* — Compose mounts these, see §Secrets
    docker compose up --build -d
    docker compose ps
@@ -272,8 +271,7 @@ ssh_pwauth: false
 runcmd:
   - curl -fsSL https://get.docker.com | sh
   - git clone https://github.com/buwiz-bot/computer.git /opt/buwiz-computer
-  - mkdir -p /opt/buwiz-computer/workspace-data /opt/buwiz-computer/chrome-profile
-  - chown -R 1000:1000 /opt/buwiz-computer/workspace-data /opt/buwiz-computer/chrome-profile
+  - mkdir -p /opt/buwiz-computer/workspace-data
   - |
       echo "Clone done. SSH in, write /opt/buwiz-computer/.env with BOX_TOKEN, then:"
       echo "  cd /opt/buwiz-computer && docker compose up --build -d"
@@ -438,10 +436,26 @@ After the Akamai VM is up and Compose is healthy:
 - **Rotate `BOX_TOKEN`:** the token is read only from `./secrets/box_token`, not from the container environment. Put the new value in `.env`, run `bash scripts/write-secrets.sh`, then `docker compose up -d --force-recreate`. Update the laptop env. Rotate `BOX_VIEWER_PASSWORD` the same way; it is independent of the bearer. If your shell exports the old `BOX_TOKEN`, unset it first; `.env` is read by the script.
 - **Do not log tokens.** Do not put them in Compose `docker compose config` pastebins, or CI logs. Compose mounts `./secrets/*` rather than putting values in the container environment, so the token is not in `docker inspect` or in any `/proc/<pid>/environ`. It **is** left at `/run/secrets/box_token` for the life of the box, because the mount is read-only and `box-keeper` cannot unlink it; where the mount does not enforce modes (Docker Desktop's file share) anything in the box, an exec child included, can read it. See README §Auth for what that does and does not protect, and for staging on a writable mount instead. Exec children never get any of these variables.
 - SSH **keys**, not passwords. `PermitRootLogin prohibit-password`. `unattended-upgrades`.
-- **Disk:** `workspace-data` is **your** files. `chrome-profile` is the main screen's cookies/session. `box-prepare` gives the mounts their owners at start ([USERS.md](USERS.md)); the `chown 1000:1000` above does no harm. Back up the workspace volume if you care; the image is rebuildable.
+- **Disk:** `workspace-data` is **your** files. The `box-home` volume is every screen's cookies and sessions, the saved browser logins, and each Bot's slot and user number. `box-prepare` gives both their owners at start ([USERS.md](USERS.md)). `docker compose down`, `up --force-recreate`, `up --build` and a reboot keep both. **`docker compose down -v` deletes `box-home`**, and with it every sign-in, saved login and Bot slot (`./workspace-data` is a host folder, and stays). `docker volume ls` shows it as `<project>_box-home`, the project being the folder's name unless you set `-p`. Back up the workspace if you care; the image is rebuildable.
 - **Cost:** an idle VM still bills. Power off or `tofu destroy` / Cloud Manager delete when done. Hourly on 8 GB Shared is on the order of **seven cents**. A forgotten month is **~$48**.
 - **CORS:** default is no browser origins. Do not point a random website at 1337.
 - **Egress CONNECT unpublished.** Do not add `8791:8791`. WS `8790` is loopback + SSH `-L` only. Prod must not rely on Docker host-network for Facebook/IP geo; see [EGRESS.md](EGRESS.md).
+
+### Upgrading from `./chrome-profile`
+
+Compose used to bind `./chrome-profile` to the main screen's profile and keep nothing else under `/home/box`, so a recreated box lost the Bots' slots, their profiles and the saved logins. It now keeps all of `/home/box` in `box-home`, and **`./chrome-profile` is no longer mounted**: after the upgrade the main screen starts signed out. The folder is left where it was. To carry it into the volume, from the folder holding `docker-compose.yml`, before the new box first starts (if it already has, `docker compose stop` first, and the copy goes over the new profile):
+
+```bash
+docker compose build
+docker compose create   # makes box-home, starts nothing
+docker compose run --rm --no-deps --entrypoint /bin/sh -v "$PWD/chrome-profile:/old:ro" box -c '
+  p=/home/box/desktops/main/chrome-profile
+  install -d -m 0711 /home/box/desktops && install -d -o box -g box -m 0700 /home/box/desktops/main "$p" &&
+  cp -a /old/. "$p"/ && chown -R box:box "$p"'
+docker compose up -d
+```
+
+Then delete `./chrome-profile` once the main screen is signed in as before: it holds cookies. Until then `.gitignore` and `.dockerignore` keep it out of git and out of the build.
 
 ---
 
@@ -464,7 +478,7 @@ After the Akamai VM is up and Compose is healthy:
 - **IPv6.** Akamai assigns it. Cloud Firewall must DROP v6 too, or you published the box on v6 while locking v4.
 - **Compose publishes loopback.** `127.0.0.1:1337:1337` (and 1340/6901-6905). Tailscale-to-public-NIC still will not hit those ports; use an SSH tunnel (including over Tailscale SSH). Health is open but minimal; voxl is a desktop on loopback.
 - **Desktop vs `BOX_DESKTOP=0`.** If you only need exec/files, turn desktop off (`BOX_DESKTOP=0`, `BOX_DESKTOP_REQUIRED=0`). Ready no longer waits on X. No screenshots, no voxl. Less RAM. Compose still lists 6901–6905 unless you override ports.
-- **Volume ownership.** `box-prepare` sets owners on the bind mounts at start; a volume from an older image is moved aside, not deleted ([USERS.md](USERS.md)).
+- **Volume ownership.** `box-prepare` sets owners on the workspace and the home at start; a volume from an older image is moved aside, not deleted ([USERS.md](USERS.md)). The home must be a named volume (or the Bot's own): a host folder at `/home/box` would look like an older image's home, and what's in it would be moved aside to `old-home-<time>`.
 - **No registry by default.** First test builds from git. Tag `v*` to run the GHCR workflow before you scale to many VMs.
 - **Provider confusion.** Compute = `linode/linode` + `LINODE_TOKEN`. Not Vultr. Not `akamai/akamai`.
 

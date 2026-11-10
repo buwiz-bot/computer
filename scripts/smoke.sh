@@ -23,10 +23,14 @@ fi
 
 export COMPOSE_BAKE="${COMPOSE_BAKE:-false}"
 
-COMPOSE=(docker compose)
+# A project of its own, one per checkout: its home volume is created clean here and deleted at the
+# end, and a box you run yourself with `docker compose up` in this folder keeps its own.
+PROJECT="${SMOKE_PROJECT:-buwiz-smoke-$(printf '%s' "${ROOT}" | cksum | cut -d' ' -f1)}"
+
+COMPOSE=(docker compose -p "${PROJECT}")
 if ! docker compose version >/dev/null 2>&1; then
   if command -v docker-compose >/dev/null 2>&1; then
-    COMPOSE=(docker-compose)
+    COMPOSE=(docker-compose -p "${PROJECT}")
   else
     echo "docker compose is required" >&2
     exit 1
@@ -34,24 +38,28 @@ if ! docker compose version >/dev/null 2>&1; then
 fi
 if ! docker info >/dev/null 2>&1; then
   if sudo -n docker info >/dev/null 2>&1; then
-    COMPOSE=(sudo -n docker compose)
+    COMPOSE=(sudo -n docker compose -p "${PROJECT}")
   else
     echo "cannot talk to the Docker daemon (try adding this user to the docker group)" >&2
     exit 1
   fi
 fi
 
-mkdir -p workspace-data chrome-profile
-chmod u+rwx workspace-data chrome-profile 2>/dev/null || true
+mkdir -p workspace-data
+chmod u+rwx workspace-data 2>/dev/null || true
 # Compose mounts ./secrets/* instead of putting the values in the container
 # environment, so they have to exist before anything is started.
 bash "${ROOT}/scripts/write-secrets.sh"
 
-echo "==> building and starting buwiz-computer"
+# A home a previous run left would make this one pass or fail on what that run saved.
+"${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
+
+echo "==> building and starting buwiz-computer (project ${PROJECT})"
 "${COMPOSE[@]}" up --build -d
 
+# -v: this project's home volume goes with it. Only this project's; the workspace is a bind mount.
 cleanup() {
-  "${COMPOSE[@]}" down --remove-orphans >/dev/null 2>&1 || true
+  "${COMPOSE[@]}" down -v --remove-orphans >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -502,7 +510,8 @@ echo "${pipe_desk}" | grep -q LAUNCHER_UNDUMPABLE
 
 echo "==> POST /v1/browser/* on a page served inside the box"
 # bpost <route> <json>: the answer in ${body}, its status in ${code}. The answer goes to a file of
-# this user's own: on a Linux host workspace-data is the box's (uid 1000), not the runner's.
+# this user's own: on a Linux host box-prepare gives workspace-data to the box's users (agent, 1500,
+# and root at the top), so the runner can't write there.
 bpost() {
   local answer
   answer="$(mktemp "${TMPDIR:-/tmp}/browser-answer.XXXXXX")"
@@ -711,10 +720,71 @@ fi
 echo "snap after the relaunch ${code}"
 "${COMPOSE[@]}" exec -T -u box box sh -c '[ ! -e /run/box/x/1/run/cdp.sock ]'
 
+echo "==> the home volume outlives the container: logins, profiles, a Bot's slot and user"
+# spost <json>: POST /v1/screen, the answer in ${screen}.
+spost() {
+  screen="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+    -d "$1" "${EXEC_URL}/v1/screen")"
+}
+bot_uid() {
+  curl -fsS -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+    -d '{"command":["id","-u"],"bot":"smoke"}' "${EXEC_URL}/v1/exec" \
+    | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["exit_code"]==0, d; print(d["stdout"].strip())'
+}
+spost '{"action":"up","bot":"smoke"}'
+echo "screen up ${screen}"
+keep_slot="$(printf '%s' "${screen}" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert "error" not in d, d; print(d["slot"])')"
+keep_uid="$(bot_uid)"
+spost '{"action":"down","bot":"smoke"}'
+"${COMPOSE[@]}" exec -T -u box box sh -c 'echo kept >/home/box/desktops/main/chrome-profile/.smoke-kept'
+"${COMPOSE[@]}" exec -T box sh -c 'test -d /home/box/desktops/smoke/chrome-profile && test -f /home/box/.box/slots/smoke'
+echo "before: Bot smoke on slot ${keep_slot} as uid ${keep_uid}"
+"${COMPOSE[@]}" down --remove-orphans >/dev/null 2>&1 || true
+"${COMPOSE[@]}" up -d --force-recreate
+ok=0
+for _ in $(seq 1 90); do
+  if curl -fsS -H "Authorization: Bearer ${TOKEN}" "${HOST_URL}/v1/ready" 2>/dev/null | grep -q '"desktop_ready":true' \
+    && curl -fsS -H "Authorization: Bearer ${TOKEN}" "${HOST_URL}/v1/chrome" 2>/dev/null | grep -q '"running":true'; then
+    ok=1
+    break
+  fi
+  sleep 1
+done
+if [[ "${ok}" != "1" ]]; then
+  echo "the recreated box never became ready" >&2
+  "${COMPOSE[@]}" logs || true
+  exit 1
+fi
+loaded=0
+for _ in $(seq 1 20); do
+  bpost state '{"op":"load","name":"smoke"}'
+  if [[ "${code}" == "200" ]]; then
+    loaded=1
+    break
+  fi
+  sleep 0.5
+done
+echo "state load after recreate ${code} ${body}"
+[[ "${loaded}" == "1" ]]
+"${COMPOSE[@]}" exec -T box sh -c 'cat /home/box/desktops/main/chrome-profile/.smoke-kept; test -d /home/box/desktops/smoke/chrome-profile && echo BOT_PROFILE_KEPT' \
+  | tee /dev/stderr | tr '\n' ' ' | grep -q '^kept BOT_PROFILE_KEPT'
+spost '{"action":"list"}'
+echo "screen list after recreate ${screen}"
+printf '%s' "${screen}" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+hits = [s for s in d["screens"] if s["bot"] == "smoke"]
+assert hits and hits[0]["slot"] == int(sys.argv[1]), (sys.argv[1], d)
+print("slot kept", hits[0]["slot"])
+' "${keep_slot}"
+after_uid="$(bot_uid)"
+[[ "${after_uid}" == "${keep_uid}" ]]
+echo "uid kept ${after_uid}"
+
 echo "==> BOX_DESKTOP=0 still serves exec+host"
 "${COMPOSE[@]}" down --remove-orphans >/dev/null 2>&1 || true
 if [[ "${COMPOSE[0]}" == "sudo" ]]; then
-  sudo -n env BOX_DESKTOP=0 BOX_DESKTOP_REQUIRED=0 docker compose up -d --force-recreate
+  sudo -n env BOX_DESKTOP=0 BOX_DESKTOP_REQUIRED=0 docker compose -p "${PROJECT}" up -d --force-recreate
 else
   BOX_DESKTOP=0 BOX_DESKTOP_REQUIRED=0 "${COMPOSE[@]}" up -d --force-recreate
 fi
@@ -753,6 +823,8 @@ off_exec="$(curl -fsS \
   -d '{"command":["echo","ok"]}' \
   "${EXEC_URL}/v1/exec")"
 echo "${off_exec}" | grep -q '"exit_code":0'
+# and the second recreate, with no screen at all, still finds the login on disk
+"${COMPOSE[@]}" exec -T box test -f /home/box/browser-state/main/smoke.json
 
 echo
 echo "SMOKE OK"

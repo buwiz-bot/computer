@@ -11,7 +11,7 @@ Everything the model runs on a computer runs as a user that can't reach a person
 | a Bot's agent user | 20000 + 2i | that Bot's commands and file requests | `/workspace/agents/<bot>`, `/home/box/agents/<bot>` |
 | a Bot's desktop user | 20001 + 2i | that Bot's X server, session, browser and voxl | `/home/box/desktops/<bot>`, `/run/box/x/<slot>` |
 
-A Bot's number `i` is given once, in `/home/box/.box/bots/<bot>`, which only root writes, and is never used for another Bot. It survives a rebuild on the home volume.
+A Bot's number `i` is given once, in `/home/box/.box/bots/<bot>`, which only root writes, and is never used for another Bot. It survives a rebuild on the home volume: the Bot's own, or Compose's `box-home`, until `docker compose down -v` deletes it.
 
 The container starts as root with `--cap-drop ALL` and only `CHOWN DAC_OVERRIDE FOWNER FSETID KILL NET_BIND_SERVICE SETGID SETUID`, under `no-new-privileges`. Only `box-keeper` stays root. `box-exec` keeps `SETUID SETGID KILL NET_BIND_SERVICE` for itself, passes none to a child, and holds no ambient or inheritable capability once it's up. Its children start with every capability set empty, in a session of their own. voxl keeps `NET_BIND_SERVICE`, as a desktop user's only capability.
 
@@ -58,7 +58,7 @@ An `LD_PRELOAD` into an allowed program is just that user running that program w
 - **The check is of a moment.** `users_apart` reads the box when a command starts, and before a hand-over's card: not during either.
 - **The start.** The secrets staged by the Bot are on a Docker Desktop file share that doesn't enforce modes, so any user could read them until `/v1/ready` answers. No command runs that early, and nothing of an agent user starts by itself. Something left on a desktop's own home by the path above would.
 - **What every user can see.** `ps` shows every process's arguments, including the first address `box-chromium` opened. `/tmp` and `/dev/shm` are shared: a Bot's world-readable file there is readable by another. A command can use up the box's memory, processes and disk. These are shared by Bots on one computer.
-- **Compose.** It isn't how the Bot starts a box. Its secrets stay on a read-only mount for the life of the box, readable in the box, a command included, wherever modes aren't enforced.
+- **Compose.** It isn't how the Bot starts a box. Its secrets stay on a read-only mount for the life of the box, readable in the box, a command included, wherever modes aren't enforced. It keeps `/home/box` on a named volume, `box-home`, and `/workspace` in `./workspace-data`.
 - **Links the desktop might follow.** A Bot's folder is writable by both its users, so a command can leave a link where the browser saves a download. It's only that Bot's desktop, and this isn't verified against Chromium.
 - **The egress tunnel.** Off by default. When it's on, 8790 and 8791 are above the port floor, so a command could take them while they're free, and it can use the proxy on 8791.
 - **Helper programs and the cookie.** `box-exec`'s own X connections do the handshake on the stream the kernel vouched for. Helpers it runs (`xdotool`, `wmctrl`, `ffmpeg`) connect again by themselves after that check, so a server dying in that moment could leave the name to a squatter, who'd hear a dead server's cookie.
@@ -73,6 +73,8 @@ A computer made before this ran commands as the desktop's user, so everything in
 
 - The home's contents move, whole, to `/home/box/old-home-<time>`, `root:root` 0700: it holds old sign-ins, and is nobody's in the box. A desktop starts on a fresh home, so a person signs in again. Nothing is deleted.
 - A real folder at `/workspace/agents/<bot>` goes to that Bot's agent user, and everything else in the workspace to `agent`. Anything else under `agents/`, a link above all, is moved aside. Links are changed, never followed.
+
+Compose's `box-home` is a named volume, which Docker fills from the image's `/home/box`, root's, the first time, so it never takes the first branch. A host folder mounted at `/home/box` would, since its top is the host user's: that's why Compose doesn't use one.
 
 Nothing of a box's own runs until this is done, and if it fails the box doesn't start.
 
