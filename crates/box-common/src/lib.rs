@@ -25,7 +25,7 @@ pub use config::{
     MIN_TOKEN_LEN, PLACEHOLDER_MARKER, SECRET_ENV_KEYS, SECRET_FILE_ENV_KEYS,
 };
 pub use cors::layer as cors_layer;
-pub use env::{env_bool, env_nonempty};
+pub use env::{browser_layer_on, env_bool, env_nonempty};
 pub use error::{ApiError, ErrorBody, ErrorResponse};
 pub use jail::{resolve_in_canonical_jail, resolve_in_jail, JailError};
 pub use listen::{container_local_host, container_local_http_url};

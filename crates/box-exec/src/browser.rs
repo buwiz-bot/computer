@@ -20,7 +20,7 @@ use crate::AppState;
 pub fn map_browser(err: BrowserError) -> ApiError {
     let message = err.to_string();
     match err {
-        BrowserError::Disabled => {
+        BrowserError::Disabled | BrowserError::MainClosed => {
             ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "browser_disabled", message)
         }
         BrowserError::Unavailable(_) => ApiError::new(

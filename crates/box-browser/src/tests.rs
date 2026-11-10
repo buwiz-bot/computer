@@ -1884,3 +1884,47 @@ async fn ultra_instinct_s_labels_come_clean_and_a_zero_width_pay_is_confirmed() 
     let done = browsers.act(":1", approved).await;
     assert!(matches!(&done, Ok(d) if d.ok), "{done:?}");
 }
+
+#[tokio::test]
+async fn with_box_chrome_off_the_main_screen_is_closed_and_a_bots_own_is_served() {
+    let h = harness();
+    let main_closed = h.browsers.clone().with_main(MainScreen::Closed(Some(1)));
+    assert!(matches!(
+        main_closed.snap(":1", SnapRequest::default()).await,
+        Err(BrowserError::MainClosed)
+    ));
+    assert!(matches!(
+        main_closed.snap(":1.0", SnapRequest::default()).await,
+        Err(BrowserError::MainClosed)
+    ));
+    assert_eq!(
+        h.opener.1.load(Ordering::SeqCst),
+        0,
+        "nothing opened the main screen's browser"
+    );
+    assert!(main_closed.snap(":3", SnapRequest::default()).await.is_ok());
+    // a display that doesn't read as a number isn't served while the main screen is closed
+    for odd in [":+1", ":", "", ":1x"] {
+        assert!(!main_closed.serves(odd), "{odd:?}");
+    }
+    // a main screen that can't be named closes every screen
+    let unknown = h.browsers.clone().with_main(MainScreen::Closed(None));
+    assert!(matches!(
+        unknown.snap(":3", SnapRequest::default()).await,
+        Err(BrowserError::MainClosed)
+    ));
+    assert!(
+        BrowserError::MainClosed
+            .to_string()
+            .contains("BOX_CHROME=0"),
+        "its own words"
+    );
+    // a layer that's off says so first, on any screen
+    let off = Browsers::disabled().with_main(MainScreen::Closed(Some(1)));
+    assert!(matches!(
+        off.snap(":1", SnapRequest::default()).await,
+        Err(BrowserError::Disabled)
+    ));
+    // with BOX_CHROME on, the main screen is served as before
+    assert!(h.browsers.snap(":1", SnapRequest::default()).await.is_ok());
+}

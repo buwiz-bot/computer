@@ -36,9 +36,12 @@ pub use seam::Tools;
 /// What a call can fail with. `box-exec` maps each onto a status and a code.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BrowserError {
-    /// `BOX_BROWSER`, `BOX_CHROME` or `BOX_DESKTOP` is off.
+    /// `BOX_BROWSER` or `BOX_DESKTOP` is off.
     #[error("the browser layer is off on this computer")]
     Disabled,
+    /// The main screen, while `BOX_CHROME` is off: `browser_disabled` too, in words of its own.
+    #[error("this computer's main screen is closed to the browser layer (BOX_CHROME=0); a Bot's own screen is served")]
+    MainClosed,
     /// The screen has no browser box-exec can use now.
     #[error("{0}")]
     Unavailable(String),
@@ -108,6 +111,7 @@ pub struct Browsers {
     opener: Arc<dyn Opener>,
     threads: Arc<Mutex<HashMap<String, SyncSender<Job>>>>,
     state_root: PathBuf,
+    main: MainScreen,
 }
 
 impl std::fmt::Debug for Browsers {
@@ -116,28 +120,64 @@ impl std::fmt::Debug for Browsers {
             .field("enabled", &self.enabled)
             .field("confirm_press", &self.rules.globs())
             .field("state_root", &self.state_root)
+            .field("main", &self.main)
             .finish()
     }
+}
+
+/// Whether the main screen is served by the layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MainScreen {
+    Open,
+    /// `BOX_CHROME=0`: closed, at this slot; `None` when the slot can't be read, which closes
+    /// every screen rather than guess which is the main one.
+    Closed(Option<u16>),
 }
 
 /// Where saved logins go: a folder per screen inside, `box-exec`'s alone (`docker/box-prepare`).
 pub const DEFAULT_STATE_ROOT: &str = "/home/box/browser-state";
 
 impl Browsers {
-    /// On when `BOX_BROWSER`, `BOX_CHROME` and `BOX_DESKTOP` are, over each screen's real pipe.
+    /// On when `BOX_BROWSER` and `BOX_DESKTOP` are ([`box_common::browser_layer_on`]), over each
+    /// screen's real pipe. `BOX_CHROME=0` keeps the main screen closed to it, `503
+    /// browser_disabled` as before, even once a person opens a browser there from the dock: only a
+    /// Bot's own screen, which starts its own, is served.
     pub fn from_env() -> Self {
-        let on = |name: &str| box_common::env_bool(name, true);
         let state_root = std::env::var("BOX_BROWSER_STATE_DIR")
             .ok()
             .filter(|s| !s.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(DEFAULT_STATE_ROOT));
         Self::new(
-            on("BOX_BROWSER") && on("BOX_CHROME") && on("BOX_DESKTOP"),
+            box_common::browser_layer_on(),
             Rules::from_env(),
             Arc::new(pipe::PipeOpener),
             state_root,
         )
+        .with_main(if box_common::env_bool("BOX_CHROME", true) {
+            MainScreen::Open
+        } else {
+            MainScreen::Closed(box_desktop::main_slot())
+        })
+    }
+
+    /// The main screen open or closed to the layer, as `BOX_CHROME` says.
+    pub(crate) fn with_main(mut self, main: MainScreen) -> Self {
+        self.main = main;
+        self
+    }
+
+    /// Whether `display` is served: the layer is on, and it isn't the main screen while that's closed.
+    pub fn serves(&self, display: &str) -> bool {
+        self.enabled
+            && match self.main {
+                MainScreen::Open => true,
+                MainScreen::Closed(None) => false,
+                MainScreen::Closed(Some(main)) => {
+                    // only a display that reads as a number, and isn't the main one
+                    box_desktop::display_number(display).is_some_and(|n| n != main)
+                }
+            }
     }
 
     pub fn disabled() -> Self {
@@ -156,6 +196,7 @@ impl Browsers {
             opener,
             threads: Arc::new(Mutex::new(HashMap::new())),
             state_root,
+            main: MainScreen::Open,
         }
     }
 
@@ -174,6 +215,9 @@ impl Browsers {
     {
         if !self.enabled {
             return Err(BrowserError::Disabled);
+        }
+        if !self.serves(display) {
+            return Err(BrowserError::MainClosed);
         }
         let (tx, rx) = tokio::sync::oneshot::channel();
         let deadline = std::time::Instant::now() + budget;
