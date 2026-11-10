@@ -1937,7 +1937,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "422":
-          description: action_refused, ultra-instinct's guard refused (covered, disabled, drifted)
+          description: action_refused, ultra-instinct's guard refused (covered, out of view, disabled, drifted)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
