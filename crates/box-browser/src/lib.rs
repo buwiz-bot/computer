@@ -36,7 +36,7 @@ pub use seam::Tools;
 /// What a call can fail with. `box-exec` maps each onto a status and a code.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BrowserError {
-    /// `BOX_BROWSER` or `BOX_DESKTOP` is off.
+    /// `BOX_BROWSER` or `BOX_DESKTOP` is off, or this is the main screen and `BOX_CHROME` is.
     #[error("the browser layer is off on this computer")]
     Disabled,
     /// The screen has no browser box-exec can use now.
@@ -108,6 +108,9 @@ pub struct Browsers {
     opener: Arc<dyn Opener>,
     threads: Arc<Mutex<HashMap<String, SyncSender<Job>>>>,
     state_root: PathBuf,
+    /// `Some` when the main screen is closed to the layer (`BOX_CHROME=0`): its slot, `None` in it
+    /// when that can't be read, which closes every screen rather than guess.
+    main_closed: Option<Option<u16>>,
 }
 
 impl std::fmt::Debug for Browsers {
@@ -116,6 +119,7 @@ impl std::fmt::Debug for Browsers {
             .field("enabled", &self.enabled)
             .field("confirm_press", &self.rules.globs())
             .field("state_root", &self.state_root)
+            .field("main_closed", &self.main_closed)
             .finish()
     }
 }
@@ -125,8 +129,9 @@ pub const DEFAULT_STATE_ROOT: &str = "/home/box/browser-state";
 
 impl Browsers {
     /// On when `BOX_BROWSER` and `BOX_DESKTOP` are ([`box_common::browser_layer_on`]), over each
-    /// screen's real pipe. `BOX_CHROME=0` starts no Chromium on the main screen, so there it's
-    /// `503 browser_unavailable` until one runs; a Bot's own screen starts its own.
+    /// screen's real pipe. `BOX_CHROME=0` keeps the main screen closed to it, `503
+    /// browser_disabled` as before, even once a person opens a browser there from the dock: only a
+    /// Bot's own screen, which starts its own, is served.
     pub fn from_env() -> Self {
         let state_root = std::env::var("BOX_BROWSER_STATE_DIR")
             .ok()
@@ -139,6 +144,24 @@ impl Browsers {
             Arc::new(pipe::PipeOpener),
             state_root,
         )
+        .with_main_closed((!box_common::env_bool("BOX_CHROME", true)).then(box_desktop::main_slot))
+    }
+
+    /// Closes the main screen, slot `main` (`None`: unknown, so every screen), to the layer, as
+    /// `BOX_CHROME=0` does; `None` leaves it open.
+    pub fn with_main_closed(mut self, main: Option<Option<u16>>) -> Self {
+        self.main_closed = main;
+        self
+    }
+
+    /// Whether `display` is served: the layer is on, and it isn't the main screen while that's closed.
+    pub fn serves(&self, display: &str) -> bool {
+        self.enabled
+            && match self.main_closed {
+                None => true,
+                Some(None) => false,
+                Some(Some(main)) => box_desktop::display_number(display) != Some(main),
+            }
     }
 
     pub fn disabled() -> Self {
@@ -157,6 +180,7 @@ impl Browsers {
             opener,
             threads: Arc::new(Mutex::new(HashMap::new())),
             state_root,
+            main_closed: None,
         }
     }
 
@@ -173,7 +197,7 @@ impl Browsers {
         R: Send + 'static,
         F: FnOnce(&mut Screen) -> Result<R, BrowserError> + Send + 'static,
     {
-        if !self.enabled {
+        if !self.serves(display) {
             return Err(BrowserError::Disabled);
         }
         let (tx, rx) = tokio::sync::oneshot::channel();

@@ -965,11 +965,12 @@ assert c["chrome"]["enabled"] is False, c["chrome"]
 assert c["browser"]["enabled"] is True, c.get("browser")
 print("BOX_CHROME=0: chrome off, browser on")
 '
-# The main screen has no Chromium: its browser is unavailable, not disabled.
+# The main screen stays closed to the browser layer with BOX_CHROME=0, as before: disabled, even
+# for a Chromium a person might open there from the dock.
 bpost snap '{}'
 echo "main screen snap ${code} ${body}"
 [[ "${code}" == "503" ]]
-printf '%s' "${body}" | grep -q '"code":"browser_unavailable"'
+printf '%s' "${body}" | grep -q '"code":"browser_disabled"'
 curl -fsS -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
   -d '{"command":["sh","-c","nohup perl /workspace/shared/browser-shop.pl >/dev/null 2>&1 & for i in $(seq 50); do curl -fsS -o /dev/null http://127.0.0.1:6910/login && exit 0; sleep 0.1; done; exit 1"]}' \
   "${EXEC_URL}/v1/exec" | grep -q '"exit_code":0'

@@ -958,7 +958,7 @@ components:
                 ready: { type: boolean }
             browser:
               type: object
-              description: /v1/browser/*, on with BOX_BROWSER and BOX_DESKTOP whatever BOX_CHROME says. Ready once the desktop is; a screen with no browser on a pipe still answers 503 browser_unavailable. Absent on older images, which serve it only with BOX_CHROME on too.
+              description: /v1/browser/*. enabled with BOX_BROWSER and BOX_DESKTOP whatever BOX_CHROME says, serving every Bot's own screen; the main screen only with BOX_CHROME on too (else 503 browser_disabled there). ready means only that the desktop is up, not that any screen has a browser (503 browser_unavailable). Absent on older images, which serve the routes only with BOX_CHROME on.
               properties:
                 enabled: { type: boolean }
                 ready: { type: boolean }
@@ -1893,7 +1893,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "503":
-          description: browser_disabled (BOX_BROWSER or BOX_DESKTOP is off), browser_unavailable (the screen has no browser box-exec can use), display_unavailable
+          description: browser_disabled (BOX_BROWSER or BOX_DESKTOP is off, or the main screen with BOX_CHROME off), browser_unavailable (the screen has no browser box-exec can use), display_unavailable
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -1974,7 +1974,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "503":
-          description: browser_disabled (BOX_BROWSER or BOX_DESKTOP is off), browser_unavailable (the screen has no browser box-exec can use), display_unavailable
+          description: browser_disabled (BOX_BROWSER or BOX_DESKTOP is off, or the main screen with BOX_CHROME off), browser_unavailable (the screen has no browser box-exec can use), display_unavailable
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -2044,7 +2044,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "503":
-          description: browser_disabled (BOX_BROWSER or BOX_DESKTOP is off), browser_unavailable (the screen has no browser box-exec can use), display_unavailable
+          description: browser_disabled (BOX_BROWSER or BOX_DESKTOP is off, or the main screen with BOX_CHROME off), browser_unavailable (the screen has no browser box-exec can use), display_unavailable
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -2114,7 +2114,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "503":
-          description: browser_disabled (BOX_BROWSER or BOX_DESKTOP is off), browser_unavailable (the screen has no browser box-exec can use), display_unavailable
+          description: browser_disabled (BOX_BROWSER or BOX_DESKTOP is off, or the main screen with BOX_CHROME off), browser_unavailable (the screen has no browser box-exec can use), display_unavailable
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -2179,7 +2179,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "503":
-          description: browser_disabled (BOX_BROWSER or BOX_DESKTOP is off), browser_unavailable (the screen has no browser box-exec can use), display_unavailable
+          description: browser_disabled (BOX_BROWSER or BOX_DESKTOP is off, or the main screen with BOX_CHROME off), browser_unavailable (the screen has no browser box-exec can use), display_unavailable
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -2239,7 +2239,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "503":
-          description: browser_disabled (BOX_BROWSER or BOX_DESKTOP is off), browser_unavailable (the screen has no browser box-exec can use), display_unavailable
+          description: browser_disabled (BOX_BROWSER or BOX_DESKTOP is off, or the main screen with BOX_CHROME off), browser_unavailable (the screen has no browser box-exec can use), display_unavailable
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -2312,7 +2312,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "503":
-          description: browser_disabled (BOX_BROWSER or BOX_DESKTOP is off), browser_unavailable (the screen has no browser box-exec can use), display_unavailable
+          description: browser_disabled (BOX_BROWSER or BOX_DESKTOP is off, or the main screen with BOX_CHROME off), browser_unavailable (the screen has no browser box-exec can use), display_unavailable
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
@@ -2383,7 +2383,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "503":
-          description: browser_disabled (BOX_BROWSER or BOX_DESKTOP is off), browser_unavailable (the screen has no browser box-exec can use), display_unavailable
+          description: browser_disabled (BOX_BROWSER or BOX_DESKTOP is off, or the main screen with BOX_CHROME off), browser_unavailable (the screen has no browser box-exec can use), display_unavailable
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }

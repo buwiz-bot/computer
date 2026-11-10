@@ -1884,3 +1884,31 @@ async fn ultra_instinct_s_labels_come_clean_and_a_zero_width_pay_is_confirmed() 
     let done = browsers.act(":1", approved).await;
     assert!(matches!(&done, Ok(d) if d.ok), "{done:?}");
 }
+
+#[tokio::test]
+async fn with_box_chrome_off_the_main_screen_is_closed_and_a_bots_own_is_served() {
+    let h = harness();
+    let main_closed = h.browsers.clone().with_main_closed(Some(Some(1)));
+    assert!(matches!(
+        main_closed.snap(":1", SnapRequest::default()).await,
+        Err(BrowserError::Disabled)
+    ));
+    assert!(matches!(
+        main_closed.snap(":1.0", SnapRequest::default()).await,
+        Err(BrowserError::Disabled)
+    ));
+    assert_eq!(
+        h.opener.1.load(Ordering::SeqCst),
+        0,
+        "nothing opened the main screen's browser"
+    );
+    assert!(main_closed.snap(":3", SnapRequest::default()).await.is_ok());
+    // a main screen that can't be named closes every screen
+    let unknown = h.browsers.clone().with_main_closed(Some(None));
+    assert!(matches!(
+        unknown.snap(":3", SnapRequest::default()).await,
+        Err(BrowserError::Disabled)
+    ));
+    // with BOX_CHROME on, the main screen is served as before
+    assert!(h.browsers.snap(":1", SnapRequest::default()).await.is_ok());
+}

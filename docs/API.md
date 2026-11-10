@@ -440,7 +440,7 @@ Each screen's Chromium, driven over its DevTools pipe through [ultra-instinct](h
 | 429 | `busy` | More calls wait for this screen's browser than it takes |
 | 500 | `internal` | `box-exec` asked ultra-instinct for a tool it may not use: a bug in `box-exec` |
 | 502 | `browser_backend` | The browser answered badly, too much, or not at all |
-| 503 | `browser_disabled` | `BOX_BROWSER` or `BOX_DESKTOP` is off (`BOX_CHROME` is not part of it: with it off the main screen has no Chromium, `browser_unavailable`, and a Bot's own screen starts its own) |
+| 503 | `browser_disabled` | `BOX_BROWSER` or `BOX_DESKTOP` is off, or the call is for the main screen and `BOX_CHROME` is off (a Bot's own screen is served whatever `BOX_CHROME` says) |
 | 503 | `browser_unavailable` | The screen has no browser `box-exec` can use: no transport yet, or its pipe closed (the next call takes the new Chromium's; one whose pipe failed while it still ran is started again within a few seconds, and one a person closed stays closed until something opens it) |
 | 504 | `browser_timeout` | The call's budget ran out |
 
@@ -593,7 +593,7 @@ Uses `BOX_HOST_TOKEN` if set, else `BOX_TOKEN`.
 }
 ```
 
-`chrome` is the main screen's Chromium (`BOX_CHROME`). `browser` is `/v1/browser/*`: enabled with `BOX_BROWSER` and `BOX_DESKTOP`, whatever `BOX_CHROME` says, and ready once the desktop is; a screen with no browser on a pipe still answers `503 browser_unavailable`. An image older than this field serves `/v1/browser/*` only with `BOX_CHROME` on as well, so a caller that needs the browser layer on a box made with `BOX_CHROME=0` checks `capabilities.browser.enabled` first.
+`chrome` is the main screen's Chromium (`BOX_CHROME`). `browser` is `/v1/browser/*`: `enabled` with `BOX_BROWSER` and `BOX_DESKTOP`, whatever `BOX_CHROME` says, and then it serves every Bot's own screen; the main screen only with `BOX_CHROME` on too (else `503 browser_disabled` there). `ready` means only that the desktop is up: it says nothing of any one screen's browser, and a screen with no browser on a pipe still answers `503 browser_unavailable`. A caller decides by `enabled`, and reads each screen's own answer. An image older than this field serves `/v1/browser/*` only with `BOX_CHROME` on as well, so a caller that needs the browser layer on a box made with `BOX_CHROME=0` checks `capabilities.browser.enabled` first.
 
 `endpoints` are the listen addresses **inside the guest** (`0.0.0.0` rewritten to loopback). They are not the URLs a remote SDK should dial. Callers always pass the URLs they published.
 
