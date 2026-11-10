@@ -440,7 +440,7 @@ Each screen's Chromium, driven over its DevTools pipe through [ultra-instinct](h
 | 429 | `busy` | More calls wait for this screen's browser than it takes |
 | 500 | `internal` | `box-exec` asked ultra-instinct for a tool it may not use: a bug in `box-exec` |
 | 502 | `browser_backend` | The browser answered badly, too much, or not at all |
-| 503 | `browser_disabled` | `BOX_BROWSER` or `BOX_DESKTOP` is off, or the call is for the main screen and `BOX_CHROME` is off (a Bot's own screen is served whatever `BOX_CHROME` says) |
+| 503 | `browser_disabled` | `BOX_BROWSER` or `BOX_DESKTOP` is off ("the browser layer is off on this computer"), or the call is for the main screen and `BOX_CHROME` is off ("this computer's main screen is closed to the browser layer (BOX_CHROME=0); a Bot's own screen is served") |
 | 503 | `browser_unavailable` | The screen has no browser `box-exec` can use: no transport yet, or its pipe closed (the next call takes the new Chromium's; one whose pipe failed while it still ran is started again within a few seconds, and one a person closed stays closed until something opens it) |
 | 504 | `browser_timeout` | The call's budget ran out |
 

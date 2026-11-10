@@ -1891,11 +1891,11 @@ async fn with_box_chrome_off_the_main_screen_is_closed_and_a_bots_own_is_served(
     let main_closed = h.browsers.clone().with_main(MainScreen::Closed(Some(1)));
     assert!(matches!(
         main_closed.snap(":1", SnapRequest::default()).await,
-        Err(BrowserError::Disabled)
+        Err(BrowserError::MainClosed)
     ));
     assert!(matches!(
         main_closed.snap(":1.0", SnapRequest::default()).await,
-        Err(BrowserError::Disabled)
+        Err(BrowserError::MainClosed)
     ));
     assert_eq!(
         h.opener.1.load(Ordering::SeqCst),
@@ -1911,6 +1911,18 @@ async fn with_box_chrome_off_the_main_screen_is_closed_and_a_bots_own_is_served(
     let unknown = h.browsers.clone().with_main(MainScreen::Closed(None));
     assert!(matches!(
         unknown.snap(":3", SnapRequest::default()).await,
+        Err(BrowserError::MainClosed)
+    ));
+    assert!(
+        BrowserError::MainClosed
+            .to_string()
+            .contains("BOX_CHROME=0"),
+        "its own words"
+    );
+    // a layer that's off says so first, on any screen
+    let off = Browsers::disabled().with_main(MainScreen::Closed(Some(1)));
+    assert!(matches!(
+        off.snap(":1", SnapRequest::default()).await,
         Err(BrowserError::Disabled)
     ));
     // with BOX_CHROME on, the main screen is served as before

@@ -36,9 +36,12 @@ pub use seam::Tools;
 /// What a call can fail with. `box-exec` maps each onto a status and a code.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BrowserError {
-    /// `BOX_BROWSER` or `BOX_DESKTOP` is off, or this is the main screen and `BOX_CHROME` is.
+    /// `BOX_BROWSER` or `BOX_DESKTOP` is off.
     #[error("the browser layer is off on this computer")]
     Disabled,
+    /// The main screen, while `BOX_CHROME` is off: `browser_disabled` too, in words of its own.
+    #[error("this computer's main screen is closed to the browser layer (BOX_CHROME=0); a Bot's own screen is served")]
+    MainClosed,
     /// The screen has no browser box-exec can use now.
     #[error("{0}")]
     Unavailable(String),
@@ -210,8 +213,11 @@ impl Browsers {
         R: Send + 'static,
         F: FnOnce(&mut Screen) -> Result<R, BrowserError> + Send + 'static,
     {
-        if !self.serves(display) {
+        if !self.enabled {
             return Err(BrowserError::Disabled);
+        }
+        if !self.serves(display) {
+            return Err(BrowserError::MainClosed);
         }
         let (tx, rx) = tokio::sync::oneshot::channel();
         let deadline = std::time::Instant::now() + budget;
