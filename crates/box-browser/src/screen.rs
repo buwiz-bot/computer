@@ -665,6 +665,13 @@ impl Screen {
                 "`confirm` is not a token this screen gave, or it was used or is old".into(),
             ));
         }
+        // ultra-instinct's own list lets a `blob:` page through by its origin, and box-browser's
+        // doesn't: the page a run starts on is checked here, as an act's is. (A page the run
+        // itself goes to is ultra-instinct's to check, at its next press.)
+        if !allow.raw().is_empty() {
+            let now = self.look(false)?;
+            allow.check(now.url.as_deref())?;
+        }
         self.apply(allow, confirmed)?;
         self.latest = None;
         let bounds = GoalBounds {

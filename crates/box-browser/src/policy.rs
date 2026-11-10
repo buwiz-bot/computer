@@ -312,6 +312,33 @@ mod tests {
         ));
     }
 
+    /// ultra-instinct lets a `blob:` page through by its origin; box-browser doesn't, whatever the
+    /// origin, since a blob's content is whatever the page made it, not the listed site's page.
+    #[test]
+    fn a_blob_page_is_off_a_list_even_on_a_listed_origin() {
+        let list =
+            AllowList::parse(Some(&["shop.example".into(), "*.shop.example".into()])).unwrap();
+        for blob in [
+            "blob:https://shop.example/0b7c6a3e-1d2f-4c1a-9d9e-3f1e2a7b6c5d",
+            "BLOB:https://shop.example/0b7c6a3e",
+            "  blob:http://www.shop.example/x",
+            "blob:about:blank",
+        ] {
+            assert!(
+                matches!(
+                    list.check(Some(blob)),
+                    Err(BrowserError::DomainNotAllowed(_))
+                ),
+                "{blob}"
+            );
+        }
+        // with no list, nothing is checked
+        assert!(AllowList::parse(None)
+            .unwrap()
+            .check(Some("blob:https://shop.example/x"))
+            .is_ok());
+    }
+
     #[test]
     fn a_token_is_good_once_for_its_target() {
         let mut confirms = Confirms::default();
