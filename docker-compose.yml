@@ -64,9 +64,12 @@ services:
       # voxl: 6901 is the box's own screen, 6902-6905 the Bots' own.
       - "127.0.0.1:6901-6905:6901-6905"
       - "127.0.0.1:8790:8790"
+    # The workspace is your files, on the host. Everything else the box keeps is in its home: each
+    # screen's browser profile, saved logins, the Bots' slots and users. A named volume starts as the
+    # image's /home/box, root's, which box-prepare needs (docs/USERS.md). `down -v` deletes it.
     volumes:
       - ./workspace-data:/workspace
-      - ./chrome-profile:/home/box/desktops/main/chrome-profile
+      - box-home:/home/box
     # The public health routes, on purpose: a check that sent the token would put it in curl's
     # argv, and in a dumpable process's memory, every few seconds. /v1/ready is for callers.
     healthcheck:
@@ -79,6 +82,9 @@ services:
       timeout: 3s
       retries: 12
       start_period: 25s
+
+volumes:
+  box-home:
 
 # This file isn't how the Bot starts a box. Compose mounts these read-only at /run/secrets/<name>, so
 # they stay for the life of the box, and Docker Desktop's share doesn't enforce modes: they're

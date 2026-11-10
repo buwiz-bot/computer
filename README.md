@@ -148,7 +148,7 @@ Compose also sets `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, `
 | `BOX_VIEWER_PASSWORD` | **required when desktop on** | Viewer password, for every screen; independent of `BOX_TOKEN`. At least 16 characters, and not the `.env.example` placeholder, with no `BOX_ALLOW_INSECURE_DEV` exemption: voxl listens on every interface inside the box |
 | `BOX_VIEWER_PASSWORD_FILE` | unset | Path to a file holding `BOX_VIEWER_PASSWORD`. Preferred, same reason. |
 | `BOX_CHROME` | `1` | Launch Chromium on `:1` |
-| `BOX_CHROME_PROFILE` | `/home/box/desktops/main/chrome-profile` | Persistent profile (compose volume) |
+| `BOX_CHROME_PROFILE` | `/home/box/desktops/main/chrome-profile` | The main screen's profile, kept in the home volume |
 | `BOX_CUA` | `1` | Enable `/v1/cua/*` |
 | `BOX_BROWSER` | `1` | Start each screen's Chromium on a DevTools pipe only `box-exec` holds, and serve `/v1/browser/*` (also needs `BOX_CHROME` and `BOX_DESKTOP`). `0`: `/v1/browser/*` answers `503 browser_disabled` on every screen, and the main screen's Chromium (and any screen's `box-chromium` that sees the flag) starts with no pipe |
 | `BOX_BROWSER_CONFIRM_PRESS` | `Pay*,Delete*,Buy*,Place order*` | Label globs whose browser press (a click, a key, or an Enter that sends their form) needs a person's confirm (`409 confirm_required`). Empty confirms nothing |
@@ -235,10 +235,16 @@ Screens keep agents apart through `/v1/cua` and the viewer; they are not a secur
 
 ## Volumes
 
-| Mount | Role |
-| --- | --- |
-| `/workspace` | Jail root for cwd and file APIs, and each screen's folder. Persist across hibernate. |
-| `/home/box/desktops/main/chrome-profile` | The main screen's Chromium `--user-data-dir`. Persist cookies/session. `box-prepare` gives it to the `box` user. |
+| Mount | Compose | Role |
+| --- | --- | --- |
+| `/workspace` | `./workspace-data` (a host folder) | Jail root for cwd and file APIs, and each screen's folder. Persist across hibernate. |
+| `/home/box` | `box-home` (a named volume) | Everything else the box keeps: each screen's Chromium profile (`desktops/<bot>/chrome-profile`, the main one at `desktops/main/chrome-profile`), saved browser logins (`browser-state`), the Bots' slots and user numbers (`.box`), and the Bots' homes (`agents`). |
+
+The box needs both to keep what it had after `docker compose up -d --force-recreate`, a rebuilt image, or a host reboot. `box-prepare` gives them their owners at every start ([USERS.md](docs/USERS.md)). A named volume starts as the image's `/home/box`, owned by root, which is what `box-prepare` expects; a host folder there would be taken for an older image's home and moved aside.
+
+`docker compose down` keeps both. **`docker compose down -v` deletes `box-home`**: every screen's cookies and sessions, every saved login, and every Bot's slot and user number. A Bot that comes back after that gets a new slot. It never touches `./workspace-data`, which is a host folder.
+
+Compose used to mount `./chrome-profile` at the main profile and nothing else under `/home/box`. That folder is no longer mounted: see [DEPLOY.md](docs/DEPLOY.md#upgrading-from-chrome-profile) to carry it over.
 
 ## Docs
 
