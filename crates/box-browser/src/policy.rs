@@ -14,7 +14,7 @@
 use std::io::Read;
 use std::time::{Duration, Instant};
 
-use ultra_instinct_guard::{host_of, refused_place, HostPattern, LabelGlob};
+use ultra_instinct_guard::{host_of, refused_host, refused_place, HostPattern, LabelGlob};
 
 use crate::BrowserError;
 
@@ -169,17 +169,14 @@ fn no_host(url: &str) -> String {
     if SCHEMES.iter().any(|s| s.eq_ignore_ascii_case(scheme)) {
         return refused_place(&format!("{scheme}:"));
     }
-    let unknown = refused_place("");
+    // with no authority to read, the only host ultra-instinct names is a `host:port`'s; a host
+    // of dots alone names nothing
     if host_of(url).is_none() {
-        // with no authority to read, `refused_place` names a host only for a `host:port`; its
-        // other answers are phrases (`a tel: page`), never a bare name
-        let named = refused_place(url);
-        // (a host of dots alone comes back empty: that names nothing)
-        if named != unknown && !named.is_empty() && !named.contains(char::is_whitespace) {
-            return named;
+        if let Some(host) = refused_host(url) {
+            return host;
         }
     }
-    unknown
+    refused_place("")
 }
 
 /// What a refusal says was refused, held to a host name's length: the name is the caller's own

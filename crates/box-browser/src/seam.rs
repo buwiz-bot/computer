@@ -302,6 +302,9 @@ fn from_code(code: &str, message: String, wire: &Value) -> ToolFailure {
         "tool_not_allowed" | "snapshot_required" | "bad_snapshot" | "path_not_absolute"
         | "path_not_allowed" | "downloads_off" | "uploads_off" | "unknown_tool"
         | "missing_tool_name" => ToolFailure::NotAllowed(message),
+        // a tab an attached browser's session didn't open: never met on a pipe, where every tab
+        // is the screen's own, so it's the browser's failure if it ever comes
+        "not_owned" => ToolFailure::Browser(message),
         _ => ToolFailure::Browser(message),
     }
 }
@@ -478,6 +481,7 @@ mod tests {
             ("path_not_absolute", "NotAllowed"),
             ("downloads_off", "NotAllowed"),
             ("uploads_off", "NotAllowed"),
+            ("not_owned", "Browser"),
             ("browser", "Browser"),
             ("something_new", "Browser"),
         ];
@@ -544,12 +548,13 @@ mod tests {
         assert!(matches!(ToolFailure::from(err), ToolFailure::Invalid(_)));
         let err = ToolError::Browser("socket".into());
         assert!(matches!(ToolFailure::from(err), ToolFailure::Browser(_)));
-        // attached mode's refusal of a tab it didn't open (never met on a pipe) has no stable
-        // code of its own: it reads as the browser's failure
+        // attached mode's refusal of a tab it didn't open (never met on a pipe) has a stable
+        // code, `not_owned`: here it reads as the browser's failure
         let not_owned = ultra_instinct_cdp::CdpError::NotOwned {
             target_id: "T1".into(),
         };
-        assert!(ToolError::from_cdp(&not_owned).is_none());
+        let coded = ToolError::cdp(&not_owned).to_value();
+        assert_eq!(coded["code"], "not_owned", "{coded}");
         assert!(matches!(
             ToolFailure::from(ToolError::cdp(&not_owned)),
             ToolFailure::Browser(_)

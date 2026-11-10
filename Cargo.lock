@@ -2237,7 +2237,7 @@ dependencies = [
 [[package]]
 name = "ultra-instinct-agent"
 version = "0.1.0"
-source = "git+https://github.com/hexuria/ultra-instinct?rev=84362cb26c573c005d31de93dedf0d3a218e8afb#84362cb26c573c005d31de93dedf0d3a218e8afb"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=a3e90d080deafb0e5ddad35dcffc53ac743258c0#a3e90d080deafb0e5ddad35dcffc53ac743258c0"
 dependencies = [
  "ultra-instinct-browser",
  "ultra-instinct-core",
@@ -2250,7 +2250,7 @@ dependencies = [
 [[package]]
 name = "ultra-instinct-browser"
 version = "0.1.0"
-source = "git+https://github.com/hexuria/ultra-instinct?rev=84362cb26c573c005d31de93dedf0d3a218e8afb#84362cb26c573c005d31de93dedf0d3a218e8afb"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=a3e90d080deafb0e5ddad35dcffc53ac743258c0#a3e90d080deafb0e5ddad35dcffc53ac743258c0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2265,7 +2265,7 @@ dependencies = [
 [[package]]
 name = "ultra-instinct-browser-tools"
 version = "0.1.0"
-source = "git+https://github.com/hexuria/ultra-instinct?rev=84362cb26c573c005d31de93dedf0d3a218e8afb#84362cb26c573c005d31de93dedf0d3a218e8afb"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=a3e90d080deafb0e5ddad35dcffc53ac743258c0#a3e90d080deafb0e5ddad35dcffc53ac743258c0"
 dependencies = [
  "base64 0.23.1",
  "serde_json",
@@ -2282,7 +2282,7 @@ dependencies = [
 [[package]]
 name = "ultra-instinct-cdp"
 version = "0.1.0"
-source = "git+https://github.com/hexuria/ultra-instinct?rev=84362cb26c573c005d31de93dedf0d3a218e8afb#84362cb26c573c005d31de93dedf0d3a218e8afb"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=a3e90d080deafb0e5ddad35dcffc53ac743258c0#a3e90d080deafb0e5ddad35dcffc53ac743258c0"
 dependencies = [
  "rustix",
  "serde_json",
@@ -2292,17 +2292,17 @@ dependencies = [
 [[package]]
 name = "ultra-instinct-chrome"
 version = "0.1.0"
-source = "git+https://github.com/hexuria/ultra-instinct?rev=84362cb26c573c005d31de93dedf0d3a218e8afb#84362cb26c573c005d31de93dedf0d3a218e8afb"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=a3e90d080deafb0e5ddad35dcffc53ac743258c0#a3e90d080deafb0e5ddad35dcffc53ac743258c0"
 
 [[package]]
 name = "ultra-instinct-core"
 version = "0.1.0"
-source = "git+https://github.com/hexuria/ultra-instinct?rev=84362cb26c573c005d31de93dedf0d3a218e8afb#84362cb26c573c005d31de93dedf0d3a218e8afb"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=a3e90d080deafb0e5ddad35dcffc53ac743258c0#a3e90d080deafb0e5ddad35dcffc53ac743258c0"
 
 [[package]]
 name = "ultra-instinct-geometry"
 version = "0.1.0"
-source = "git+https://github.com/hexuria/ultra-instinct?rev=84362cb26c573c005d31de93dedf0d3a218e8afb#84362cb26c573c005d31de93dedf0d3a218e8afb"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=a3e90d080deafb0e5ddad35dcffc53ac743258c0#a3e90d080deafb0e5ddad35dcffc53ac743258c0"
 dependencies = [
  "ultra-instinct-core",
 ]
@@ -2310,7 +2310,7 @@ dependencies = [
 [[package]]
 name = "ultra-instinct-guard"
 version = "0.1.0"
-source = "git+https://github.com/hexuria/ultra-instinct?rev=84362cb26c573c005d31de93dedf0d3a218e8afb#84362cb26c573c005d31de93dedf0d3a218e8afb"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=a3e90d080deafb0e5ddad35dcffc53ac743258c0#a3e90d080deafb0e5ddad35dcffc53ac743258c0"
 dependencies = [
  "ultra-instinct-core",
  "ultra-instinct-geometry",
@@ -2320,7 +2320,7 @@ dependencies = [
 [[package]]
 name = "ultra-instinct-mcp"
 version = "0.1.0"
-source = "git+https://github.com/hexuria/ultra-instinct?rev=84362cb26c573c005d31de93dedf0d3a218e8afb#84362cb26c573c005d31de93dedf0d3a218e8afb"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=a3e90d080deafb0e5ddad35dcffc53ac743258c0#a3e90d080deafb0e5ddad35dcffc53ac743258c0"
 dependencies = [
  "serde_json",
  "ultra-instinct-agent",
@@ -2338,7 +2338,7 @@ dependencies = [
 [[package]]
 name = "ultra-instinct-observe"
 version = "0.1.0"
-source = "git+https://github.com/hexuria/ultra-instinct?rev=84362cb26c573c005d31de93dedf0d3a218e8afb#84362cb26c573c005d31de93dedf0d3a218e8afb"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=a3e90d080deafb0e5ddad35dcffc53ac743258c0#a3e90d080deafb0e5ddad35dcffc53ac743258c0"
 dependencies = [
  "ultra-instinct-core",
 ]
@@ -2346,7 +2346,7 @@ dependencies = [
 [[package]]
 name = "ultra-instinct-policy"
 version = "0.1.0"
-source = "git+https://github.com/hexuria/ultra-instinct?rev=84362cb26c573c005d31de93dedf0d3a218e8afb#84362cb26c573c005d31de93dedf0d3a218e8afb"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=a3e90d080deafb0e5ddad35dcffc53ac743258c0#a3e90d080deafb0e5ddad35dcffc53ac743258c0"
 dependencies = [
  "instinct-core",
  "instinct-lexicon",
@@ -2357,7 +2357,7 @@ dependencies = [
 [[package]]
 name = "ultra-instinct-protocol"
 version = "0.1.0"
-source = "git+https://github.com/hexuria/ultra-instinct?rev=84362cb26c573c005d31de93dedf0d3a218e8afb#84362cb26c573c005d31de93dedf0d3a218e8afb"
+source = "git+https://github.com/hexuria/ultra-instinct?rev=a3e90d080deafb0e5ddad35dcffc53ac743258c0#a3e90d080deafb0e5ddad35dcffc53ac743258c0"
 dependencies = [
  "ultra-instinct-core",
 ]
