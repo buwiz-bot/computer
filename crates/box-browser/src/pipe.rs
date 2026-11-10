@@ -44,9 +44,17 @@ fn open_leased(
     lease: UnixStream,
     open: impl FnOnce(OwnedFd) -> Result<Box<dyn Tools>, ToolFailure>,
 ) -> Result<Box<dyn Tools>, BrowserError> {
-    let held = pipe
-        .try_clone()
-        .map_err(|err| BrowserError::Unavailable(format!("the pipe can't be held: {err}")))?;
+    let held = match pipe.try_clone() {
+        Ok(held) => held,
+        Err(err) => {
+            // no copy to hold: the let-go goes before the pipe all the same
+            let_go(lease);
+            drop(pipe);
+            return Err(BrowserError::Unavailable(format!(
+                "the pipe can't be held: {err}"
+            )));
+        }
+    };
     match open(pipe) {
         Ok(tools) => {
             drop(held);
