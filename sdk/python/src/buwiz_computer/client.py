@@ -336,12 +336,17 @@ class BuwizComputer:
         url = self._on_screen(f"{self.exec_url}/v1/cua/element", display)
         return self._auth("POST", url, body)
 
-    def browser_snap(self, display: str | None = None, **fields: Any) -> Any:
+    def browser_snap(self, display: str | None = None, *, values: bool = False, **fields: Any) -> Any:
         """The current tab's controls, each with an ``@eN`` ref good for this snapshot alone.
 
-        ``fields``: ``max_nodes`` (1 to 1000, default 200). A password field's text never comes.
+        ``fields``: ``max_nodes`` (1 to 1000, default 200). ``values=True`` also asks for what the
+        fields hold: elements may carry ``value`` (``value_truncated`` when cut), ``checked`` and
+        ``expanded``. A password's or any other sensitive field's never come.
         """
-        return self._auth("POST", self._on_screen(f"{self.exec_url}/v1/browser/snap", display), dict(fields))
+        body = dict(fields)
+        if values:
+            body["values"] = True
+        return self._auth("POST", self._on_screen(f"{self.exec_url}/v1/browser/snap", display), body)
 
     def browser_act(
         self,

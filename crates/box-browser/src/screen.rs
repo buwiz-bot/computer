@@ -216,14 +216,20 @@ impl Screen {
         Ok(())
     }
 
-    fn look(&mut self) -> Result<shape::Page, BrowserError> {
-        let answer = self.call("browser_get_state", json!({"format": "json"}), None)?;
-        shape::page(&answer)
+    /// The page now. `values` asks ultra-instinct for what the fields hold too: only a snap the
+    /// caller asked so of does, never a look a press is checked by.
+    fn look(&mut self, values: bool) -> Result<shape::Page, BrowserError> {
+        let mut args = json!({"format": "json"});
+        if values {
+            args["values"] = json!(true);
+        }
+        let answer = self.call("browser_get_state", args, None)?;
+        shape::page(&answer, values)
     }
 
     pub fn snap(&mut self, limits: &SnapLimits) -> Result<SnapResponse, BrowserError> {
         let started = Instant::now();
-        let page = self.look()?;
+        let page = self.look(limits.values)?;
         let kept: Vec<&Seen> = page.elements.iter().take(limits.max_nodes).collect();
         let truncated = kept.len() < page.elements.len() || page.total > page.elements.len();
         let id = next_snapshot();
@@ -237,6 +243,9 @@ impl Screen {
                 rect: e.rect,
                 sensitive: e.sensitive,
                 value: e.value.clone(),
+                value_truncated: e.value_truncated,
+                checked: e.checked,
+                expanded: e.expanded,
             })
             .collect();
         self.latest = Some(Snapshot {
@@ -297,7 +306,7 @@ impl Screen {
             .ok_or_else(|| BrowserError::Invalid(format!("snapshot {} has no @e{n}", latest.id)))?;
 
         // The page as it is now: the address for the allow-list, and where the element went.
-        let now = self.look()?;
+        let now = self.look(false)?;
         allow.check(now.url.as_deref())?;
         let here = now
             .elements

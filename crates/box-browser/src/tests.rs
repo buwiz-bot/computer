@@ -70,8 +70,19 @@ impl Tools for Fake {
             "browser_get_state" => {
                 assert_eq!(args["format"], "json");
                 w.snapshots += 1;
-                json!({"url": w.url, "title": "Shop", "interactive_elements": w.elements.len(),
-                       "elements": w.elements, "snapshot": format!("s{}", w.snapshots)})
+                // as ultra-instinct does: what a field holds only with `values: true`; the fake
+                // sends a sensitive one's too, for box-browser to drop
+                let mut elements = w.elements.clone();
+                if args.get("values") != Some(&json!(true)) {
+                    for el in &mut elements {
+                        let el = el.as_object_mut().unwrap();
+                        for key in ["value", "value_truncated", "checked", "expanded"] {
+                            el.remove(key);
+                        }
+                    }
+                }
+                json!({"url": w.url, "title": "Shop", "interactive_elements": elements.len(),
+                       "elements": elements, "snapshot": format!("s{}", w.snapshots)})
             }
             "browser_click"
             | "browser_type"
@@ -312,14 +323,20 @@ async fn a_snapshot_is_shaped_cut_and_numbered() {
     let h = harness();
     let snap = h
         .browsers
-        .snap(":1", SnapRequest { max_nodes: Some(2) })
+        .snap(
+            ":1",
+            SnapRequest {
+                max_nodes: Some(2),
+                ..Default::default()
+            },
+        )
         .await
         .unwrap();
     assert_eq!(snap.elements.len(), 2);
     assert!(snap.truncated);
     assert_eq!(snap.total, 5);
     assert_eq!(snap.elements[0].reference, "@e1");
-    assert_eq!(snap.elements[1].value.as_deref(), Some("kid@example.com"));
+    assert_eq!(snap.elements[1].value, None);
     assert_eq!(snap.url.as_deref(), Some("https://shop.example/cart"));
     assert!(snap.text.starts_with("@e1 button \"Search\"\n"));
     let wire = serde_json::to_value(&snap).unwrap();
@@ -332,7 +349,13 @@ async fn a_snapshot_is_shaped_cut_and_numbered() {
     assert!(!next.truncated);
     assert!(h
         .browsers
-        .snap(":1", SnapRequest { max_nodes: Some(0) })
+        .snap(
+            ":1",
+            SnapRequest {
+                max_nodes: Some(0),
+                ..Default::default()
+            },
+        )
         .await
         .is_err());
 }
@@ -347,6 +370,112 @@ async fn a_password_field_s_text_is_never_returned() {
     assert!(password.sensitive);
     assert_eq!(password.value, None);
     assert!(snap.text.contains("@e3 textbox \"Password\" [sensitive]"));
+}
+
+fn with_values() -> SnapRequest {
+    SnapRequest {
+        values: true,
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn a_snap_carries_no_values_unless_asked() {
+    let h = harness();
+    {
+        let mut w = h.world.lock().unwrap();
+        w.elements
+            .push(json!({"index": 6, "region": "n60", "role": "checkbox",
+            "label": "Gift wrap", "input_type": "checkbox", "checked": true,
+            "actions": ["toggle"]}));
+    }
+    let snap = h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    assert_eq!(
+        calls_of(&h, "browser_get_state")[0],
+        json!({"format": "json"})
+    );
+    let wire = serde_json::to_string(&snap).unwrap();
+    for absent in ["kid@example.com", "\"value", "checked", "expanded"] {
+        assert!(!wire.contains(absent), "{absent}: {wire}");
+    }
+    assert!(
+        snap.text.contains("@e2 textbox \"Email\"\n"),
+        "{}",
+        snap.text
+    );
+    // the body says so as well
+    let req: SnapRequest = serde_json::from_value(json!({})).unwrap();
+    assert!(!req.values);
+    let req: SnapRequest = serde_json::from_value(json!({"values": true})).unwrap();
+    assert!(req.limits().unwrap().values);
+}
+
+#[tokio::test]
+async fn values_come_when_asked_and_never_for_a_password_or_a_sensitive_field() {
+    let h = harness();
+    let long = "z".repeat(shape::MAX_VALUE_CHARS + 50);
+    {
+        let mut w = h.world.lock().unwrap();
+        w.elements.extend([
+            json!({"index": 6, "region": "n60", "role": "checkbox", "label": "Gift wrap",
+                   "input_type": "checkbox", "checked": true, "actions": ["toggle"]}),
+            json!({"index": 7, "region": "n70", "role": "textbox", "label": "Card",
+                   "input_type": "text", "sensitive": true, "value": "4111111111111111",
+                   "checked": false, "expanded": false, "actions": ["type"]}),
+            json!({"index": 8, "region": "n80", "role": "textbox", "label": "Code",
+                   "input_type": "hidden", "value": "csrf-s3cret", "actions": ["type"]}),
+            json!({"index": 9, "region": "n90", "role": "textbox", "label": "Note",
+                   "input_type": "text", "value": long, "actions": ["type"]}),
+            json!({"index": 10, "region": "n100", "role": "generic", "label": "Size",
+                   "value": "Large", "actions": ["focus", "click", "select"]}),
+            json!({"index": 11, "region": "n110", "role": "textbox", "label": "Untyped",
+                   "value": "no type, no text", "actions": ["type"]}),
+        ]);
+    }
+    let snap = h.browsers.snap(":1", with_values()).await.unwrap();
+    assert_eq!(
+        calls_of(&h, "browser_get_state")[0],
+        json!({"format": "json", "values": true})
+    );
+    let by = |label: &str| snap.elements.iter().find(|e| e.label == label).unwrap();
+    assert_eq!(by("Email").value.as_deref(), Some("kid@example.com"));
+    assert!(!by("Email").value_truncated);
+    assert_eq!(by("Gift wrap").checked, Some(true));
+    assert_eq!(by("Size").value.as_deref(), Some("Large"));
+    assert_eq!(by("Untyped").value, None);
+    let note = by("Note");
+    assert_eq!(
+        note.value.as_ref().unwrap().chars().count(),
+        shape::MAX_VALUE_CHARS + 1
+    );
+    assert!(note.value_truncated);
+    for secret in ["Password", "Card", "Code"] {
+        let e = by(secret);
+        assert_eq!(
+            (e.value.as_deref(), e.checked, e.expanded, e.value_truncated),
+            (None, None, None, false),
+            "{secret}"
+        );
+    }
+    let wire = serde_json::to_string(&snap).unwrap();
+    for secret in ["hunter2", "4111111111111111", "csrf-s3cret"] {
+        assert!(!wire.contains(secret), "{secret}: {wire}");
+    }
+    assert!(wire.contains("\"value_truncated\":true"));
+    assert!(snap
+        .text
+        .contains("@e2 textbox \"Email\" value=\"kid@example.com\"\n"));
+    assert!(snap.text.contains("@e3 textbox \"Password\" [sensitive]\n"));
+    assert!(snap.text.contains("@e6 checkbox \"Gift wrap\" checked\n"));
+
+    // a press's own look of the page asks for nothing it holds
+    h.browsers
+        .act(":1", act("@e1", ActAction::Click, None))
+        .await
+        .unwrap();
+    let looks = calls_of(&h, "browser_get_state");
+    assert_eq!(looks.len(), 2);
+    assert_eq!(looks[1], json!({"format": "json"}));
 }
 
 #[tokio::test]
@@ -998,6 +1127,107 @@ async fn ultra_instinct_s_own_answer_is_read() {
     assert!(labels.contains(&"Email"), "{snap:?}");
     assert_eq!(snap.url.as_deref(), Some("https://shop.example/login"));
     assert!(snap.elements.iter().all(|e| e.reference.starts_with("@e")));
+
+    // ultra-instinct takes `values` next to `format: json`; the replayed field's type can't be
+    // read, so it's sensitive (failing closed) and holds nothing to show
+    let browsers = Browsers::new(
+        true,
+        Rules::default(),
+        Arc::new(Replay),
+        std::env::temp_dir(),
+    );
+    let snap = browsers.snap(":1", with_values()).await.unwrap();
+    assert_eq!(snap.elements.len(), 2, "{snap:?}");
+    let email = snap.elements.iter().find(|e| e.label == "Email").unwrap();
+    assert!(email.sensitive);
+    assert_eq!(email.value, None);
+}
+
+/// ultra-instinct's real `Server` with `values: true`, on a replayed page whose fields hold text:
+/// what box-browser shows of each.
+#[tokio::test]
+async fn ultra_instinct_s_values_are_read_and_held_back() {
+    use ultra_instinct_cdp::script::{Control, PageSpec, ScriptBuilder};
+    use ultra_instinct_cdp::{CdpTransport, ReplayTransport};
+
+    struct Replay;
+    impl Opener for Replay {
+        fn open(&self, _display: &str) -> Result<Box<dyn Tools>, BrowserError> {
+            let select = Control {
+                tag: "SELECT",
+                role: "combobox",
+                ..Control::combobox(13, 103, "Country", (20.0, 140.0, 200.0, 28.0))
+            };
+            let checkbox = Control {
+                tag: "INPUT",
+                role: "checkbox",
+                ..Control::button(14, 104, "Send me news", (20.0, 180.0, 20.0, 20.0))
+            };
+            let mut page = PageSpec::of(
+                &[
+                    Control::text_field(10, 100, "Email", (20.0, 20.0, 300.0, 28.0)),
+                    Control::text_field(11, 101, "Password", (20.0, 60.0, 300.0, 28.0)),
+                    Control::text_field(12, 102, "Card", (20.0, 100.0, 300.0, 28.0)),
+                    select,
+                    checkbox,
+                ],
+                "https://shop.example/join",
+                "Join",
+            );
+            let states = [
+                json!({"it": "email", "v": "kid@example.com"}),
+                json!({"it": "password", "v": "hunter2"}),
+                json!({"it": "text", "v": "4111111111111111"}),
+                json!({"o": ["Canada", "France"], "sel": "Canada"}),
+                json!({"it": "checkbox", "c": true}),
+            ];
+            for (node, state) in page.dom.iter_mut().zip(states) {
+                *node = node.clone().with_compact_state(state);
+            }
+            page.dom[1] = page.dom[1].clone().with_attr("type", "password");
+            page.dom[4] = page.dom[4].clone().with_attr("type", "checkbox");
+            let script = ScriptBuilder::new().observe_compact(&page).to_json();
+            let server = ultra_instinct_mcp::Server::with_connector(move |_url| {
+                ReplayTransport::parse(&script).map(|t| Box::new(t) as Box<dyn CdpTransport>)
+            });
+            Ok(Box::new(seam::ServerTools::new(server)))
+        }
+    }
+    let browsers = Browsers::new(
+        true,
+        Rules::default(),
+        Arc::new(Replay),
+        std::env::temp_dir(),
+    );
+    let snap = browsers.snap(":1", with_values()).await.unwrap();
+    let by = |label: &str| {
+        snap.elements
+            .iter()
+            .find(|e| e.label == label)
+            .unwrap_or_else(|| panic!("no {label}: {snap:?}"))
+    };
+    assert_eq!(
+        by("Email").value.as_deref(),
+        Some("kid@example.com"),
+        "{snap:?}"
+    );
+    // At this pin ultra-instinct reads a native select as a combobox, which takes typed text and
+    // has no input type or text value: it fails closed, sensitive, and sends no option. Were it
+    // to send one, `may_return_selected` lets it through.
+    let country = by("Country");
+    assert!(country.sensitive, "{snap:?}");
+    assert_eq!(country.value, None);
+    assert_eq!(by("Send me news").checked, Some(true), "{snap:?}");
+    for secret in ["Password", "Card"] {
+        let e = by(secret);
+        assert!(e.sensitive, "{secret}: {snap:?}");
+        assert_eq!((e.value.as_deref(), e.checked), (None, None), "{secret}");
+    }
+    let wire = serde_json::to_string(&snap).unwrap();
+    assert!(
+        !wire.contains("hunter2") && !wire.contains("4111111111111111"),
+        "{wire}"
+    );
 }
 
 #[test]
