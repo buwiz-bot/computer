@@ -1,5 +1,5 @@
 //! box-browser against a fake [`Tools`]: what ultra-instinct would answer, scripted, and every call
-//! box-browser made, kept. One test runs ultra-instinct's own `Server` on a replayed page.
+//! box-browser made, kept. A few run ultra-instinct's own `Server` on a replayed page.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -97,6 +97,9 @@ impl Tools for Fake {
                         args["snapshot"], w.snapshots
                     )));
                 }
+                // a click is ultra-instinct's default, a real pointer press: box-browser never
+                // asks for its DOM script click (`mouse: false`)
+                assert!(args.get("mouse").is_none(), "{name} {args}");
                 let el = at(&w)?;
                 // ultra-instinct's own guard, as the fake's: the policy last set, and this call's
                 // `confirm`, decide.
@@ -868,6 +871,37 @@ async fn goal_runs_end_done_blocked_abstained_or_failed() {
     assert!(h.browsers.run_goal(":1", too_long).await.is_err());
 }
 
+/// ultra-instinct's list lets a `blob:` page on a listed origin through; a run under a list
+/// starting on one is refused by box-browser before ultra-instinct is asked.
+#[tokio::test]
+async fn a_goal_run_on_a_blob_page_is_refused_under_a_list() {
+    let h = harness();
+    let run = |url: &str| {
+        h.world.lock().unwrap().url = url.into();
+        RunRequest {
+            goal: "Click Search".into(),
+            max_steps: None,
+            timeout_ms: None,
+            allow_domains: Some(vec!["shop.example".into()]),
+            confirm: None,
+        }
+    };
+    h.world.lock().unwrap().goal = Some(GoalReport {
+        end: GoalEnd::Done,
+        steps: vec![],
+    });
+    let blob = run("blob:https://shop.example/0b7c6a3e");
+    assert!(matches!(
+        h.browsers.run_goal(":1", blob).await,
+        Err(BrowserError::DomainNotAllowed(_))
+    ));
+    assert!(h.world.lock().unwrap().goals.is_empty());
+    let page = run("https://shop.example/cart");
+    let done = h.browsers.run_goal(":1", page).await.unwrap();
+    assert_eq!(done.outcome, Outcome::Done);
+    assert_eq!(h.world.lock().unwrap().goals.len(), 1);
+}
+
 #[tokio::test]
 async fn a_saved_login_is_a_0600_file_in_the_screen_s_own_0700_folder() {
     let h = harness();
@@ -1230,6 +1264,103 @@ async fn ultra_instinct_s_values_are_read_and_held_back() {
         !wire.contains("hunter2") && !wire.contains("4111111111111111"),
         "{wire}"
     );
+}
+
+/// ultra-instinct's real `Server`, built as `seam::open` builds it, on a replayed page: a click is
+/// a real pointer press (move, press, release) at the element's centre, bound to the snapshot,
+/// and never a DOM script click.
+#[tokio::test]
+async fn ultra_instinct_s_click_is_a_pointer_press_at_the_centre() {
+    use ultra_instinct_cdp::script::{Control, PageSpec, ScriptBuilder};
+    use ultra_instinct_cdp::{CdpError, CdpTransport, ReplayTransport};
+
+    type Log = Arc<Mutex<Vec<(String, Value)>>>;
+    struct Logged {
+        inner: ReplayTransport,
+        log: Log,
+    }
+    impl CdpTransport for Logged {
+        fn call(&mut self, method: &str, params: &str) -> Result<String, CdpError> {
+            let parsed = serde_json::from_str(params).unwrap_or(Value::Null);
+            self.log.lock().unwrap().push((method.to_string(), parsed));
+            self.inner.call(method, params)
+        }
+    }
+
+    struct Replay(Log);
+    impl Opener for Replay {
+        fn open(&self, _display: &str) -> Result<Box<dyn Tools>, BrowserError> {
+            let page = PageSpec::of(
+                &[
+                    Control::text_field(20, 200, "Email", (400.0, 200.0, 200.0, 32.0)),
+                    Control::button(10, 100, "Sign in", (400.0, 300.0, 80.0, 32.0)),
+                ],
+                "https://shop.example/login",
+                "Sign in",
+            );
+            // the snap, act's own look, then the press's two looks (its gate and its ticket)
+            let script = ScriptBuilder::new()
+                .observe_compact(&page)
+                .observe_compact(&page)
+                .observe_compact(&page)
+                .observe_compact(&page)
+                .pointer_click()
+                .to_json();
+            let log = Arc::clone(&self.0);
+            let server = ultra_instinct_mcp::Server::with_connector(move |_url| {
+                Ok(Box::new(Logged {
+                    inner: ReplayTransport::parse(&script)?,
+                    log: Arc::clone(&log),
+                }) as Box<dyn CdpTransport>)
+            })
+            .require_snapshot(true)
+            .with_tool_allowlist(seam::ALLOWED);
+            Ok(Box::new(seam::ServerTools::new(server)))
+        }
+    }
+    let log: Log = Arc::default();
+    let browsers = Browsers::new(
+        true,
+        Rules::default(),
+        Arc::new(Replay(Arc::clone(&log))),
+        std::env::temp_dir(),
+    );
+    let snap = browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    let sign_in = snap.elements.iter().find(|e| e.label == "Sign in").unwrap();
+    browsers
+        .act(":1", act(&sign_in.reference, ActAction::Click, None))
+        .await
+        .unwrap();
+    let log = log.lock().unwrap();
+    let presses: Vec<_> = log
+        .iter()
+        .filter(|(m, _)| {
+            matches!(
+                m.as_str(),
+                "DOM.resolveNode" | "Runtime.callFunctionOn" | "Input.dispatchMouseEvent"
+            )
+        })
+        .collect();
+    let kinds: Vec<_> = presses
+        .iter()
+        .map(|(m, p)| format!("{m} {}", p["type"].as_str().unwrap_or_default()))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "Input.dispatchMouseEvent mouseMoved",
+            "Input.dispatchMouseEvent mousePressed",
+            "Input.dispatchMouseEvent mouseReleased"
+        ],
+        "{log:?}"
+    );
+    // Sign in is 80x32 at (400, 300): its centre
+    for (_, params) in presses {
+        assert_eq!(
+            (params["x"].as_f64(), params["y"].as_f64()),
+            (Some(440.0), Some(316.0))
+        );
+    }
 }
 
 #[test]

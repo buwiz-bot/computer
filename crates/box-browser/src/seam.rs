@@ -492,6 +492,26 @@ mod tests {
         );
     }
 
+    /// At this pin ultra-instinct's own allow-list lets a `blob:` page through by its origin, where
+    /// box-browser's (`policy::AllowList::check`, run before any call that can give input) refuses
+    /// it. Should ultra-instinct come to refuse it too, this says so at the next bump.
+    #[test]
+    fn ultra_instinct_s_list_passes_a_blob_on_a_listed_origin_and_box_browser_s_does_not() {
+        let lists = PolicyLists {
+            allow_domains: vec!["shop.example".into()],
+            ..PolicyLists::default()
+        };
+        let blob = "blob:https://shop.example/0b7c6a3e";
+        assert!(lists.to_policy().unwrap().check_url(blob).is_ok());
+        let ours = crate::policy::AllowList::parse(Some(lists.allow_domains.as_slice())).unwrap();
+        assert!(ours.check(Some(blob)).is_err());
+        // what both refuse
+        for url in ["data:text/html,hi", "javascript:1", "file:///etc/passwd"] {
+            assert!(lists.to_policy().unwrap().check_url(url).is_err(), "{url}");
+            assert!(ours.check(Some(url)).is_err(), "{url}");
+        }
+    }
+
     #[test]
     fn a_tool_error_maps_by_its_code() {
         let err = ToolError::InvalidArguments("no".into());
