@@ -366,7 +366,9 @@ class BuwizComputer:
         through ultra-instinct's ticketed guard. A click or key on a label like ``Pay*``, or an
         Enter that would send a form whose submit button is one, fails with 409
         ``confirm_required``; its ``error.details.confirm`` goes back as ``confirm`` once a person
-        approved ``error.details.label``."""
+        approved ``error.details.label``. 409 ``stale_ref`` means nothing was pressed; 409
+        ``pressed_other`` means the press landed on another element (``error.details.label`` when
+        known): something was pressed, so snap before doing anything else."""
         body: dict[str, Any] = {"ref": ref, "action": action}
         for key, value in (
             ("text", text),

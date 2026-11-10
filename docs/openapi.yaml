@@ -65,7 +65,8 @@ components:
               description: |
                 What a caller needs to act on this error, for the few that have any. `confirm_required`:
                 `{label, confirm}`, the label a person approves and the token sent back as `confirm`.
-                `domain_not_allowed`: `{host}`. Absent otherwise.
+                `domain_not_allowed`: `{host}`. `pressed_other`: `{label}`, the element that was
+                pressed instead, when it is known. Absent otherwise.
     Health:
       type: object
       required: [status]
@@ -1934,7 +1935,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "409":
-          description: stale_ref, the ref is from an older snapshot, or its element is gone, moved, or now shows another label; confirm_required, a person must approve `error.details.label`; target_gone, the tab is gone; dialog_open, a JavaScript dialog holds the tab
+          description: stale_ref, the ref is from an older snapshot, or its element is gone, moved, or now shows another label, and nothing was pressed; pressed_other, the press landed on another element (`error.details.label` when known), so something was pressed and the caller snaps before anything else; confirm_required, a person must approve `error.details.label`; target_gone, the tab is gone; dialog_open, a JavaScript dialog holds the tab
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }

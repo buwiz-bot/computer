@@ -612,16 +612,48 @@ async fn an_element_that_moved_is_found_where_it_went() {
     assert_eq!(calls_of(&h, "browser_click")[0]["index"], 2);
 }
 
+/// A press that landed on another element than the ref named is no `stale_ref` ("nothing
+/// happened"): something was pressed, and the caller hears so, with that element's label when the
+/// look before the press showed it.
 #[tokio::test]
-async fn a_press_that_lands_elsewhere_is_reported_stale() {
+async fn a_press_that_lands_elsewhere_says_something_was_pressed() {
     let h = harness();
+    h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    h.world.lock().unwrap().drift_to = Some("n50".into());
+    let landed = h
+        .browsers
+        .act(":1", act("@e1", ActAction::Click, None))
+        .await;
+    let Err(err @ BrowserError::PressedOther { .. }) = landed else {
+        panic!("{landed:?}");
+    };
+    assert_eq!(
+        err,
+        BrowserError::PressedOther {
+            reference: "@e1".into(),
+            label: Some("Delete account".into()),
+        }
+    );
+    assert!(
+        err.to_string().contains("snap before doing anything else"),
+        "{err}"
+    );
+    assert_eq!(calls_of(&h, "browser_click").len(), 1);
+    // its snapshot is over: the next act on it is stale until a snap
+    assert!(matches!(
+        h.browsers
+            .act(":1", act("@e1", ActAction::Click, None))
+            .await,
+        Err(BrowserError::Stale(_))
+    ));
+    // one the look didn't show has no label to give
     h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
     h.world.lock().unwrap().drift_to = Some("n99".into());
     assert!(matches!(
         h.browsers
             .act(":1", act("@e1", ActAction::Click, None))
             .await,
-        Err(BrowserError::Stale(_))
+        Err(BrowserError::PressedOther { label: None, .. })
     ));
 }
 

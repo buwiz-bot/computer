@@ -423,14 +423,21 @@ impl Screen {
             self.policy = None;
         }
         let done = done?;
-        // ultra-instinct finds the index again on its own fresh look. If that was another element,
-        // the page moved under the call, and the caller must know, not be told it went well.
+        // ultra-instinct resolves the index in the snapshot this look just read, so its answer
+        // names the element box-browser meant. Should it name another, that one was pressed: the
+        // caller must hear that something happened, not that nothing did (`stale_ref`).
         if let Some(acted_on) = done.get("region").and_then(Value::as_str) {
             if acted_on != region {
                 self.latest = None;
-                return Err(BrowserError::Stale(format!(
-                    "the page moved as @e{n} was acted on, and another element took it: snap again"
-                )));
+                let label = now
+                    .elements
+                    .iter()
+                    .find(|e| e.region == acted_on)
+                    .map(|e| shape::clip(&e.label, shape::MAX_LABEL_CHARS));
+                return Err(BrowserError::PressedOther {
+                    reference: format!("@e{n}"),
+                    label,
+                });
             }
         }
         Ok(ActResponse {

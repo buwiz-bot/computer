@@ -22,7 +22,7 @@ Auth: `Authorization: Bearer <BOX_TOKEN>` unless noted. `GET /v1/health` is the 
 }
 ```
 
-Common codes: `unauthorized`, `invalid_request`, `path_escape`, `not_found`, `payload_too_large`, `exec_failed`, `io_error`, `internal`, `not_ready`, `busy` (429, every exec slot is taken), `cua_disabled`, `display_unavailable` (503, the X server is down), `viewer_unavailable` (503, that screen's voxl is down), `out_of_range`, `cua_backend` (502), `keeper_failed` (502, `POST /v1/screen` could not reach `box-keeper`), and the browser's: `browser_disabled`, `browser_unavailable` (503), `stale_ref`, `confirm_required`, `target_gone`, `dialog_open` (409), `domain_not_allowed` (403), `action_refused` (422), `browser_backend` (502), `browser_timeout` (504).
+Common codes: `unauthorized`, `invalid_request`, `path_escape`, `not_found`, `payload_too_large`, `exec_failed`, `io_error`, `internal`, `not_ready`, `busy` (429, every exec slot is taken), `cua_disabled`, `display_unavailable` (503, the X server is down), `viewer_unavailable` (503, that screen's voxl is down), `out_of_range`, `cua_backend` (502), `keeper_failed` (502, `POST /v1/screen` could not reach `box-keeper`), and the browser's: `browser_disabled`, `browser_unavailable` (503), `stale_ref`, `pressed_other`, `confirm_required`, `target_gone`, `dialog_open` (409), `domain_not_allowed` (403), `action_refused` (422), `browser_backend` (502), `browser_timeout` (504).
 
 A few errors carry `error.details`, what the caller needs to act on them: `confirm_required` has `{label, confirm}`, `domain_not_allowed` has `{host}`. Every other error has none.
 
@@ -431,7 +431,8 @@ Each screen's Chromium, driven over its DevTools pipe through [ultra-instinct](h
 | --- | --- | --- |
 | 400 | `invalid_request` | A field out of range or unknown, a malformed ref, a display that isn't `:N` |
 | 403 | `domain_not_allowed` | The page, or the address asked for, is off `allow_domains`; `error.details.host`: its host, or for an address with none its scheme (`a blob: page`, `a data: page`, `an https: URL with no host`, `(unknown url)`), never the address itself |
-| 409 | `stale_ref` | The ref is from an older snapshot, or its element is gone, moved, or now shows another label |
+| 409 | `stale_ref` | The ref is from an older snapshot, or its element is gone, moved, or now shows another label. Nothing was pressed |
+| 409 | `pressed_other` | `act` only: the press went out and landed on another element than the ref named. Something **was** pressed: snap before doing anything else. `error.details.label` is that element's label, when `box-exec`'s look before the press showed it |
 | 409 | `confirm_required` | The press needs a person's confirm; `error.details.{label, confirm}` (`label` shown to 160 characters; the token holds it whole) |
 | 409 | `target_gone` | The tab is gone: list the tabs, switch or open one, snap again |
 | 409 | `dialog_open` | A JavaScript dialog holds the tab |
@@ -500,9 +501,9 @@ Each screen's Chromium, driven over its DevTools pipe through [ultra-instinct](h
 - **A click is a real pointer press**, as a person's is: the mouse moves to the centre of the element's box, presses and releases there (`Input.dispatchMouseEvent`), so the page sees trusted `pointerdown`/`mousedown`/`mouseup`/`click` and focus moves, where a script click would fire `click` alone. It goes through the same gate and ticket. What is at that centre is what gets the press: an element another one covers there (a banner, a cookie notice, a modal) is refused `422 action_refused` by the gate's occlusion check, not clicked through, so close what covers it or `scroll` it clear, then snap and click again. The press doesn't scroll: an element outside the viewport is refused the same way, so `scroll` to it first. A goal run's clicks are pointer presses too.
 - `ref` is `@eN` or `<snapshot>:@eN`. With `snapshot`, or the long form, a ref from anything but the latest snapshot is `409 stale_ref`.
 - The page is looked at again first. The element is found by its identity, not its number, so one that moved is still hit, and one that's gone is `409 stale_ref`.
-- **The window that leaves.** ultra-instinct takes the element's number in reading order, and looks at the page once more to find it. Between `box-exec`'s look and that one, a few CDP round trips, the page can move, and another element can take the number. The press then lands on that element, under ultra-instinct's gate and ticket as always, and `box-exec` answers `409 stale_ref` because the identity it pressed isn't the one asked for: the press happened. ultra-instinct's coming presses bound to the snapshot close the window.
+- **A press on another element.** ultra-instinct takes the element's number in the snapshot `box-exec`'s own look just read, and presses the element that snapshot showed, or refuses `stale_ref` with nothing pressed if it moved or changed since. Its answer names what it pressed; should that ever be another element than the ref's, the answer is `409 pressed_other`, not `stale_ref`: the press happened, on that element, and the page may have changed because of it. Snap and look before anything else, and don't send the same press again blind.
 
-`200 {"ok": true, "ref": "@e3", "action": "click", "ticket": 41}`. Errors: `409 stale_ref`, `409 confirm_required`, `403 domain_not_allowed`, `422 action_refused` (ultra-instinct's guard said no: covered at its centre, out of view, disabled, drifted), `400 invalid_request`.
+`200 {"ok": true, "ref": "@e3", "action": "click", "ticket": 41}`. Errors: `409 stale_ref` (nothing was pressed), `409 pressed_other` (another element was), `409 confirm_required`, `403 domain_not_allowed`, `422 action_refused` (ultra-instinct's guard said no: covered at its centre, out of view, disabled, drifted), `400 invalid_request`.
 
 ### `POST /v1/browser/navigate`
 

@@ -44,9 +44,20 @@ pub enum BrowserError {
     Unavailable(String),
     #[error("{0}")]
     Invalid(String),
-    /// A ref from an older snapshot, or an element that's gone.
+    /// A ref from an older snapshot, or an element that's gone. Nothing was pressed.
     #[error("{0}")]
     Stale(String),
+    /// The press went out and landed on another element than the one `reference` named: something
+    /// WAS pressed. `label` is that element's, when the look before the press showed it.
+    #[error(
+        "the press meant for {reference} landed on another element{}: something was pressed, so \
+         snap before doing anything else",
+        label.as_ref().map(|l| format!(" ({l:?})")).unwrap_or_default()
+    )]
+    PressedOther {
+        reference: String,
+        label: Option<String>,
+    },
     /// The press needs a person to confirm `label`; `token` goes back as `confirm`.
     #[error("pressing {label:?} needs a person's confirm: send the token back as `confirm`")]
     ConfirmRequired { label: String, token: String },

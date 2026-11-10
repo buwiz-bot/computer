@@ -747,7 +747,9 @@ export class BuwizComputer {
    * Click, type, select, key, scroll or focus an element by ref, through ultra-instinct's ticketed
    * guard. A click or key on a label like `Pay*`, or an Enter that would send a form whose submit
    * button is one, is refused with `409 confirm_required` until `confirm` brings back
-   * `error.details.confirm`.
+   * `error.details.confirm`. `409 stale_ref` means nothing was pressed; `409 pressed_other` means
+   * the press landed on another element (`error.details.label` when known): something was
+   * pressed, so snap before doing anything else.
    */
   async browserAct(request: BrowserActRequest, display?: string): Promise<BrowserActResponse> {
     return this.authJson("POST", onScreen(`${this.execUrl}/v1/browser/act`, display), request, BROWSER_CALL_MS);
