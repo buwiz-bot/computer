@@ -445,7 +445,8 @@ pub struct Element {
     /// With `values` asked for: an `aria-selected` element's state (a selected tab, option or row).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selected: Option<bool>,
-    /// With `values` asked for: `aria-current` when the page sets it (`page`, `step`, `date`, …).
+    /// With `values` asked for: `aria-current` when the page sets it (`page`, `step`, `date`, …),
+    /// lowercased, at most 16 characters.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current: Option<String>,
 }

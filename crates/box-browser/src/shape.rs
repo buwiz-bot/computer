@@ -13,6 +13,8 @@ pub const MAX_LABEL_CHARS: usize = 160;
 /// clipped to what an answer shows could never be confirmed. Past this, a label is clipped too.
 pub const MAX_KEPT_LABEL_CHARS: usize = 4096;
 pub const MAX_URL_CHARS: usize = 2048;
+/// Characters of an `aria-current` value: ultra-instinct's own cap.
+pub const MAX_CURRENT_CHARS: usize = 16;
 /// Characters kept of a field's text.
 pub const MAX_VALUE_CHARS: usize = 400;
 /// Actions kept per element, and characters per action.
@@ -51,7 +53,8 @@ pub struct Seen {
     pub expanded: Option<bool>,
     /// `aria-selected`: ultra-instinct's `selected_item`.
     pub selected: Option<bool>,
-    /// `aria-current` (`page`, `step`, …): ultra-instinct's `aria_current`, clipped as a label is.
+    /// `aria-current` (`page`, `step`, …): ultra-instinct's `aria_current`, lowercased and at most
+    /// [`MAX_CURRENT_CHARS`], as ultra-instinct already reads it: held to that here too.
     pub current: Option<String>,
 }
 
@@ -204,7 +207,11 @@ pub fn page(answer: &Value, values: bool) -> Result<Page, BrowserError> {
             checked: state("checked"),
             expanded: state("expanded"),
             selected: state("selected_item"),
-            current: text(el, "aria_current", MAX_LABEL_CHARS).filter(|_| values && !sensitive),
+            current: el
+                .get("aria_current")
+                .and_then(Value::as_str)
+                .filter(|_| values && !sensitive)
+                .map(|c| c.to_lowercase().chars().take(MAX_CURRENT_CHARS).collect()),
         });
     }
     Ok(Page {
@@ -447,7 +454,7 @@ mod tests {
                  "input_type": "text", "sensitive": true, "selected_item": false,
                  "aria_current": "step", "actions": ["type"]},
                 {"index": 9, "region": "n9", "role": "link", "label": "Step 2",
-                 "aria_current": "s".repeat(MAX_LABEL_CHARS + 9), "actions": ["click"]},
+                 "aria_current": "STEP-".repeat(9), "actions": ["click"]},
             ]
         });
         let off = page(&answer, false).unwrap();
@@ -494,10 +501,8 @@ mod tests {
         );
         assert_eq!((e[7].selected, e[7].current.as_deref()), (None, None));
         assert_eq!(e[1].selected, None);
-        assert_eq!(
-            e[8].current.as_ref().unwrap().chars().count(),
-            MAX_LABEL_CHARS + 1
-        );
+        // lowercased and cut at ultra-instinct's own 16, with no marker, whatever the answer holds
+        assert_eq!(e[8].current.as_deref(), Some("step-step-step-s"));
     }
 
     #[test]

@@ -399,7 +399,7 @@ components:
         checked: { type: boolean, description: "Only with `values`, never on a sensitive element: a checkbox's or radio's state, or aria-checked" }
         expanded: { type: boolean, description: "Only with `values`, never on a sensitive element: aria-expanded" }
         selected: { type: boolean, description: "Only with `values`, never on a sensitive element: aria-selected (a selected tab, option or row)" }
-        current: { type: string, maxLength: 161, examples: ["page"], description: "Only with `values`, never on a sensitive element: aria-current when it isn't false (`page`, `step`, `date`, …), lowercased" }
+        current: { type: string, maxLength: 16, examples: ["page"], description: "Only with `values`, never on a sensitive element: aria-current when it isn't false (`page`, `step`, `date`, …; `true` when set empty), lowercased, at most 16 characters" }
     BrowserSnapRequest:
       type: object
       additionalProperties: false

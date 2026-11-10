@@ -325,7 +325,7 @@ export type BrowserElement = {
   expanded?: boolean;
   /** Only with `values: true`: `aria-selected`, a selected tab, option or row. */
   selected?: boolean;
-  /** Only with `values: true`: `aria-current` when it isn't `false` (`page`, `step`, `date`, …), lowercased. */
+  /** Only with `values: true`: `aria-current` when it isn't `false` (`page`, `step`, `date`, …), lowercased, at most 16 characters. */
   current?: string;
 };
 
