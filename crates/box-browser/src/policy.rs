@@ -21,7 +21,14 @@ use crate::BrowserError;
 /// Comma list of label globs whose click needs a person's confirm.
 pub const ENV_CONFIRM_PRESS: &str = "BOX_BROWSER_CONFIRM_PRESS";
 /// What [`ENV_CONFIRM_PRESS`] is when it isn't set. Set it empty to confirm nothing.
-pub const DEFAULT_CONFIRM_PRESS: &str = "Pay*,Delete*,Buy*,Place order*";
+///
+/// A glob matches the whole label, case and whitespace aside (and zero-width characters), so
+/// `Order*` is a label that starts with "Order": it asks about "Order now", and about "Order
+/// history" and "Orders" too, as `Remove*` does about "Remove filter" and `Checkout*` about a
+/// button that only opens the checkout. A press asked about by mistake costs a person a look; one
+/// not asked about can't be taken back. "Reorder" or "Complete purchase" aren't caught: a label
+/// must start with the word.
+pub const DEFAULT_CONFIRM_PRESS: &str = "Pay*,Delete*,Buy*,Place order*,Checkout*,Submit order*,Confirm purchase*,Remove*,Order*,Purchase*,Subscribe*";
 /// How long a confirm token is good for.
 pub const CONFIRM_TTL: Duration = Duration::from_secs(600);
 /// Confirm tokens kept per screen; the oldest goes first.
@@ -251,12 +258,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_default_globs_catch_pay_delete_buy_and_place_order() {
+    fn the_default_globs_catch_paying_ordering_deleting_and_subscribing() {
         let rules = Rules::default();
-        for label in ["Pay $18", "Delete account", "Buy now", "Place order"] {
+        assert_eq!(rules.globs().len(), 11);
+        for label in [
+            "Pay $18",
+            "Delete account",
+            "Buy now",
+            "Place order",
+            "Checkout",
+            "Checkout now",
+            "Submit order",
+            "Confirm purchase",
+            "Remove from cart",
+            "Order now",
+            "Purchase",
+            "Subscribe for $9.99/month",
+            // case, and space around and inside, don't matter
+            "  PLACE   ORDER ",
+            "checkout",
+        ] {
             assert!(rules.needs_confirm(label), "{label}");
         }
-        assert!(!rules.needs_confirm("Search"));
+        // the price of a short list of words: a label that only starts like one is asked about too
+        for label in [
+            "Order history",
+            "Orders",
+            "Remove filter",
+            "Purchase history",
+        ] {
+            assert!(rules.needs_confirm(label), "{label}");
+        }
+        // a label must start with the word
+        for label in [
+            "Search",
+            "Sign in",
+            "Add to cart",
+            "Reorder",
+            "Complete purchase",
+            "View order",
+            "Pa y",
+        ] {
+            assert!(!rules.needs_confirm(label), "{label}");
+        }
         assert!(Rules::parse("").unwrap().globs().is_empty());
     }
 

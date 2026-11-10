@@ -151,7 +151,7 @@ Compose also sets `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, `
 | `BOX_CHROME_PROFILE` | `/home/box/desktops/main/chrome-profile` | The main screen's profile, kept in the home volume |
 | `BOX_CUA` | `1` | Enable `/v1/cua/*` |
 | `BOX_BROWSER` | `1` | Start each screen's Chromium on a DevTools pipe only `box-exec` holds, and serve `/v1/browser/*` (also needs `BOX_CHROME` and `BOX_DESKTOP`). `0`: `/v1/browser/*` answers `503 browser_disabled` on every screen, and the main screen's Chromium (and any screen's `box-chromium` that sees the flag) starts with no pipe |
-| `BOX_BROWSER_CONFIRM_PRESS` | `Pay*,Delete*,Buy*,Place order*` | Label globs whose browser press (a click, a key, or an Enter that sends their form) needs a person's confirm (`409 confirm_required`). Empty confirms nothing |
+| `BOX_BROWSER_CONFIRM_PRESS` | `Pay*,Delete*,Buy*,Place order*,Checkout*,Submit order*,Confirm purchase*,Remove*,Order*,Purchase*,Subscribe*` | Label globs whose browser press (a click, a key, or an Enter that sends their form) needs a person's confirm (`409 confirm_required`). A glob matches the whole label, case and spacing aside, so `Order*` also asks about "Order history" and `Remove*` about "Remove filter". Empty confirms nothing |
 | `BOX_BROWSER_STATE_DIR` | `/home/box/browser-state` | Saved browser logins, a 0700 folder per screen, `box-exec`'s alone |
 | `BOX_EGRESS_TUNNEL` | `0` | `1` starts `box-egress-tunnel` before Chromium and sets `--proxy-server`. See [EGRESS.md](docs/EGRESS.md). |
 | `BOX_EGRESS_WS_BIND` | `0.0.0.0:8790` in image; `127.0.0.1:8790` native | WebSocket for the laptop client |

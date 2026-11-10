@@ -1903,7 +1903,9 @@ paths:
       description: |
         On the element `ref` names in the tab's latest snapshot, where it is now, through
         ultra-instinct's gate and one-shot ticket. A click or key on a label matching
-        BOX_BROWSER_CONFIRM_PRESS (default `Pay*`, `Delete*`, `Buy*`, `Place order*`), or an Enter or
+        BOX_BROWSER_CONFIRM_PRESS (default `Pay*`, `Delete*`, `Buy*`, `Place order*`, `Checkout*`,
+        `Submit order*`, `Confirm purchase*`, `Remove*`, `Order*`, `Purchase*`, `Subscribe*`; a label
+        that only starts like one, such as "Order history", is asked about too), or an Enter or
         Space that would send a form whose submit button matches, is 409 confirm_required with
         `error.details.{label, confirm}` until `confirm` brings the token back.
       security: [{ bearer: [] }]
