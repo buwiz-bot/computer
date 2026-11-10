@@ -12,6 +12,7 @@ pub mod error;
 pub mod jail;
 pub mod listen;
 pub mod local_http;
+pub mod peer;
 pub mod process;
 pub mod request_id;
 

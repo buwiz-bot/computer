@@ -192,12 +192,12 @@ pub async fn state_handler(
         .map_err(map_browser)
 }
 
-/// Whose saved logins a screen keeps: `main` for the box's own, else the Bot holding it.
+/// Whose saved logins a screen keeps: `main` for the box's own, else the Bot holding it. A
+/// `BOX_SHARED_DISPLAY` that isn't a display name refuses: no screen's logins are taken for the
+/// box's own.
 fn state_owner(display: &str) -> Result<String, ApiError> {
-    let main = box_desktop::display_number(
-        &std::env::var("BOX_SHARED_DISPLAY").unwrap_or_else(|_| ":1".to_string()),
-    )
-    .unwrap_or(1);
+    let main = box_desktop::main_slot()
+        .ok_or_else(|| ApiError::internal("BOX_SHARED_DISPLAY is not a display name"))?;
     if box_desktop::display_number(display) == Some(main) {
         return Ok("main".into());
     }
