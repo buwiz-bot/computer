@@ -175,7 +175,8 @@ start_chrome() {
   fi
   (
     while true; do
-      # The profile is a bind mount, so it keeps Chromium's singleton lock across a kill and even
+      # The profile outlives the container (compose keeps all of /home/box on the box-home
+      # volume), so it keeps Chromium's singleton lock across a kill and even
       # across a recreate of the container; a hostname/pid the new container happens to reuse
       # makes Chromium believe another instance owns it. This loop is the only thing that starts
       # Chromium on this profile, so before each start the lock is stale by definition.
