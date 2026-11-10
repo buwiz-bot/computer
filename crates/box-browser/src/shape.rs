@@ -86,14 +86,19 @@ fn is_sensitive(el: &Value) -> bool {
 
 /// Whether a field's text may be returned: only when its input type is known and isn't a
 /// password's or a hidden one's, and its role is known. A type that can't be read could be a
-/// password, so no type is no text: the same rule box-a11y keeps for AT-SPI.
+/// password, so no type is no text: the same rule box-a11y keeps for AT-SPI. A checkbox's or a
+/// radio's `value` is its form value, not anything typed: its `checked` says what it holds.
 pub fn may_return_value(role: &str, input_type: Option<&str>, sensitive: bool) -> bool {
     let role = role.trim();
     !sensitive
         && !role.is_empty()
         && !role.eq_ignore_ascii_case("unknown")
         && input_type.map(str::trim).is_some_and(|t| {
-            !t.is_empty() && !matches!(t.to_ascii_lowercase().as_str(), "password" | "hidden")
+            !t.is_empty()
+                && !matches!(
+                    t.to_ascii_lowercase().as_str(),
+                    "password" | "hidden" | "checkbox" | "radio"
+                )
         })
 }
 
@@ -329,6 +334,9 @@ mod tests {
         assert!(!may_return_value("textbox", Some("text"), true));
         assert!(!may_return_value("unknown", Some("text"), false));
         assert!(!may_return_value("", Some("text"), false));
+        // a checkbox's or a radio's value is its form value: its `checked` comes instead
+        assert!(!may_return_value("checkbox", Some("checkbox"), false));
+        assert!(!may_return_value("checkbox", Some("Radio"), false));
     }
 
     #[test]
