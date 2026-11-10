@@ -7,6 +7,11 @@
 #
 # When BOX_EGRESS_TUNNEL is on, pass the same CONNECT proxy flags as the
 # entrypoint so a cold start (no running instance) still exits via the laptop.
+
+# flag_on VALUE [DEFAULT]: the box's on/off rule, the same as the entrypoint's and the daemons'.
+# shellcheck source=box-flag.sh
+. /usr/lib/box/flag.sh
+
 proxy_server=""
 proxy_bypass=""
 proxy_webrtc=""
@@ -14,22 +19,20 @@ proxy_webrtc=""
 # from a shell that did not inherit BOX_EGRESS_TUNNEL still goes through the
 # proxy rather than quietly out of the VM.
 port_file="/run/box/egress/port"
-tunnel="${BOX_EGRESS_TUNNEL:-}"
 port="${BOX_EGRESS_PROXY_PORT:-}"
-if [ -z "${tunnel}" ] && [ -r "${port_file}" ]; then tunnel=1; fi
+# An unset or blank BOX_EGRESS_TUNNEL is on when that port file is there, else off.
+tunnel_default=0
+if [ -r "${port_file}" ]; then tunnel_default=1; fi
 if [ -z "${port}" ] && [ -r "${port_file}" ]; then port="$(cat "${port_file}")"; fi
-case "$(echo "${tunnel:-0}" | tr '[:upper:]' '[:lower:]')" in
-  0|false|off|no) ;;
-  *)
-    if [ -z "${port}" ]; then
-      echo "box-chromium: the egress tunnel is on but its proxy port is unknown; refusing to start unproxied" >&2
-      exit 1
-    fi
-    proxy_server="--proxy-server=http://127.0.0.1:${port}"
-    proxy_bypass="--proxy-bypass-list=localhost;127.0.0.1;[::1];<-loopback>"
-    proxy_webrtc="--force-webrtc-ip-handling-policy=disable_non_proxied_udp"
-    ;;
-esac
+if flag_on "${BOX_EGRESS_TUNNEL:-}" "${tunnel_default}"; then
+  if [ -z "${port}" ]; then
+    echo "box-chromium: the egress tunnel is on but its proxy port is unknown; refusing to start unproxied" >&2
+    exit 1
+  fi
+  proxy_server="--proxy-server=http://127.0.0.1:${port}"
+  proxy_bypass="--proxy-bypass-list=localhost;127.0.0.1;[::1];<-loopback>"
+  proxy_webrtc="--force-webrtc-ip-handling-policy=disable_non_proxied_udp"
+fi
 # The screen to open on: a Bot's own screen (box-screen) is passed as BOX_DISPLAY with its own
 # BOX_CHROME_PROFILE; otherwise the box's own, as before. The window fills that screen.
 export DISPLAY="${BOX_DISPLAY:-${DISPLAY:-:1}}"
@@ -41,14 +44,11 @@ win_h="${rest%%x*}"
 # starts the screen's browser: if Chromium is already running on the profile, the launcher sees its
 # pipe is taken and this just opens a window in it. BOX_BROWSER=0 starts it with no pipe.
 launcher=""
-case "$(echo "${BOX_BROWSER:-1}" | tr '[:upper:]' '[:lower:]')" in
-  0|false|off|no) ;;
-  *)
-    if [ -n "${BOX_SCREEN_RUN:-}" ] && [ -x /usr/local/bin/box-chrome-pipe ]; then
-      launcher="/usr/local/bin/box-chrome-pipe ${BOX_SCREEN_RUN}/cdp.sock --"
-    fi
-    ;;
-esac
+if flag_on "${BOX_BROWSER:-}" 1; then
+  if [ -n "${BOX_SCREEN_RUN:-}" ] && [ -x /usr/local/bin/box-chrome-pipe ]; then
+    launcher="/usr/local/bin/box-chrome-pipe ${BOX_SCREEN_RUN}/cdp.sock --"
+  fi
+fi
 # shellcheck disable=SC2086 # the launcher's words, like the proxy flags, are split on purpose
 exec ${launcher} chromium \
   --user-data-dir="${BOX_CHROME_PROFILE:-${HOME}/chrome-profile}" \

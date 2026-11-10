@@ -173,22 +173,13 @@ impl Screen {
 }
 
 /// Whether what listens at the socket is screen `slot`'s own desktop user. Outside the box (no
-/// `BOX_RUN_AS=agents`) there are no users to tell apart, as for X.
+/// `BOX_RUN_AS=agents`) there are no users to tell apart, as for X. In the box, a
+/// `BOX_SHARED_DISPLAY` that isn't a display name refuses, as for X.
 fn check_listener(stream: &UnixStream, slot: u16) -> Result<(), String> {
     if std::env::var("BOX_RUN_AS").as_deref() != Ok("agents") {
         return Ok(());
     }
-    let main = box_desktop::display_number(
-        &std::env::var("BOX_SHARED_DISPLAY").unwrap_or_else(|_| ":1".to_string()),
-    )
-    .unwrap_or(1);
-    let expected = box_desktop::desktop_uid(
-        slot,
-        main,
-        &box_desktop::slots_dir(),
-        &box_desktop::bots_dir(),
-    )
-    .ok_or_else(|| "no Bot holds this screen".to_string())?;
+    let expected = box_desktop::screen_owner(slot)?;
     let peer = stream.peer_cred().map_err(|err| err.to_string())?;
     if peer.uid() != expected {
         return Err("what listens there isn't this screen's desktop".into());

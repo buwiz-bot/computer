@@ -1235,3 +1235,19 @@ async fn a_node_that_now_shows_another_label_is_not_pressed() {
         .await
         .unwrap();
 }
+
+#[tokio::test]
+async fn an_answer_past_its_cap_is_refused() {
+    let h = harness();
+    let label = "x".repeat(crate::screen::MAX_ANSWER_BYTES);
+    h.world.lock().unwrap().elements = vec![button(1, "n10", &label)];
+    let err = h
+        .browsers
+        .snap(":1", SnapRequest::default())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, BrowserError::Backend(m) if m.contains("answer to browser_get_state is more than")),
+        "{err:?}"
+    );
+}

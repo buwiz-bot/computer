@@ -10,8 +10,10 @@ pub mod cors;
 pub mod env;
 pub mod error;
 pub mod jail;
+pub mod json;
 pub mod listen;
 pub mod local_http;
+pub mod peer;
 pub mod process;
 pub mod request_id;
 
