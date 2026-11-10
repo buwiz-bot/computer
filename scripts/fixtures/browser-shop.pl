@@ -8,6 +8,7 @@
 # fill a login through the routes Buwiz Bot's broker uses; it says who signed in, never the password.
 use strict;
 use warnings;
+use IO::Select;
 use IO::Socket::INET;
 
 my $page = <<'HTML';
@@ -46,12 +47,26 @@ my $server = IO::Socket::INET->new(
     Listen    => 16,
     ReuseAddr => 1,
 ) or die "listen: $!";
-while (my $client = $server->accept) {
-    my $first = <$client> // '';
-    my $body = $first =~ m{^GET /login[ ?]} ? $login : $page;
-    while (my $line = <$client>) {
-        last if $line =~ /^\r?\n$/;
+# One connection at a time, so each gets 2 s to send its request head: a connection that sends
+# nothing (a browser's preconnect) is dropped instead of holding up the next request.
+sub head_of {
+    my ($client) = @_;
+    my ($head, $select) = ('', IO::Select->new($client));
+    while ($head !~ /\r?\n\r?\n/) {
+        return undef unless $select->can_read(2);
+        my $got = sysread($client, my $chunk, 4096);
+        return undef unless $got;
+        $head .= $chunk;
     }
+    return $head;
+}
+while (my $client = $server->accept) {
+    my $head = head_of($client);
+    if (!defined $head) {
+        close $client;
+        next;
+    }
+    my $body = $head =~ m{^GET /login[ ?]} ? $login : $page;
     print $client "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n"
       . "Content-Length: " . length($body) . "\r\nConnection: close\r\n\r\n" . $body;
     close $client;
