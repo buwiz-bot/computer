@@ -171,7 +171,8 @@ impl Browsers {
                 MainScreen::Open => true,
                 MainScreen::Closed(None) => false,
                 MainScreen::Closed(Some(main)) => {
-                    box_desktop::display_number(display) != Some(main)
+                    // only a display that reads as a number, and isn't the main one
+                    box_desktop::display_number(display).is_some_and(|n| n != main)
                 }
             }
     }

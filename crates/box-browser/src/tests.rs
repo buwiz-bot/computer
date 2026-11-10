@@ -1903,6 +1903,10 @@ async fn with_box_chrome_off_the_main_screen_is_closed_and_a_bots_own_is_served(
         "nothing opened the main screen's browser"
     );
     assert!(main_closed.snap(":3", SnapRequest::default()).await.is_ok());
+    // a display that doesn't read as a number isn't served while the main screen is closed
+    for odd in [":+1", ":", "", ":1x"] {
+        assert!(!main_closed.serves(odd), "{odd:?}");
+    }
     // a main screen that can't be named closes every screen
     let unknown = h.browsers.clone().with_main(MainScreen::Closed(None));
     assert!(matches!(
