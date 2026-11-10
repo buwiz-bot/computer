@@ -32,9 +32,31 @@ pub struct PipeOpener;
 impl Opener for PipeOpener {
     fn open(&self, display: &str) -> Result<Box<dyn Tools>, BrowserError> {
         let (pipe, lease) = take(display)?;
-        // A browser already gone takes its lease with it: there is nothing to start again.
-        let tools = seam::open(pipe).map_err(|err| BrowserError::Unavailable(err.to_string()))?;
-        Ok(Box::new(Leased::new(lease, tools)))
+        open_leased(pipe, lease, seam::open)
+    }
+}
+
+/// The tools `open` puts on `pipe`, leased. `open` (`seam::open`) drops the pipe when its first call finds it closed. A copy is held across it,
+// so that, as for a drop later, the launcher hears the let-go while box-exec's end is still
+// open, and decides: a browser already gone counts for nothing.
+fn open_leased(
+    pipe: OwnedFd,
+    lease: UnixStream,
+    open: impl FnOnce(OwnedFd) -> Result<Box<dyn Tools>, ToolFailure>,
+) -> Result<Box<dyn Tools>, BrowserError> {
+    let held = pipe
+        .try_clone()
+        .map_err(|err| BrowserError::Unavailable(format!("the pipe can't be held: {err}")))?;
+    match open(pipe) {
+        Ok(tools) => {
+            drop(held);
+            Ok(Box::new(Leased::new(lease, tools)))
+        }
+        Err(err) => {
+            let_go(lease);
+            drop(held);
+            Err(BrowserError::Unavailable(err.to_string()))
+        }
     }
 }
 
@@ -63,14 +85,21 @@ impl Leased {
 impl Drop for Leased {
     fn drop(&mut self) {
         // the let-go and its answer first; the tools, and the pipe, after this returns
-        if let Some(mut lease) = self.lease.take() {
-            let _ = lease.set_write_timeout(Some(LEASE_ACK_WAIT));
-            if lease.write_all(&[LEASE_LET_GO]).is_ok() {
-                let _ = lease.set_read_timeout(Some(LEASE_ACK_WAIT));
-                // the answer, an end of file (the launcher gone), or the wait out
-                let _ = lease.read(&mut [0u8; 1]);
-            }
+        if let Some(lease) = self.lease.take() {
+            let_go(lease);
         }
+    }
+}
+
+/// Says the let-go on `lease` and waits up to `LEASE_ACK_WAIT` for the launcher's answer (or its
+/// end of file), then closes the lease. The caller still holds its end of the pipe, and closes it
+/// after.
+fn let_go(mut lease: UnixStream) {
+    let _ = lease.set_write_timeout(Some(LEASE_ACK_WAIT));
+    if lease.write_all(&[LEASE_LET_GO]).is_ok() {
+        let _ = lease.set_read_timeout(Some(LEASE_ACK_WAIT));
+        // the answer, an end of file (the launcher gone), or the wait out
+        let _ = lease.read(&mut [0u8; 1]);
     }
 }
 
@@ -260,6 +289,31 @@ mod tests {
         assert!(started.elapsed() < LEASE_ACK_WAIT);
         assert!(heard.join().unwrap().is_empty());
         assert!(!open_at_drop.load(Ordering::SeqCst));
+    }
+
+    /// A first call that finds the pipe closed drops it inside `seam::open`; the launcher still
+    /// hears the let-go while box-exec's end is open, and decides.
+    #[test]
+    fn an_open_whose_first_call_fails_says_let_go_before_the_pipe_goes() {
+        let (lease, conn) = UnixStream::pair().unwrap();
+        let (end, chromium) = UnixStream::pair().unwrap();
+        let launcher = std::thread::spawn(move || {
+            let mut byte = [0u8; 1];
+            (&conn).read_exact(&mut byte).unwrap();
+            chromium.set_nonblocking(true).unwrap();
+            let open = !matches!((&chromium).read(&mut [0u8; 1]), Ok(0));
+            (&conn).write_all(&[box_chrome::pipe::LEASE_ACK]).unwrap();
+            // and once answered, the pipe goes
+            chromium.set_nonblocking(false).unwrap();
+            let closed = matches!((&chromium).read(&mut [0u8; 1]), Ok(0));
+            (byte[0], open, closed)
+        });
+        let failed = open_leased(end.into(), lease, |pipe| {
+            drop(pipe);
+            Err(ToolFailure::Closed("pipe closed".into()))
+        });
+        assert!(matches!(failed, Err(BrowserError::Unavailable(_))));
+        assert_eq!(launcher.join().unwrap(), (LEASE_LET_GO, true, true));
     }
 
     /// With no launcher to answer, a drop waits no longer than the bound.

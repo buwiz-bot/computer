@@ -87,10 +87,11 @@ pub fn open(pipe: OwnedFd) -> Result<Box<dyn Tools>, ToolFailure> {
         // `browser_file_upload` is off the list too: this is the second lock
         .with_uploads(Uploads::Off)
         .with_tool_allowlist(ALLOWED);
-    // A browser already gone says so now, not on the first real call. Any other failure keeps the
-    // server: dropping it would close the pipe, and Chromium quits once it closes. Its launcher
-    // would have it started again (`crate::pipe::Leased`), but a person at the screen would lose
-    // their tabs for what may be a passing failure. The next call finds out whatever this one met.
+    // A browser already gone says so now, not on the first real call (`crate::pipe::PipeOpener`
+    // holds a copy of the pipe across this, and tells the launcher first, as a drop later does).
+    // Any other failure keeps the server: dropping it would close the pipe, and Chromium quits once
+    // it closes; it would be started again, but a person at the screen would lose their tabs for
+    // what may be a passing failure. The next call finds out whatever this one met.
     if let Err(err) = server.call_tool("browser_list_tabs", &json!({})) {
         let failure = ToolFailure::from(err);
         if matches!(failure, ToolFailure::Closed(_)) {
