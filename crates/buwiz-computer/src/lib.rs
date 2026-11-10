@@ -663,8 +663,10 @@ impl BuwizComputer {
     }
 
     /// `POST /v1/browser/snap`: the current tab's interactive elements, each with an `@eN` ref
-    /// good for this snapshot alone, its role, label and rect. `body` takes `max_nodes`; `{}` for
-    /// the default. A password field's text never comes.
+    /// good for this snapshot alone, its role, label and rect. `body` takes `max_nodes` and
+    /// `values`; `{}` for the default. With `"values": true`, elements may carry `value` (with
+    /// `value_truncated` when cut), `checked` and `expanded`; a password's or any other sensitive
+    /// field's never come.
     pub async fn browser_snap(&self, body: Value) -> Result<Value, Error> {
         self.send_json("POST", &self.browser("snap"), Some(body), true)
             .await

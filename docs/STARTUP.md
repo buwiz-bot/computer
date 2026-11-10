@@ -124,5 +124,5 @@ Binds exec/host to **127.0.0.1**. Does not print `BOX_TOKEN`. CUA will not scree
 
 | Script | What it proves |
 | --- | --- |
-| `./scripts/smoke.sh` | Image build, ready (Bearer), exec, files, CUA, auth |
+| `./scripts/smoke.sh` | Image build, ready (Bearer), exec, files, CUA, auth, and that the home volume (saved logins, profiles, a Bot's slot) outlives a recreated container. It runs in a Compose project of its own and deletes that project's home volume when done |
 | `./scripts/smoke-native.sh` | Host binaries without Docker (loopback binds) |

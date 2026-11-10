@@ -32,3 +32,23 @@ jobs:
         run: bash scripts/check-cli-docs.sh
       - name: native smoke
         run: bash scripts/smoke-native.sh
+
+  sdk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - name: TypeScript typecheck
+        working-directory: sdk/typescript
+        run: npm ci --no-audit --no-fund && npm run typecheck
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Python compiles and imports on its minimum version
+        run: |
+          python -m compileall -q sdk/python/src
+          python -m pip install --quiet ./sdk/python
+          python -I -c "import buwiz_computer"

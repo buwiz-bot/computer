@@ -114,9 +114,12 @@ impl DesktopConfig {
     }
 }
 
-/// The display's number: `:1` and `:1.0` are 1.
+/// The display's number: `:1` and `:1.0` are 1. Digits only: no sign, no space inside.
 pub fn display_number(display: &str) -> Option<u16> {
     let number = display.trim().strip_prefix(':')?.split('.').next()?;
+    if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
     number.parse().ok()
 }
 
@@ -218,13 +221,16 @@ pub struct ScreenList {
 
 impl ScreenList {
     /// The box's own screen, then every Bot's, by display number. Empty with the desktop off.
+    /// A `BOX_DISPLAY` that isn't a display name names no screen of the box's: box-keeper refuses
+    /// to start with one, so in the box this is only a box-host run on its own.
     pub fn from_config(config: &DesktopConfig, slots_dir: &Path) -> Self {
         let mut screens = Vec::new();
         if !config.enabled {
             return Self { screens };
         }
-        let slot = display_number(&config.display).unwrap_or(1);
-        screens.push(screen(slot, None));
+        if let Some(slot) = display_number(&config.display) {
+            screens.push(screen(slot, None));
+        }
         let mut bots = read_slots(slots_dir);
         bots.sort_by_key(|(_, slot)| *slot);
         screens.extend(bots.into_iter().map(|(bot, n)| screen(n, Some(bot))));
@@ -275,9 +281,31 @@ pub fn bots_dir() -> PathBuf {
     PathBuf::from("/home/box/.box/bots")
 }
 
-/// The main screen's number.
-fn main_slot() -> Option<u16> {
-    display_number(&std::env::var("BOX_SHARED_DISPLAY").unwrap_or_else(|_| ":1".to_string()))
+/// The main screen's number, from `BOX_SHARED_DISPLAY`. Unset or empty is `:1`. Anything else
+/// must be a display name: a value that isn't (or isn't text) gives `None`, and a check that needs
+/// the main screen refuses rather than guess slot 1.
+pub fn main_slot() -> Option<u16> {
+    match std::env::var("BOX_SHARED_DISPLAY") {
+        Ok(value) => main_slot_from(Some(&value)),
+        Err(std::env::VarError::NotPresent) => main_slot_from(None),
+        Err(std::env::VarError::NotUnicode(_)) => None,
+    }
+}
+
+/// [`main_slot`] for a given `BOX_SHARED_DISPLAY` value.
+pub fn main_slot_from(value: Option<&str>) -> Option<u16> {
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Some(1),
+        Some(value) => display_number(value),
+    }
+}
+
+/// The user who must be what listens on screen `slot`'s sockets (X, the accessibility bus, the
+/// browser pipe): [`desktop_uid`] with the main screen from [`main_slot`]. Says why when there is
+/// none, and a caller refuses then.
+pub fn screen_owner(slot: u16) -> Result<u32, &'static str> {
+    let main = main_slot().ok_or("BOX_SHARED_DISPLAY is not a display name")?;
+    desktop_uid(slot, main, &slots_dir(), &bots_dir()).ok_or("no Bot holds this screen")
 }
 
 /// A connection to `display`, once the kernel says it's that screen's own X server, on which nothing
@@ -286,31 +314,14 @@ fn main_slot() -> Option<u16> {
 /// handshake on this stream, and what's checked is what's spoken to.
 #[cfg(target_os = "linux")]
 pub fn screen_stream(display: &str) -> Option<std::os::unix::net::UnixStream> {
-    use std::os::fd::AsRawFd;
     use std::os::linux::net::SocketAddrExt;
     use std::os::unix::net::{SocketAddr, UnixStream};
 
     let slot = display_number(display)?;
-    let expected = desktop_uid(slot, main_slot()?, &slots_dir(), &bots_dir())?;
+    let expected = screen_owner(slot).ok()?;
     let name = format!("/tmp/.X11-unix/X{slot}");
     let stream = UnixStream::connect_addr(&SocketAddr::from_abstract_name(name).ok()?).ok()?;
-    let mut peer = libc::ucred {
-        pid: 0,
-        uid: 0,
-        gid: 0,
-    };
-    let mut size = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    // SAFETY: `peer` and `size` are live, and `size` is what `peer` holds.
-    let got = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            std::ptr::addr_of_mut!(peer).cast(),
-            &mut size,
-        )
-    };
-    (got == 0 && peer.uid == expected).then_some(stream)
+    (box_common::peer::peer_uid(&stream).ok()? == expected).then_some(stream)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -327,21 +338,17 @@ pub fn server_is_the_screens(display: &str) -> bool {
 /// Where a screen's report of the page in front is kept: in that screen's run folder, which its
 /// desktop user owns and the services may read, and a command can't reach. Each of the box's screens
 /// has its own Chromium, and each starts its own `box-active-tab`, which inherits that Chromium's
-/// `DISPLAY`. Anything that is not a display name is the main screen (`BOX_SHARED_DISPLAY`, `:1` by
-/// default).
+/// `DISPLAY`. Anything that is not a display name is the main screen ([`main_slot`]). A
+/// `BOX_SHARED_DISPLAY` that isn't one names slot 1's file here, only so there is a path, and
+/// [`read_report`] then refuses what it finds there in the box.
 ///
 /// Not `BOX_DISPLAY`: a Bot's own Chromium is started with `BOX_DISPLAY` set to its own screen,
 /// and its host would take that screen for the main one.
 pub fn active_tab_file(display: Option<&str>) -> PathBuf {
-    let own = std::env::var("BOX_SHARED_DISPLAY").unwrap_or_else(|_| ":1".to_string());
-    let number = |d: &str| {
-        let n = d.trim().strip_prefix(':')?.split('.').next()?.to_string();
-        (!n.is_empty() && n.len() <= 3 && n.bytes().all(|b| b.is_ascii_digit())).then_some(n)
-    };
     let screen = display
-        .and_then(number)
-        .or_else(|| number(&own))
-        .unwrap_or_else(|| "1".to_string());
+        .and_then(display_number)
+        .or_else(main_slot)
+        .unwrap_or(1);
     PathBuf::from(format!("/run/box/x/{screen}/run/active-tab.json"))
 }
 
@@ -363,9 +370,8 @@ pub fn read_report(display: Option<&str>) -> Option<Vec<u8>> {
         return None;
     }
     if std::env::var("BOX_RUN_AS").as_deref() == Ok("agents") {
-        let main = main_slot()?;
-        let slot = display.and_then(display_number).unwrap_or(main);
-        if Some(info.uid()) != desktop_uid(slot, main, &slots_dir(), &bots_dir()) {
+        let slot = display.and_then(display_number).or_else(main_slot)?;
+        if screen_owner(slot) != Ok(info.uid()) {
             return None;
         }
     }
@@ -559,6 +565,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_main_screen_is_one_only_when_unset_or_empty() {
+        assert_eq!(main_slot_from(None), Some(1));
+        assert_eq!(main_slot_from(Some("")), Some(1));
+        assert_eq!(main_slot_from(Some("  ")), Some(1));
+        assert_eq!(main_slot_from(Some(":1")), Some(1));
+        assert_eq!(main_slot_from(Some(":3.0")), Some(3));
+        assert_eq!(main_slot_from(Some(" :3 ")), Some(3));
+        for bad in ["garbage", "3", ":", ":x", ":+3", ":-1", ":3/../x", ":99999"] {
+            assert_eq!(main_slot_from(Some(bad)), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_display_number_is_digits() {
+        assert_eq!(display_number(":01"), Some(1));
+        assert_eq!(display_number(":+1"), None);
+        assert_eq!(display_number(": 1"), None);
+        assert_eq!(display_number(":1.0"), Some(1));
+    }
+
+    #[test]
     fn socket_path_from_display() {
         assert_eq!(x11_socket_path(":1"), PathBuf::from("/tmp/.X11-unix/X1"));
         assert_eq!(x11_socket_path(":1.0"), PathBuf::from("/tmp/.X11-unix/X1"));
@@ -607,6 +634,24 @@ mod tests {
     fn no_screens_with_the_desktop_off() {
         let list = ScreenList::from_config(&DesktopConfig::disabled(), Path::new("/nowhere"));
         assert!(list.screens.is_empty());
+    }
+
+    #[test]
+    fn a_display_that_is_not_a_display_name_is_no_screen_of_the_boxs() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("zed"), "2\n").unwrap();
+        let config = DesktopConfig {
+            enabled: true,
+            display: "screen-one".into(),
+            ..DesktopConfig::disabled()
+        };
+        let list = ScreenList::from_config(&config, dir.path());
+        let shape: Vec<_> = list
+            .screens
+            .iter()
+            .map(|s| (s.display.as_str(), s.bot.as_deref()))
+            .collect();
+        assert_eq!(shape, [(":2", Some("zed"))]);
     }
 
     #[test]

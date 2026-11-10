@@ -10,7 +10,8 @@
 //!
 //! `box-exec`, for its part, checks that what listens at `cdp.sock` is that screen's own desktop
 //! user before it takes what is offered, as it checks the screen's X server and accessibility bus.
-//! These are the helpers both sides use.
+//! These are the helpers both sides use; who is on the other end of a socket is
+//! `box_common::peer::peer_uid`.
 
 use std::io;
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
@@ -23,44 +24,6 @@ pub const SOCKET_NAME: &str = "cdp.sock";
 /// Where screen `slot`'s launcher offers its pipe.
 pub fn socket_path(slot: u16) -> PathBuf {
     PathBuf::from(format!("/run/box/x/{slot}/run/{SOCKET_NAME}"))
-}
-
-/// The user on the other end of a connected unix socket, as the kernel has it.
-#[cfg(target_os = "linux")]
-pub fn peer_uid(stream: &UnixStream) -> io::Result<u32> {
-    let mut cred = libc::ucred {
-        pid: 0,
-        uid: 0,
-        gid: 0,
-    };
-    let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
-    // SAFETY: `cred` and `len` are valid for writes of the sizes given, for the length of the call.
-    let rc = unsafe {
-        libc::getsockopt(
-            stream.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            (&raw mut cred).cast(),
-            &mut len,
-        )
-    };
-    if rc != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(cred.uid)
-}
-
-/// The user on the other end of a connected unix socket, as the kernel has it.
-#[cfg(not(target_os = "linux"))]
-pub fn peer_uid(stream: &UnixStream) -> io::Result<u32> {
-    let mut uid: libc::uid_t = 0;
-    let mut gid: libc::gid_t = 0;
-    // SAFETY: both out-parameters are valid for writes for the length of the call.
-    let rc = unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) };
-    if rc != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(uid)
 }
 
 /// Room for one fd's control message, aligned for `cmsghdr`.
@@ -191,13 +154,6 @@ mod tests {
         let (mut a, b) = UnixStream::pair().unwrap();
         a.write_all(b"x").unwrap();
         assert_eq!(recv_fd(&b).unwrap_err().kind(), io::ErrorKind::NotFound);
-    }
-
-    #[test]
-    fn the_peer_is_this_user() {
-        let (a, _b) = UnixStream::pair().unwrap();
-        // SAFETY: geteuid has no preconditions.
-        assert_eq!(peer_uid(&a).unwrap(), unsafe { libc::geteuid() });
     }
 
     #[test]

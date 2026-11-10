@@ -15,7 +15,7 @@ buwiz-computer guest (this image)
     ├── box-exec :1337   exec + files + /v1/cua/* + /v1/browser/*
     ├── box-egress-tunnel :8790  optional laptop CONNECT mux (proxy 127.0.0.1:8791)
     ├── Xvfb :1 1280×800 + xfce + voxl :6901 (a Bot's own screen: :N and 6900+N)
-    └── Chromium (profile volume; no DevTools port; a DevTools pipe only box-exec holds; optional --proxy-server)
+    └── Chromium (profile in the home volume; no DevTools port; a DevTools pipe only box-exec holds; optional --proxy-server)
 ```
 
 The TypeScript / Python / Rust SDKs never call `docker run` and never treat `/v1/info.endpoints` as the URLs to dial. Those endpoints are **container-local listen addresses** so operators can see what the processes bound.
@@ -83,7 +83,7 @@ tini
       ├── entrypoint.sh                    the desktop; holds no secret
       │    ├── Xvfb :1  (1280x800x24)      if BOX_DESKTOP=1
       │    ├── xfce4-session
-      │    ├── box-chrome-pipe → chromium (profile volume; no DevTools port; --remote-debugging-pipe,
+      │    ├── box-chrome-pipe → chromium (profile in the home volume; no DevTools port; --remote-debugging-pipe,
       │    │     the other end offered once at /run/box/x/<slot>/run/cdp.sock, to box-exec alone)
       │    │     optional --proxy-server=http://127.0.0.1:8791 when BOX_EGRESS_TUNNEL=1
       │    │     not in the death-watch — closing the browser must not kill the box

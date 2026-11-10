@@ -186,16 +186,15 @@ impl Screen {
         };
         let answer = self.tools()?.call(name, &args);
         let answer = answer.map_err(|f| self.failed(f, target))?;
-        // a shot is its base64, already a string: measured as it is, not written out again
-        let size = match answer.get("base64").and_then(Value::as_str) {
-            Some(data) if name == "browser_screenshot" => data.len(),
-            _ => serde_json::to_vec(&answer)
-                .map(|v| v.len())
-                .unwrap_or(usize::MAX),
+        // a shot is its base64, already a string: measured as it is. The rest is counted as it
+        // would be written, without writing it, and counting stops once past the cap.
+        let within = match answer.get("base64").and_then(Value::as_str) {
+            Some(data) if name == "browser_screenshot" => data.len() <= cap,
+            _ => box_common::json::len_within(&answer, cap).is_some(),
         };
-        if size > cap {
+        if !within {
             return Err(BrowserError::Backend(format!(
-                "the browser's answer to {name} is {size} bytes, more than {cap}"
+                "the browser's answer to {name} is more than {cap} bytes"
             )));
         }
         Ok(answer)
@@ -217,14 +216,35 @@ impl Screen {
         Ok(())
     }
 
-    fn look(&mut self) -> Result<shape::Page, BrowserError> {
-        let answer = self.call("browser_get_state", json!({"format": "json"}), None)?;
-        shape::page(&answer)
+    /// The page now. `values` asks ultra-instinct for what the fields hold too: only a snap the
+    /// caller asked so of does, never a look a press is checked by.
+    fn look(&mut self, values: bool) -> Result<shape::Page, BrowserError> {
+        let mut args = json!({"format": "json"});
+        if values {
+            args["values"] = json!(true);
+        }
+        let answer = self.call("browser_get_state", args, None)?;
+        shape::page(&answer, values)
     }
 
-    pub fn snap(&mut self, limits: &SnapLimits) -> Result<SnapResponse, BrowserError> {
+    /// `allow` is for `values` alone: what the fields of a page off the list hold is not the
+    /// caller's to read, so that page's snap comes as one without values does. Its controls
+    /// still come: a caller must see a page to leave it.
+    pub fn snap(
+        &mut self,
+        limits: &SnapLimits,
+        allow: &AllowList,
+    ) -> Result<SnapResponse, BrowserError> {
         let started = Instant::now();
-        let page = self.look()?;
+        let mut page = self.look(limits.values)?;
+        if limits.values && allow.check(page.url.as_deref()).is_err() {
+            for el in &mut page.elements {
+                el.value = None;
+                el.value_truncated = false;
+                el.checked = None;
+                el.expanded = None;
+            }
+        }
         let kept: Vec<&Seen> = page.elements.iter().take(limits.max_nodes).collect();
         let truncated = kept.len() < page.elements.len() || page.total > page.elements.len();
         let id = next_snapshot();
@@ -238,6 +258,9 @@ impl Screen {
                 rect: e.rect,
                 sensitive: e.sensitive,
                 value: e.value.clone(),
+                value_truncated: e.value_truncated,
+                checked: e.checked,
+                expanded: e.expanded,
             })
             .collect();
         self.latest = Some(Snapshot {
@@ -298,7 +321,7 @@ impl Screen {
             .ok_or_else(|| BrowserError::Invalid(format!("snapshot {} has no @e{n}", latest.id)))?;
 
         // The page as it is now: the address for the allow-list, and where the element went.
-        let now = self.look()?;
+        let now = self.look(false)?;
         allow.check(now.url.as_deref())?;
         let here = now
             .elements

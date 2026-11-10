@@ -10,7 +10,8 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
 
-use box_chrome::pipe::{peer_uid, recv_fd, socket_path};
+use box_chrome::pipe::{recv_fd, socket_path};
+use box_common::peer::peer_uid;
 
 use crate::seam::{self, Tools};
 use crate::{BrowserError, Opener};
@@ -37,23 +38,15 @@ pub fn take(display: &str) -> Result<OwnedFd, BrowserError> {
 }
 
 /// The user who must be listening for `slot`, or `None` outside the box (no
-/// `BOX_RUN_AS=agents`), where there are no users to tell apart.
+/// `BOX_RUN_AS=agents`), where there are no users to tell apart. In the box, a
+/// `BOX_SHARED_DISPLAY` that isn't a display name refuses: no screen is taken for the main one.
 fn expected_listener(slot: u16) -> Result<Option<u32>, BrowserError> {
     if std::env::var("BOX_RUN_AS").as_deref() != Ok("agents") {
         return Ok(None);
     }
-    let main = box_desktop::display_number(
-        &std::env::var("BOX_SHARED_DISPLAY").unwrap_or_else(|_| ":1".to_string()),
-    )
-    .unwrap_or(1);
-    box_desktop::desktop_uid(
-        slot,
-        main,
-        &box_desktop::slots_dir(),
-        &box_desktop::bots_dir(),
-    )
-    .map(Some)
-    .ok_or_else(|| BrowserError::Unavailable("no Bot holds this screen".into()))
+    box_desktop::screen_owner(slot)
+        .map(Some)
+        .map_err(|why| BrowserError::Unavailable(why.into()))
 }
 
 /// The fd offered at `socket`, if what listens there is `expected` (any user when `None`).

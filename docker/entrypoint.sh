@@ -32,11 +32,9 @@ export BOX_EGRESS_PROXY_PORT="${BOX_EGRESS_PROXY_PORT:-${BOX_EGRESS_PROXY_BIND##
 
 mkdir -p "${BOX_CHROME_PROFILE}"
 
-flag_on() {
-  local v
-  v="$(echo "${1:-}" | tr '[:upper:]' '[:lower:]')"
-  [[ "${v}" != "0" && "${v}" != "false" && "${v}" != "off" && "${v}" != "no" ]]
-}
+# flag_on VALUE [DEFAULT]: the box's on/off rule, the same as box-chromium's and the daemons'.
+# shellcheck source-path=SCRIPTDIR source=box-flag.sh
+. /usr/lib/box/flag.sh
 
 display_num() {
   echo "${BOX_DISPLAY}" | tr -d ':' | cut -d. -f1
@@ -160,11 +158,11 @@ start_chrome() {
   # as it does, so chrome.pid and this loop see what they always did.
   # Closing/crashing the browser must not take the box down — restart it.
   local launcher=()
-  if flag_on "${BOX_BROWSER:-1}" && [[ -x /usr/local/bin/box-chrome-pipe ]]; then
+  if flag_on "${BOX_BROWSER:-}" 1 && [[ -x /usr/local/bin/box-chrome-pipe ]]; then
     launcher=(/usr/local/bin/box-chrome-pipe "${BOX_SCREEN_RUN}/cdp.sock" --)
   fi
   local proxy_args=()
-  if flag_on "${BOX_EGRESS_TUNNEL}"; then
+  if flag_on "${BOX_EGRESS_TUNNEL}" 0; then
     echo "chromium proxy=http://127.0.0.1:${BOX_EGRESS_PROXY_PORT} (box-egress-tunnel)"
     proxy_args+=(
       --proxy-server="http://127.0.0.1:${BOX_EGRESS_PROXY_PORT}"
@@ -177,7 +175,8 @@ start_chrome() {
   fi
   (
     while true; do
-      # The profile is a bind mount, so it keeps Chromium's singleton lock across a kill and even
+      # The profile outlives the container (compose keeps all of /home/box on the box-home
+      # volume), so it keeps Chromium's singleton lock across a kill and even
       # across a recreate of the container; a hostname/pid the new container happens to reuse
       # makes Chromium believe another instance owns it. This loop is the only thing that starts
       # Chromium on this profile, so before each start the lock is stale by definition.
@@ -255,14 +254,14 @@ start_egress() {
 
 echo "buwiz-computer starting box_id=${BOX_ID:-buwiz-computer} workspace=${WORKSPACE_ROOT} desktop=${BOX_DESKTOP} chrome=${BOX_CHROME} cua=${BOX_CUA} egress=${BOX_EGRESS_TUNNEL}"
 
-if flag_on "${BOX_DESKTOP}"; then
+if flag_on "${BOX_DESKTOP}" 1; then
   start_desktop
 fi
-if flag_on "${BOX_EGRESS_TUNNEL}"; then
+if flag_on "${BOX_EGRESS_TUNNEL}" 0; then
   start_egress
 fi
-if flag_on "${BOX_DESKTOP}"; then
-  if flag_on "${BOX_CHROME}"; then
+if flag_on "${BOX_DESKTOP}" 1; then
+  if flag_on "${BOX_CHROME}" 1; then
     start_chrome
   fi
 fi

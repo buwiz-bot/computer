@@ -582,6 +582,13 @@ fn prepare() -> Result<(), String> {
 
 async fn run() -> Result<i32, String> {
     let features = Features::from_env();
+    // as a malformed numeric BOX_* is, before anything is read or made: unset or empty is :1,
+    // anything else must be a display name, or the box's paths would name slot 1 while every
+    // check refuses the shared display
+    let display_config = DesktopConfig::from_env();
+    let display = display_config.display.clone();
+    let main_slot = display_number(&display)
+        .ok_or_else(|| format!("BOX_DISPLAY is not a display name (:N): {display:?}"))?;
     let Secrets {
         token,
         host_token,
@@ -595,10 +602,6 @@ async fn run() -> Result<i32, String> {
     let mut requests = listen(ctl);
     let screen_requests = screen_socket()?;
     let screen_slots = std::sync::Arc::new(tokio::sync::Semaphore::new(SCREEN_REQUESTS));
-
-    let display_config = DesktopConfig::from_env();
-    let display = display_config.display.clone();
-    let main_slot = display_number(&display).unwrap_or(1);
 
     let mut desktop = Command::new(SETPRIV);
     desktop

@@ -27,7 +27,8 @@ use std::process::{Command, ExitCode};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::Duration;
 
-use box_chrome::pipe::{peer_uid, send_fd};
+use box_chrome::pipe::send_fd;
+use box_common::peer::peer_uid;
 
 /// The only user the pipe is handed to.
 const SERVICE_USER: &str = "boxsvc";

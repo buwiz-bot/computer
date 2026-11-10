@@ -1,6 +1,7 @@
 //! ultra-instinct's answers, read into this crate's own shapes. Nothing of theirs is passed on as
 //! it came: every field is picked, every string is clipped, every list is cut, and a field's text
-//! is kept only when it's known not to be a password's ([`may_return_value`]).
+//! is kept only when it was asked for and it's known not to be a password's ([`may_return_value`],
+//! [`may_return_selected`]).
 
 use serde_json::Value;
 
@@ -43,7 +44,11 @@ pub struct Seen {
     pub actions: Vec<String>,
     pub rect: Rect,
     pub sensitive: bool,
+    /// What the element holds, only when it was asked for and may be shown: [`page`].
     pub value: Option<String>,
+    pub value_truncated: bool,
+    pub checked: Option<bool>,
+    pub expanded: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -81,19 +86,53 @@ fn is_sensitive(el: &Value) -> bool {
 
 /// Whether a field's text may be returned: only when its input type is known and isn't a
 /// password's or a hidden one's, and its role is known. A type that can't be read could be a
-/// password, so no type is no text: the same rule box-a11y keeps for AT-SPI.
+/// password, so no type is no text: the same rule box-a11y keeps for AT-SPI. A checkbox's or a
+/// radio's `value` is its form value, not anything typed: its `checked` says what it holds.
 pub fn may_return_value(role: &str, input_type: Option<&str>, sensitive: bool) -> bool {
     let role = role.trim();
     !sensitive
         && !role.is_empty()
         && !role.eq_ignore_ascii_case("unknown")
         && input_type.map(str::trim).is_some_and(|t| {
-            !t.is_empty() && !matches!(t.to_ascii_lowercase().as_str(), "password" | "hidden")
+            !t.is_empty()
+                && !matches!(
+                    t.to_ascii_lowercase().as_str(),
+                    "password" | "hidden" | "checkbox" | "radio"
+                )
         })
 }
 
-/// A `browser_get_state` `format: json` answer.
-pub fn page(answer: &Value) -> Result<Page, BrowserError> {
+/// The roles ultra-instinct gives a choice among a page's own options, at its pin: a native
+/// `<select>` is `generic` from the page (which offers `select` only for a SELECT tag), and an
+/// ARIA listbox is `listbox`. Not `combobox`, though Chromium's accessibility tree calls a native
+/// select one: an ARIA combobox may be a box a person types in, with no input type to say so,
+/// and its text is no option of the page's. A text field is `text_field`, so none of these.
+const SELECT_ROLES: [&str; 2] = ["generic", "listbox"];
+
+/// Whether a select's chosen option may be returned. ultra-instinct reads an input type only for
+/// an `<input>`, so a `<select>` has none and [`may_return_value`] would never let it through.
+/// Of the elements with no input type, ultra-instinct reads a value only for a `<textarea>` (no
+/// `select` action) and a `<select>` (its chosen option, and it offers `select`): so an element
+/// with no input type, a select's role ([`SELECT_ROLES`]) and the `select` action is a choice
+/// among the page's own options. Anything else with no input type shows no text: a text widget
+/// that also offers `select`, and a combobox, which may hold what a person typed. A sensitive
+/// one still shows nothing.
+pub fn may_return_selected(
+    role: &str,
+    input_type: Option<&str>,
+    actions: &[&str],
+    sensitive: bool,
+) -> bool {
+    let role = role.trim();
+    !sensitive
+        && SELECT_ROLES.iter().any(|r| role.eq_ignore_ascii_case(r))
+        && input_type.is_none()
+        && actions.iter().any(|a| a.eq_ignore_ascii_case("select"))
+}
+
+/// A `browser_get_state` `format: json` answer. Only with `values` are `value`, `checked` and
+/// `expanded` read, and never for a sensitive element, whatever the answer holds.
+pub fn page(answer: &Value, values: bool) -> Result<Page, BrowserError> {
     let elements = answer
         .get("elements")
         .and_then(Value::as_array)
@@ -112,10 +151,24 @@ pub fn page(answer: &Value) -> Result<Page, BrowserError> {
         let role = text(el, "role", MAX_LABEL_CHARS).unwrap_or_default();
         let sensitive = is_sensitive(el);
         let input_type = el.get("input_type").and_then(Value::as_str);
-        let value = if may_return_value(&role, input_type, sensitive) {
-            text(el, "value", MAX_VALUE_CHARS)
-        } else {
-            None
+        let actions: Vec<&str> = el
+            .get("actions")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        let shown = values
+            && (may_return_value(&role, input_type, sensitive)
+                || may_return_selected(&role, input_type, &actions, sensitive));
+        let raw = el.get("value").and_then(Value::as_str).filter(|_| shown);
+        let value = raw.map(|v| clip(v, MAX_VALUE_CHARS));
+        let value_truncated = raw.is_some_and(|v| {
+            v.chars().nth(MAX_VALUE_CHARS).is_some()
+                || el.get("value_truncated").and_then(Value::as_bool) == Some(true)
+        });
+        let state = |key: &str| {
+            el.get(key)
+                .and_then(Value::as_bool)
+                .filter(|_| values && !sensitive)
         };
         let rect = el.get("rect").cloned().unwrap_or(Value::Null);
         seen.push(Seen {
@@ -142,6 +195,9 @@ pub fn page(answer: &Value) -> Result<Page, BrowserError> {
             },
             sensitive,
             value,
+            value_truncated,
+            checked: state("checked"),
+            expanded: state("expanded"),
         });
     }
     Ok(Page {
@@ -157,16 +213,29 @@ pub fn page(answer: &Value) -> Result<Page, BrowserError> {
     })
 }
 
-/// The lines a model reads: `@eN role "label"`, a field's value when it may be shown, and
-/// `[sensitive]` for a password field. Cut at [`MAX_RENDER_BYTES`].
+/// The lines a model reads: `@eN role "label"`, `[sensitive]` for a password field, and, when
+/// they were asked for and may be shown, a field's ` value="…"`, ` checked`/` unchecked` and
+/// ` expanded`/` collapsed`. Cut at [`MAX_RENDER_BYTES`].
 pub fn render(elements: &[crate::Element]) -> String {
     let mut out = String::new();
     for el in elements {
         let mut line = format!("{} {} {:?}", el.reference, el.role, el.label);
         if el.sensitive {
             line.push_str(" [sensitive]");
-        } else if let Some(value) = &el.value {
-            line.push_str(&format!(" value={value:?}"));
+        } else {
+            if let Some(value) = &el.value {
+                line.push_str(&format!(" value={value:?}"));
+            }
+            match el.checked {
+                Some(true) => line.push_str(" checked"),
+                Some(false) => line.push_str(" unchecked"),
+                None => {}
+            }
+            match el.expanded {
+                Some(true) => line.push_str(" expanded"),
+                Some(false) => line.push_str(" collapsed"),
+                None => {}
+            }
         }
         line.push('\n');
         if out.len() + line.len() > MAX_RENDER_BYTES {
@@ -273,6 +342,125 @@ mod tests {
         assert!(!may_return_value("textbox", Some("text"), true));
         assert!(!may_return_value("unknown", Some("text"), false));
         assert!(!may_return_value("", Some("text"), false));
+        // a checkbox's or a radio's value is its form value: its `checked` comes instead
+        assert!(!may_return_value("checkbox", Some("checkbox"), false));
+        assert!(!may_return_value("checkbox", Some("Radio"), false));
+    }
+
+    #[test]
+    fn a_select_s_option_is_returned_for_an_untyped_element_that_offers_select() {
+        assert!(may_return_selected(
+            "generic",
+            None,
+            &["focus", "click", "select"],
+            false
+        ));
+        assert!(!may_return_selected(
+            "generic",
+            None,
+            &["focus", "click", "select"],
+            true
+        ));
+        // a combobox may be a box a person types in, with no input type to say so: no text,
+        // though Chromium's accessibility tree calls a native select one too
+        assert!(!may_return_selected(
+            "combobox",
+            None,
+            &["focus", "click", "select", "type"],
+            false
+        ));
+        // a textarea: no input type, and nothing to select
+        assert!(!may_return_selected(
+            "text_field",
+            None,
+            &["click", "focus", "type"],
+            false
+        ));
+        assert!(!may_return_selected(
+            "generic",
+            Some("text"),
+            &["select"],
+            false
+        ));
+        assert!(!may_return_selected("generic", None, &["click"], false));
+        assert!(!may_return_selected("", None, &["select"], false));
+        // an ARIA listbox; and any select, sensitive, shows nothing
+        assert!(may_return_selected(
+            "listbox",
+            None,
+            &["focus", "click", "select"],
+            false
+        ));
+        for role in ["generic", "combobox", "listbox"] {
+            assert!(
+                !may_return_selected(role, None, &["select"], true),
+                "{role}"
+            );
+        }
+        // a text widget with no input type that also offers select: no type, no text
+        assert!(!may_return_selected(
+            "text_field",
+            None,
+            &["click", "focus", "type", "select"],
+            false
+        ));
+        assert!(!may_return_selected("unknown", None, &["select"], false));
+    }
+
+    #[test]
+    fn states_come_only_when_asked_and_never_from_a_sensitive_element() {
+        let long = "y".repeat(MAX_VALUE_CHARS + 5);
+        let answer = json!({
+            "elements": [
+                {"index": 1, "region": "n1", "role": "checkbox", "label": "Gift wrap",
+                 "input_type": "checkbox", "checked": true, "actions": ["toggle"]},
+                {"index": 2, "region": "n2", "role": "button", "label": "Menu",
+                 "expanded": false, "actions": ["click"]},
+                {"index": 3, "region": "n3", "role": "generic", "label": "Size",
+                 "value": "Large", "actions": ["click", "select"]},
+                {"index": 4, "region": "n4", "role": "textbox", "label": "Card",
+                 "input_type": "text", "sensitive": true, "value": "4111",
+                 "checked": false, "expanded": true, "value_truncated": true,
+                 "actions": ["type"]},
+                {"index": 5, "region": "n5", "role": "textbox", "label": "Note",
+                 "input_type": "text", "value": long, "actions": ["type"]},
+                {"index": 6, "region": "n6", "role": "textbox", "label": "Bio",
+                 "input_type": "text", "value": "short… [truncated 9 chars]",
+                 "value_truncated": true, "actions": ["type"]},
+            ]
+        });
+        let off = page(&answer, false).unwrap();
+        for e in &off.elements {
+            assert_eq!(
+                (e.value.as_deref(), e.checked, e.expanded, e.value_truncated),
+                (None, None, None, false),
+                "{}",
+                e.label
+            );
+        }
+        let on = page(&answer, true).unwrap();
+        let e = &on.elements;
+        assert_eq!(e[0].checked, Some(true));
+        assert_eq!(e[0].value, None);
+        assert_eq!(e[1].expanded, Some(false));
+        assert_eq!(e[2].value.as_deref(), Some("Large"));
+        assert!(e[3].sensitive);
+        assert_eq!(
+            (
+                e[3].value.as_deref(),
+                e[3].checked,
+                e[3].expanded,
+                e[3].value_truncated
+            ),
+            (None, None, None, false)
+        );
+        assert_eq!(
+            e[4].value.as_ref().unwrap().chars().count(),
+            MAX_VALUE_CHARS + 1
+        );
+        assert!(e[4].value_truncated);
+        assert!(e[5].value_truncated);
+        assert!(!e[2].value_truncated);
     }
 
     #[test]
@@ -291,7 +479,12 @@ mod tests {
                  "value": "no type, no text", "actions": ["type"]},
             ]
         });
-        let page = page(&answer).unwrap();
+        assert!(page(&answer, false)
+            .unwrap()
+            .elements
+            .iter()
+            .all(|e| e.value.is_none()));
+        let page = page(&answer, true).unwrap();
         assert_eq!(page.elements[0].value.as_deref(), Some("kid@example.com"));
         assert!(!page.elements[0].sensitive);
         assert_eq!(page.elements[1].value, None);
@@ -308,7 +501,7 @@ mod tests {
             "elements": [{"index": 1, "region": "n1", "role": "button", "label": long,
                           "actions": ["a","b","c","d","e","f","g","h","i","j"]}]
         });
-        let page = page(&answer).unwrap();
+        let page = page(&answer, false).unwrap();
         assert_eq!(
             page.elements[0].label.chars().count(),
             MAX_KEPT_LABEL_CHARS + 1
@@ -319,7 +512,10 @@ mod tests {
 
     #[test]
     fn an_answer_with_no_elements_is_the_backend_s_fault() {
-        assert!(matches!(page(&json!({})), Err(BrowserError::Backend(_))));
+        assert!(matches!(
+            page(&json!({}), false),
+            Err(BrowserError::Backend(_))
+        ));
     }
 
     #[test]

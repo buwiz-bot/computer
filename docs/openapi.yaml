@@ -386,13 +386,29 @@ components:
           maxItems: 8
           items: { type: string }
         rect: { $ref: "#/components/schemas/BrowserRect" }
-        sensitive: { type: boolean, description: "A password field, or one that may be: its text never comes" }
-        value: { type: string, maxLength: 401, description: "A field's text, only when its input type is known and isn't password or hidden" }
+        sensitive: { type: boolean, description: "A password field, or one that may be: its text, checked and expanded never come" }
+        value:
+          type: string
+          maxLength: 401
+          description: |
+            Only with `values` and never on a sensitive element: a field's text when its input type
+            is known and isn't password or hidden, or a select's chosen option (an element with no
+            input type that offers `select`).
+        value_truncated: { type: boolean, description: "`value` was cut at 400 characters. At this ultra-instinct pin the browser side reads at most a field's first 200 characters and does not flag that cut, so a 200-character `value` may be the start of a longer text without this" }
+        checked: { type: boolean, description: "Only with `values`, never on a sensitive element: a checkbox's or radio's state, or aria-checked" }
+        expanded: { type: boolean, description: "Only with `values`, never on a sensitive element: aria-expanded" }
     BrowserSnapRequest:
       type: object
       additionalProperties: false
       properties:
         max_nodes: { type: integer, minimum: 1, maximum: 1000, default: 200 }
+        values:
+          type: boolean
+          default: false
+          description: Also what the fields hold (`value`, `value_truncated`, `checked`, `expanded`), never a sensitive element's. A field is sensitive by its type or label, so text in a plainly typed field whose label names no secret does come
+        allow_domains:
+          allOf: [{ $ref: "#/components/schemas/AllowDomains" }]
+          description: The sites whose fields may be read. `values` needs it (400 invalid_request without), and a page off the list shows none of what its fields hold
     BrowserSnapResponse:
       type: object
       required: [snapshot, display, url, title, elements, total, truncated, text, elapsed_ms]
@@ -1815,7 +1831,9 @@ paths:
       description: |
         The current tab's interactive elements in reading order, read by ultra-instinct (DOM and
         accessibility tree), each with an `@eN` ref good while this is the tab's latest snapshot. A
-        password field's text never comes. With no body, the first 200.
+        password field's text never comes. With no body, the first 200. With `values: true`,
+        elements may carry `value`, `value_truncated`, `checked` and `expanded`; a sensitive one
+        never does.
       security: [{ bearer: [] }]
       parameters:
         - name: display

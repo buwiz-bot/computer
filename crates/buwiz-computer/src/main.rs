@@ -102,6 +102,14 @@ enum BrowserCmd {
         /// The most elements returned (1 to 1000, default 200)
         #[arg(long)]
         max_nodes: Option<u64>,
+        /// Also what fields hold (value, checked, expanded), never a password's or another
+        /// sensitive field's
+        #[arg(long)]
+        values: bool,
+        /// The sites whose fields may be read: --values needs at least one, and a page off the
+        /// list shows none (repeat for several hosts)
+        #[arg(long = "allow-domain")]
+        allow_domains: Vec<String>,
     },
     /// POST /v1/browser/act: click, type, select, key, scroll or focus an element by ref
     Act {
@@ -628,9 +636,16 @@ fn compact(mut body: serde_json::Value) -> serde_json::Value {
 
 async fn browser(on: &BuwizComputer, cmd: BrowserCmd) -> Result<()> {
     let answer = match cmd {
-        BrowserCmd::Snap { max_nodes } => {
-            on.browser_snap(compact(json!({ "max_nodes": max_nodes })))
-                .await?
+        BrowserCmd::Snap {
+            max_nodes,
+            values,
+            allow_domains,
+        } => {
+            let body = compact(json!({
+                "max_nodes": max_nodes,
+                "values": values.then_some(true),
+            }));
+            on.browser_snap(with_allow(body, allow_domains)).await?
         }
         BrowserCmd::Act {
             reference,
