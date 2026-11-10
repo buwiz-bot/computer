@@ -869,6 +869,24 @@ async fn goal_runs_end_done_blocked_abstained_or_failed() {
     assert_eq!(off_list.code, Some("domain_not_allowed"));
     assert_eq!(off_list.host.as_deref(), Some("partner.example"));
 
+    // a run blocked on a page with no host: ultra-instinct names its scheme, and that comes through
+    h.world.lock().unwrap().goal = Some(GoalReport {
+        end: GoalEnd::Blocked {
+            reason: "domain-not-allowed".into(),
+            by: BlockedBy::Domain {
+                host: Some("a blob: page".into()),
+            },
+        },
+        steps: vec![],
+    });
+    let on_blob = h
+        .browsers
+        .run_goal(":1", run("Open the receipt"))
+        .await
+        .unwrap();
+    assert_eq!(on_blob.code, Some("domain_not_allowed"));
+    assert_eq!(on_blob.host.as_deref(), Some("a blob: page"));
+
     // the guard's own label for a form it can't see the button of: still a person's to confirm
     h.world.lock().unwrap().goal = Some(GoalReport {
         end: GoalEnd::Blocked {

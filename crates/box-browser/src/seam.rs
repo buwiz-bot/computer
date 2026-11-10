@@ -188,7 +188,8 @@ pub enum BlockedBy {
     /// a key would send, or the guard's `(form submit)` / `(unobserved focus)` when it couldn't
     /// see which.
     Confirm { label: String },
-    /// The page, or the form a press would send, is off the allow-list. `host` is `None` when
+    /// The page, or the form a press would send, is off the allow-list. `host` is its host, or for
+    /// an address with none its scheme (`a blob: page`), as a tool's refusal names it; `None` when
     /// its address couldn't be read. A confirm can't let it through.
     Domain { host: Option<String> },
     /// The run stopped itself.

@@ -166,6 +166,9 @@ fn no_host(url: &str) -> String {
     });
     match scheme.map(str::to_ascii_lowercase) {
         Some(web) if web == "http" || web == "https" => format!("an {web}: URL with no host"),
+        Some(scheme) if scheme.starts_with(['a', 'e', 'i', 'o', 'u']) => {
+            format!("an {scheme}: page")
+        }
         Some(scheme) => format!("a {scheme}: page"),
         None => "(unknown url)".into(),
     }
@@ -359,6 +362,7 @@ mod tests {
             ("data:text/html,<b>secret</b>", "a data: page"),
             (" BLOB:https://shop.example/0b7c", "a blob: page"),
             ("file:///etc/passwd", "a file: page"),
+            ("about:srcdoc", "an about: page"),
             ("https:shop.example", "an https: URL with no host"),
             ("//shop.example/", "(unknown url)"),
             ("", "(unknown url)"),
