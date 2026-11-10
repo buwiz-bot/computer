@@ -584,6 +584,25 @@ bpost wait '{"text":"searched kid@example.com","timeout_ms":10000}'
 echo "wait ${code} ${body}"
 printf '%s' "${body}" | grep -q '"seen":true'
 
+# With values asked for, the email field's typed text comes back; the password's and the card's never do.
+bpost snap '{"values":true}'
+[[ "${code}" == "200" ]]
+printf '%s' "${body}" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+by = {e["label"]: e for e in d["elements"] if e["role"] == "text_field"}
+assert by["Email"].get("value") == "kid@example.com", by["Email"]
+for secret in ("Password", "Card"):
+    e = by[secret]
+    assert e.get("sensitive") and not ({"value", "value_truncated", "checked", "expanded"} & e.keys()), e
+assert "value=\"kid@example.com\"" in d["text"], d["text"]
+print("values: the email field shows its text, the password and card fields show none")
+'
+if printf '%s' "${body}" | grep -q 'hunter2-smoke-pw'; then
+  echo "a password field's value came back with values" >&2
+  exit 1
+fi
+
 # ultra-instinct marks the password field sensitive, and no field's text comes back.
 bpost snap '{}'
 [[ "${code}" == "200" ]]
