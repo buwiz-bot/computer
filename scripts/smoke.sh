@@ -25,7 +25,13 @@ export COMPOSE_BAKE="${COMPOSE_BAKE:-false}"
 
 # A project of its own, one per checkout: its home volume is created clean here and deleted at the
 # end, and a box you run yourself with `docker compose up` in this folder keeps its own.
+# SMOKE_PROJECT may name another, but only a buwiz-smoke-… one: smoke deletes the project's home
+# volume (`down -v`), so it never takes a name a real box could have.
 PROJECT="${SMOKE_PROJECT:-buwiz-smoke-$(printf '%s' "${ROOT}" | cksum | cut -d' ' -f1)}"
+if [[ ! "${PROJECT}" =~ ^buwiz-smoke-[a-z0-9][a-z0-9_-]*$ ]]; then
+  echo "SMOKE_PROJECT must start with buwiz-smoke- (lowercase letters, digits, - and _ after it): smoke deletes its project's home volume, so it won't run as ${PROJECT}" >&2
+  exit 1
+fi
 
 COMPOSE=(docker compose -p "${PROJECT}")
 if ! docker compose version >/dev/null 2>&1; then
