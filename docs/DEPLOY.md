@@ -441,6 +441,10 @@ After the Akamai VM is up and Compose is healthy:
 - **CORS:** default is no browser origins. Do not point a random website at 1337.
 - **Egress CONNECT unpublished.** Do not add `8791:8791`. WS `8790` is loopback + SSH `-L` only. Prod must not rely on Docker host-network for Facebook/IP geo; see [EGRESS.md](EGRESS.md).
 
+### Upgrading: `BOX_CHROME=0` and the browser routes
+
+**Behaviour change:** `BOX_CHROME=0` no longer turns `/v1/browser/*` off. It used to answer `503 browser_disabled` on every screen; now it keeps only the main screen closed, and every Bot's own screen is served. If you set `BOX_CHROME=0` to keep the browser routes off, set `BOX_BROWSER=0`, which is now the switch for that. A box made with `BOX_CHROME=0` and nothing else (as Buwiz Bot's broker makes them) serves its Bots' screens on `/v1/browser/*` once it runs this image, to whoever holds its token.
+
 ### Upgrading from `./chrome-profile`
 
 Compose used to bind `./chrome-profile` to the main screen's profile and keep nothing else under `/home/box`, so a recreated box lost the Bots' slots, their profiles and the saved logins. It now keeps all of `/home/box` in `box-home`, and **`./chrome-profile` is no longer mounted**: after the upgrade the main screen starts signed out. The folder is left where it was. To carry it into the volume, from the folder holding `docker-compose.yml`, before the new box first starts (if it already has, `docker compose stop` first, and the copy goes over the new profile):
