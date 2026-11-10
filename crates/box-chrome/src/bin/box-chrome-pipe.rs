@@ -332,13 +332,20 @@ impl Lease {
     /// [`Self::reaped`] takes, so it never straddles the reap.
     fn let_go_now(&self) -> bool {
         let watch = self.watch.lock().unwrap_or_else(|p| p.into_inner());
-        let live = watch
-            .as_ref()
-            .is_some_and(|fd| !exited(self.child) && !hung_up(fd));
-        if live {
-            self.let_go.store(true, Ordering::SeqCst);
+        let why_not = match watch.as_ref() {
+            None => Some("Chromium was reaped"),
+            Some(_) if exited(self.child) => Some("Chromium had exited"),
+            Some(fd) if hung_up(fd) => Some("Chromium had shut its pipe"),
+            Some(_) => None,
+        };
+        match why_not {
+            None => {
+                self.let_go.store(true, Ordering::SeqCst);
+                eprintln!("box-chrome-pipe: box-exec let go while Chromium ran: counted");
+            }
+            Some(why) => eprintln!("box-chrome-pipe: box-exec let go, not counted: {why}"),
         }
-        live
+        why_not.is_none()
     }
 
     /// Chromium is reaped: the launcher's copy of its end goes, and the answer is whether box-exec
@@ -394,6 +401,13 @@ fn exited(child: i32) -> bool {
 
 /// Whether Chromium's end of the pipe is shut: Chromium shut it on its way out, or box-exec's end is
 /// closed already. Data waiting to be read is not a hang-up.
+///
+/// The watch is a copy of the very end Chromium holds as fds 3 and 4, so Chromium merely closing
+/// those fds, as an exit does, shows nothing here ([`exited`] covers that). What shows is
+/// Chromium's `shutdown()` of the socket, which it does as it starts to quit: measured in the image
+/// on a `Browser.close`, the copy reads `POLLIN | POLLHUP | POLLRDHUP` and box-exec's end reads its
+/// end of file about 50 ms before Chromium exits, with this copy held (the image smoke's
+/// `inflight` case checks that a let-go sent in that window isn't counted, and says why).
 fn hung_up(fd: &OwnedFd) -> bool {
     #[cfg(target_os = "linux")]
     let events = libc::POLLIN | libc::POLLRDHUP;
@@ -490,7 +504,7 @@ mod tests {
         let (browser, _exec) = UnixStream::pair().unwrap();
         let watch = browser.try_clone().unwrap();
         let lease = Lease::new(watch.into(), chromium.id() as i32);
-        // Chromium, still alive, shuts its end on its way out
+        // Chromium, still alive, shuts its end on its way out, as it does (see `hung_up`)
         browser.shutdown(std::net::Shutdown::Both).unwrap();
         assert!(!lease.let_go_now());
         chromium.kill().unwrap();

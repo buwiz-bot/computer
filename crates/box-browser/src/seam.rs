@@ -549,6 +549,37 @@ mod tests {
         assert!(matches!(lists.to_policy(), Err(ToolFailure::Invalid(_))));
     }
 
+    /// The one way box-exec meets `pipe_closed` with Chromium alive and its pipe whole: a request
+    /// cut off mid-write by its deadline, when Chromium stopped reading long enough for the socket
+    /// to fill (frozen, stopped, or starved). ultra-instinct then holds the pipe closed for good,
+    /// since nothing after half a frame parses; box-browser drops the tools, and the launcher, told
+    /// so while Chromium still runs, has it started again (`crate::pipe`).
+    #[test]
+    fn a_request_cut_off_mid_write_holds_the_pipe_closed_while_the_browser_lives() {
+        let (end, chromium) = std::os::unix::net::UnixStream::pair().unwrap();
+        let limits = PipeLimits {
+            max_frame_bytes: MAX_FRAME_BYTES,
+            call_deadline: Duration::from_secs(2),
+        };
+        let browser = PipeBrowser::with_limits(end.try_clone().unwrap(), end, limits);
+        // more than the socket holds, and nobody reading on the other side
+        let big = format!("{{\"text\":\"{}\"}}", "x".repeat(8 << 20));
+        let cut = browser.call("Input.insertText", &big).unwrap_err();
+        assert!(
+            matches!(cut, ultra_instinct_cdp::CdpError::Timeout { .. }),
+            "{cut:?}"
+        );
+        let after = browser.call("Browser.getVersion", "{}").unwrap_err();
+        assert!(
+            matches!(
+                ToolFailure::from(ToolError::from_cdp(&after).expect("a typed failure")),
+                ToolFailure::Closed(_)
+            ),
+            "{after:?}"
+        );
+        drop(chromium);
+    }
+
     #[test]
     fn a_pipe_whose_browser_is_gone_is_closed() {
         let (a, b) = std::os::unix::net::UnixStream::pair().unwrap();

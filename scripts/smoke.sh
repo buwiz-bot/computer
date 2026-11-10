@@ -752,14 +752,19 @@ echo "snap after the relaunch ${code}"
 echo "==> a launcher starts Chromium again only when box-exec let go of a pipe that still worked"
 # No route makes box-exec drop a live pipe, so a stand-in takes its place: a second, headless
 # Chromium on a launcher of its own, in a folder like a run folder, and, as boxsvc, a few lines of
-# Python that take its pipe as box-exec does, hear Chromium answer, and let go as box-exec would:
-#   let-go:   L on the lease, its answer, then the pipe closed (a pipe that failed): 75, started again
+# Python that take its pipe as box-exec does and let go as box-exec would. box-exec's own requests
+# are too small to fill the socket within a smoke's time, so the stand-in does that part:
+#   let-go:   Chromium stopped (SIGSTOP), a request written until the socket is full and cut off
+#             there, as ultra-instinct's deadline cuts one and then holds the pipe closed; then L,
+#             its answer, the pipe closed, and Chromium let run again: it reads half a frame and
+#             the end, and quits 0: 75, started again ("counted")
 #   close:    the lease and the pipe closed with no L (box-exec's shutdown): 0, left closed
 #   person:   Browser.close, the lease held (a person closing it): 0
-#   inflight: Browser.close, the pipe read to its end as a call in flight would, then L, as the
-#             call's failure sends it: 0, since Chromium had shut its pipe or exited first
-# Chromium quits with 0 on its own in every case: the status is the launcher's call. Then
-# box-chromium, on that launcher, is sent a TERM: it reaches the launcher, and nothing restarts.
+#   inflight: Browser.close, the pipe read to its end as a call in flight would, then L at once,
+#             as the call's failure sends it, while Chromium is still quitting: 0, not counted
+#             because "Chromium had shut its pipe"
+# Chromium quits with 0 in every case: the status is the launcher's call. Then box-chromium, on
+# that launcher, is sent a TERM: it reaches the launcher, and nothing restarts.
 lease_out="$("${COMPOSE[@]}" exec -T box sh <<'LEASE'
 set -u
 dir=/tmp/pipe-smoke
@@ -773,13 +778,6 @@ lease = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 lease.connect(path)
 _, fds, _, _ = socket.recv_fds(lease, 1, 1)
 pipe = socket.socket(fileno=fds[0])
-pipe.sendall(b"{\"id\":1,\"method\":\"Browser.getVersion\"}\0")
-got = b""
-while b"\0" not in got:
-    more = pipe.recv(65536)
-    if not more:
-        sys.exit("the pipe closed before Chromium answered")
-    got += more
 def let_go():
     try:
         lease.settimeout(1)
@@ -788,10 +786,26 @@ def let_go():
     except OSError:
         pass
 if how == "let-go":
+    pipe.setblocking(False)
+    head = b"{\"id\":1,\"method\":\"Input.insertText\",\"params\":{\"text\":\""
+    try:
+        pipe.send(head)
+        while True:
+            pipe.send(b"x" * 65536)
+    except BlockingIOError:
+        pass
     let_go()
     lease.close()
     pipe.close()
-elif how == "close":
+    sys.exit()
+pipe.sendall(b"{\"id\":1,\"method\":\"Browser.getVersion\"}\0")
+got = b""
+while b"\0" not in got:
+    more = pipe.recv(65536)
+    if not more:
+        sys.exit("the pipe closed before Chromium answered")
+    got += more
+if how == "close":
     lease.close()
     pipe.close()
 elif how == "person":
@@ -810,17 +824,29 @@ else:
 launch() {
   rm -rf /tmp/pipe-smoke-home/profile
   setpriv --reuid=1000 --regid=1000 --clear-groups env HOME=/tmp/pipe-smoke-home "$@" \
-    >/dev/null 2>&1 &
+    >/tmp/pipe-smoke-home/launcher.log 2>&1 &
   launcher=$!
   for _ in $(seq 100); do [ -S "$dir/cdp.sock" ] && break; sleep 0.1; done
 }
 for how in let-go close person inflight; do
   launch /usr/local/bin/box-chrome-pipe "$dir/cdp.sock" -- chromium --headless=new --no-sandbox \
     --disable-gpu --user-data-dir=/tmp/pipe-smoke-home/profile about:blank
+  chromium=""
+  if [ "$how" = let-go ]; then
+    # this launcher's own Chromium, never the screen's
+    for _ in $(seq 50); do
+      chromium=$(pgrep -P "$launcher" -x chromium) && break
+      sleep 0.1
+    done
+    sleep 1
+    kill -STOP "$chromium"
+  fi
   setpriv --reuid=990 --regid=990 --clear-groups python3 -c "$PY" "$dir/cdp.sock" "$how"
+  [ -z "$chromium" ] || kill -CONT "$chromium"
   code=0
   wait "$launcher" || code=$?
-  echo "LEASE ${how} ${code}"
+  said=$(grep -o 'let go[^:]*: .*' /tmp/pipe-smoke-home/launcher.log | head -1)
+  echo "LEASE ${how} ${code} ${said}"
 done
 # box-chromium on a pipe: its TERM reaches the launcher and Chromium, and nothing starts again
 launch env BOX_BROWSER=1 BOX_SCREEN_RUN="$dir" BOX_EGRESS_TUNNEL=0 \
@@ -841,10 +867,10 @@ rm -rf "$dir" /tmp/pipe-smoke-home
 LEASE
 )"
 echo "${lease_out}"
-echo "${lease_out}" | grep -qx 'LEASE let-go 75'
-echo "${lease_out}" | grep -qx 'LEASE close 0'
-echo "${lease_out}" | grep -qx 'LEASE person 0'
-echo "${lease_out}" | grep -qx 'LEASE inflight 0'
+echo "${lease_out}" | grep -qx 'LEASE let-go 75 let go while Chromium ran: counted'
+echo "${lease_out}" | grep -qx 'LEASE close 0 *'
+echo "${lease_out}" | grep -qx 'LEASE person 0 *'
+echo "${lease_out}" | grep -qx 'LEASE inflight 0 let go, not counted: Chromium had shut its pipe'
 echo "${lease_out}" | grep -q '^TRAP code=[0-9]* left=0 offered=no$'
 
 echo "==> the home volume outlives the container: logins, profiles, a Bot's slot and user"
