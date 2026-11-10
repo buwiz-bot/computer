@@ -133,9 +133,9 @@ impl AllowList {
         };
         match web_host(url) {
             None if is_blank(url) => Ok(()),
-            None => Err(BrowserError::DomainNotAllowed(no_host(url))),
+            None => Err(BrowserError::DomainNotAllowed(refused_name(&no_host(url)))),
             Some(host) if self.hosts.iter().any(|p| p.matches(&host)) => Ok(()),
-            Some(host) => Err(BrowserError::DomainNotAllowed(host)),
+            Some(host) => Err(BrowserError::DomainNotAllowed(refused_name(&host))),
         }
     }
 }
@@ -174,12 +174,22 @@ fn no_host(url: &str) -> String {
         // with no authority to read, `refused_place` names a host only for a `host:port`; its
         // other answers are phrases (`a tel: page`), never a bare name
         let named = refused_place(url);
-        if named != unknown && !named.contains(char::is_whitespace) {
+        // (a host of dots alone comes back empty: that names nothing)
+        if named != unknown && !named.is_empty() && !named.contains(char::is_whitespace) {
             return named;
         }
     }
     unknown
 }
+
+/// What a refusal says was refused, held to a host name's length: the name is the caller's own
+/// address read back, and an answer doesn't echo more of it than a real host could be.
+fn refused_name(name: &str) -> String {
+    crate::shape::clip(name, MAX_HOST_CHARS)
+}
+
+/// The longest a host name is.
+const MAX_HOST_CHARS: usize = 253;
 
 /// The schemes a refusal names. Any other prefix before a `:` is "(unknown url)".
 const SCHEMES: [&str; 12] = [
@@ -350,6 +360,23 @@ mod tests {
         assert!(same_label("Pay  $18", "Pay $18"));
         assert!(!same_label("Pay $18", "Pay $19"));
         assert!(!same_label("pay $18", "Pay $18"));
+    }
+
+    #[test]
+    fn a_refusal_names_nothing_for_dots_and_no_more_than_a_host_s_length() {
+        let list = AllowList::parse(Some(&["shop.example".into()])).unwrap();
+        // a host of dots alone is no name
+        for dots in [".:80", "..:443/x"] {
+            assert_eq!(no_host(dots), "(unknown url)", "{dots}");
+        }
+        // a very long host, with a scheme or without, is not echoed whole
+        let long = format!("{}.b", "a".repeat(5000));
+        for url in [format!("{long}:80"), format!("https://{long}/")] {
+            let Err(BrowserError::DomainNotAllowed(name)) = list.check(Some(&url)) else {
+                panic!("{} was let through", &url[..40]);
+            };
+            assert!(name.chars().count() <= MAX_HOST_CHARS + 1, "{}", name.len());
+        }
     }
 
     #[test]
@@ -527,7 +554,8 @@ mod tests {
             assert_eq!(refused_place(url), upstream, "{url}");
             assert_eq!(no_host(url), "(unknown url)", "{url}");
         }
-        // a host in an address that isn't a web one is no host to match: the scheme is named
+        // a host in an address that isn't a web one is no host to match: a scheme box-browser
+        // knows ([`SCHEMES`]) is named, and any other is "(unknown url)"
         for (url, ours) in [
             ("ftp://shop.example/", "a ftp: page"),
             ("file://shop.example/etc/passwd", "a file: page"),
