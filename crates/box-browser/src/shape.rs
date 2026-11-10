@@ -102,12 +102,20 @@ pub fn may_return_value(role: &str, input_type: Option<&str>, sensitive: bool) -
         })
 }
 
+/// The roles ultra-instinct gives a choice among a page's own options, at its pin: a native
+/// `<select>` is `generic` from the page (which offers `select` only for a SELECT tag) or
+/// `combobox` from Chromium's accessibility tree, and an ARIA listbox is `listbox`. A text field
+/// is `text_field`, so none of these.
+const SELECT_ROLES: [&str; 3] = ["generic", "combobox", "listbox"];
+
 /// Whether a select's chosen option may be returned. ultra-instinct reads an input type only for
 /// an `<input>`, so a `<select>` has none and [`may_return_value`] would never let it through.
 /// Of the elements with no input type, ultra-instinct reads a value only for a `<textarea>` (no
 /// `select` action) and a `<select>` (its chosen option, and it offers `select`; Chromium calls
-/// it a combobox, which adds `type`): so an element with no input type that offers `select` is
-/// a choice among the page's own options. A sensitive one still shows nothing.
+/// it a combobox, which adds `type`): so an element with no input type, a select's role
+/// ([`SELECT_ROLES`]) and the `select` action is a choice among the page's own options. Anything
+/// else with no input type, such as a text widget that also offers `select`, shows no text. A
+/// sensitive one still shows nothing.
 pub fn may_return_selected(
     role: &str,
     input_type: Option<&str>,
@@ -116,8 +124,7 @@ pub fn may_return_selected(
 ) -> bool {
     let role = role.trim();
     !sensitive
-        && !role.is_empty()
-        && !role.eq_ignore_ascii_case("unknown")
+        && SELECT_ROLES.iter().any(|r| role.eq_ignore_ascii_case(r))
         && input_type.is_none()
         && actions.iter().any(|a| a.eq_ignore_ascii_case("select"))
 }
@@ -375,6 +382,27 @@ mod tests {
         ));
         assert!(!may_return_selected("generic", None, &["click"], false));
         assert!(!may_return_selected("", None, &["select"], false));
+        // an ARIA listbox; and any select, sensitive, shows nothing
+        assert!(may_return_selected(
+            "listbox",
+            None,
+            &["focus", "click", "select"],
+            false
+        ));
+        for role in ["generic", "combobox", "listbox"] {
+            assert!(
+                !may_return_selected(role, None, &["select"], true),
+                "{role}"
+            );
+        }
+        // a text widget with no input type that also offers select: no type, no text
+        assert!(!may_return_selected(
+            "text_field",
+            None,
+            &["click", "focus", "type", "select"],
+            false
+        ));
+        assert!(!may_return_selected("unknown", None, &["select"], false));
     }
 
     #[test]
