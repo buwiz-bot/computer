@@ -749,6 +749,64 @@ fi
 echo "snap after the relaunch ${code}"
 "${COMPOSE[@]}" exec -T -u box box sh -c '[ ! -e /run/box/x/1/run/cdp.sock ]'
 
+echo "==> a launcher starts Chromium again only when box-exec let go of a pipe that still worked"
+# No route makes box-exec drop a live pipe, so a stand-in takes its place: a second, headless
+# Chromium on a launcher of its own, in a folder like a run folder, and, as boxsvc, a few lines of
+# Python that take its pipe as box-exec does, hear Chromium answer, and let go three ways. Letting
+# go of the lease first (what box-exec does when a working pipe fails) is 75, which the restart
+# loops start Chromium again on; dropping the pipe and keeping the lease (box-exec's shutdown) and
+# a Browser.close (a person closing it) are 0, left closed. Chromium quits with 0 on its own in
+# all three: the status is the launcher's call.
+lease_out="$("${COMPOSE[@]}" exec -T box sh <<'LEASE'
+set -u
+dir=/tmp/pipe-smoke
+rm -rf "$dir" /tmp/pipe-smoke-home
+install -d -o box -g boxsvc -m 0750 "$dir"
+install -d -o box -g box -m 0700 /tmp/pipe-smoke-home
+PY='
+import socket, sys
+path, how = sys.argv[1], sys.argv[2]
+lease = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+lease.connect(path)
+_, fds, _, _ = socket.recv_fds(lease, 1, 1)
+pipe = socket.socket(fileno=fds[0])
+pipe.sendall(b"{\"id\":1,\"method\":\"Browser.getVersion\"}\0")
+got = b""
+while b"\0" not in got:
+    more = pipe.recv(65536)
+    if not more:
+        sys.exit("the pipe closed before Chromium answered")
+    got += more
+if how == "let-go":
+    lease.close()
+    pipe.close()
+elif how == "close":
+    pipe.close()
+    lease.recv(1)
+else:
+    pipe.sendall(b"{\"id\":2,\"method\":\"Browser.close\"}\0")
+    lease.recv(1)
+'
+for how in let-go close person; do
+  rm -rf /tmp/pipe-smoke-home/profile
+  setpriv --reuid=1000 --regid=1000 --clear-groups env HOME=/tmp/pipe-smoke-home \
+    /usr/local/bin/box-chrome-pipe "$dir/cdp.sock" -- chromium --headless=new --no-sandbox \
+    --disable-gpu --user-data-dir=/tmp/pipe-smoke-home/profile about:blank >/dev/null 2>&1 &
+  launcher=$!
+  for _ in $(seq 100); do [ -S "$dir/cdp.sock" ] && break; sleep 0.1; done
+  setpriv --reuid=990 --regid=990 --clear-groups python3 -c "$PY" "$dir/cdp.sock" "$how"
+  code=0
+  wait "$launcher" || code=$?
+  echo "LEASE ${how} ${code}"
+done
+rm -rf "$dir" /tmp/pipe-smoke-home
+LEASE
+)"
+echo "${lease_out}"
+echo "${lease_out}" | grep -qx 'LEASE let-go 75'
+echo "${lease_out}" | grep -qx 'LEASE close 0'
+echo "${lease_out}" | grep -qx 'LEASE person 0'
+
 echo "==> the home volume outlives the container: logins, profiles, a Bot's slot and user"
 # spost <json>: POST /v1/screen, the answer in ${screen}.
 spost() {

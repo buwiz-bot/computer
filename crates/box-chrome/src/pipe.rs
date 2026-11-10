@@ -12,11 +12,24 @@
 //! user before it takes what is offered, as it checks the screen's X server and accessibility bus.
 //! These are the helpers both sides use; who is on the other end of a socket is
 //! `box_common::peer::peer_uid`.
+//!
+//! The connection the end came over is kept open by both sides for as long as `box-exec` holds the
+//! end: it's how the launcher tells why Chromium went. Chromium quits, with status 0, once its pipe
+//! closes, as it does when a person closes it. If `box-exec` lets go of a browser that still works
+//! (its pipe failed, say), it closes that connection first, and the launcher, seeing it closed when
+//! Chromium exits 0, exits [`PIPE_LET_GO`] instead, so the screen's restart loop starts a new
+//! Chromium with a fresh pipe. A close `box-exec` means (its shutdown) drops the pipe first and
+//! keeps the connection until the launcher is gone, so that browser stays closed.
 
 use std::io;
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
+
+/// The launcher's status when Chromium quit because `box-exec` let go of its pipe while it still
+/// worked: a status the restart loops (`docker/entrypoint.sh`, `docker/box-chromium`) start it
+/// again on, where a 0, a person closing the browser, is left closed. `EX_TEMPFAIL`.
+pub const PIPE_LET_GO: u8 = 75;
 
 /// The socket's name in a screen's run folder.
 pub const SOCKET_NAME: &str = "cdp.sock";

@@ -49,23 +49,36 @@ if flag_on "${BOX_BROWSER:-}" 1; then
     launcher="/usr/local/bin/box-chrome-pipe ${BOX_SCREEN_RUN}/cdp.sock --"
   fi
 fi
-# shellcheck disable=SC2086 # the launcher's words, like the proxy flags, are split on purpose
-exec ${launcher} chromium \
-  --user-data-dir="${BOX_CHROME_PROFILE:-${HOME}/chrome-profile}" \
-  --window-size="${win_w},${win_h}" \
-  --window-position=0,0 \
-  --no-first-run \
-  --no-default-browser-check \
-  --disable-dev-shm-usage \
-  --disable-gpu \
-  --no-sandbox \
-  --test-type \
-  --hide-crash-restore-bubble \
-  --disable-session-crashed-bubble \
-  --disable-features=Translate \
-  --load-extension=/opt/box/active-tab \
-  --force-renderer-accessibility \
-  ${proxy_server} \
-  ${proxy_bypass} \
-  ${proxy_webrtc} \
-  "$@"
+# On a pipe, this stays to start Chromium again when the launcher exits 75: box-exec let go of a
+# browser that still worked, and it quit when its pipe closed (box_chrome::pipe::PIPE_LET_GO). A Bot's
+# screen has no other restart loop. Any other exit, a person closing it (0) or a crash, ends this
+# as before. It comes back on about:blank, as the main screen's does, not on the page first asked.
+while :; do
+  # shellcheck disable=SC2086 # the launcher's words, like the proxy flags, are split on purpose
+  ${launcher} chromium \
+    --user-data-dir="${BOX_CHROME_PROFILE:-${HOME}/chrome-profile}" \
+    --window-size="${win_w},${win_h}" \
+    --window-position=0,0 \
+    --no-first-run \
+    --no-default-browser-check \
+    --disable-dev-shm-usage \
+    --disable-gpu \
+    --no-sandbox \
+    --test-type \
+    --hide-crash-restore-bubble \
+    --disable-session-crashed-bubble \
+    --disable-features=Translate \
+    --load-extension=/opt/box/active-tab \
+    --force-renderer-accessibility \
+    ${proxy_server} \
+    ${proxy_bypass} \
+    ${proxy_webrtc} \
+    "$@"
+  code=$?
+  if [ -z "${launcher}" ] || [ "${code}" -ne 75 ]; then
+    exit "${code}"
+  fi
+  echo "box-chromium: chromium quit when box-exec let go of its pipe; starting it again in 2s" >&2
+  sleep 2
+  set -- about:blank
+done

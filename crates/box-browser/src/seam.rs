@@ -88,9 +88,9 @@ pub fn open(pipe: OwnedFd) -> Result<Box<dyn Tools>, ToolFailure> {
         .with_uploads(Uploads::Off)
         .with_tool_allowlist(ALLOWED);
     // A browser already gone says so now, not on the first real call. Any other failure keeps the
-    // server: dropping it would close the pipe, and Chromium quits with status 0 once it closes,
-    // which the restart loop takes for a person closing it, so the screen's browser would be gone
-    // for good. The next call finds out whatever this one met.
+    // server: dropping it would close the pipe, and Chromium quits once it closes. Its launcher
+    // would have it started again (`crate::pipe::Leased`), but a person at the screen would lose
+    // their tabs for what may be a passing failure. The next call finds out whatever this one met.
     if let Err(err) = server.call_tool("browser_list_tabs", &json!({})) {
         let failure = ToolFailure::from(err);
         if matches!(failure, ToolFailure::Closed(_)) {

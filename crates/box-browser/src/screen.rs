@@ -72,9 +72,9 @@ pub(crate) fn serve(mut screen: Screen, jobs: Receiver<Job>) {
         let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&mut screen)));
         if ran.is_err() {
             // What the call was in the middle of is unknown, so its snapshot and policy go. The
-            // pipe stays: Chromium quits, with status 0, as soon as box-exec's end closes, and the
-            // restart loop takes a 0 for a person closing it, so dropping the pipe here would close
-            // the screen's browser for good.
+            // pipe stays: Chromium quits as soon as box-exec's end closes, and though its launcher
+            // then has it started again (`pipe::Leased`), the person at the screen would lose
+            // their tabs to a panic of box-exec's.
             screen.forget();
         }
     }
@@ -133,7 +133,9 @@ impl Screen {
     }
 
     /// A tool's failure as a box-browser error. A closed pipe drops the tools, so the next call
-    /// opens the screen's new browser.
+    /// opens the screen's new browser. If the browser was still there (a pipe that failed, not one
+    /// that closed), dropping them closes its lease first, so its launcher has it started again
+    /// (`pipe::Leased`): the screen doesn't stay without one.
     fn failed(&mut self, failure: ToolFailure, target: Option<&str>) -> BrowserError {
         match failure {
             ToolFailure::Invalid(m) => BrowserError::Invalid(m),

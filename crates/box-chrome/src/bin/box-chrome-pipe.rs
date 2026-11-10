@@ -5,7 +5,10 @@
 //! makes a socket pair, starts Chromium with `--remote-debugging-pipe` on one end as fds 3 and 4,
 //! and offers the other end once at `<socket>`, to a peer the kernel says is `boxsvc`. It lives as
 //! long as Chromium, passes on the signals it gets, and exits as Chromium did, so the restart loop
-//! and `chrome.pid` see what they always saw.
+//! and `chrome.pid` see what they always saw, with one exception: it keeps the connection it handed
+//! the end over on, and when Chromium exits 0 after `box-exec` closed that connection, `box-exec`
+//! let go of a browser that still worked, and it exits [`PIPE_LET_GO`] so the loop starts Chromium
+//! again (`box_chrome::pipe`).
 //!
 //! Chromium runs in a process group of its own. A signal to stop goes to that group; if Chromium
 //! hasn't gone [`GRACE`] later, the group is killed. When Chromium exits, for whatever reason,
@@ -25,9 +28,10 @@ use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use box_chrome::pipe::send_fd;
+use box_chrome::pipe::{send_fd, PIPE_LET_GO};
 use box_common::peer::peer_uid;
 
 /// The only user the pipe is handed to.
@@ -245,7 +249,9 @@ fn run(offer: Offer, program: &OsString, rest: &[OsString]) -> ExitCode {
     }
 
     let offered = socket.clone();
-    std::thread::spawn(move || hand_over(listener, exec_end, service_uid, &offered));
+    let lease: Arc<OnceLock<UnixStream>> = Arc::default();
+    let held = Arc::clone(&lease);
+    std::thread::spawn(move || hand_over(listener, exec_end, service_uid, &offered, &held));
 
     let pid = child.id() as i32;
     let mut told: Option<std::time::Instant> = None;
@@ -264,16 +270,21 @@ fn run(offer: Offer, program: &OsString, rest: &[OsString]) -> ExitCode {
         }
         std::thread::sleep(LOOK);
     };
-    // Chromium is gone; nothing of its group outlives it.
+    // Chromium is gone; nothing of its group outlives it. Whether box-exec had let go of its pipe
+    // is read now, before this process's end of the lease closes.
+    let let_go = lease.get().is_some_and(closed);
     kill_group(pid);
     // The lock is still this process's, so the socket, if it's there, is too.
     let _ = std::fs::remove_file(&socket);
     match status {
-        Ok(status) => match (status.code(), status.signal()) {
-            (Some(code), _) => ExitCode::from(code.clamp(0, 255) as u8),
-            (None, Some(signal)) => ExitCode::from((128 + signal).clamp(0, 255) as u8),
-            _ => ExitCode::FAILURE,
-        },
+        Ok(status) => {
+            let stopping = STOPPING.load(Ordering::SeqCst);
+            let code = exit_code(status.code(), status.signal(), let_go, stopping);
+            if code == PIPE_LET_GO {
+                eprintln!("box-chrome-pipe: box-exec let go of the pipe, and Chromium quit");
+            }
+            ExitCode::from(code)
+        }
         Err(err) => {
             eprintln!("box-chrome-pipe: lost Chromium: {err}");
             ExitCode::FAILURE
@@ -281,9 +292,54 @@ fn run(offer: Offer, program: &OsString, rest: &[OsString]) -> ExitCode {
     }
 }
 
-/// Gives `exec_end` to the first `boxsvc` peer, then closes this process's copy and the socket.
-/// Anybody else is hung up on.
-fn hand_over(listener: UnixListener, exec_end: OwnedFd, service_uid: u32, socket: &Path) {
+/// The launcher's status for Chromium's: Chromium's own, or 128 + the signal that ended it; but a
+/// 0 after box-exec let go of the pipe (`let_go`) is [`PIPE_LET_GO`], unless the launcher itself
+/// was told to stop.
+fn exit_code(code: Option<i32>, signal: Option<i32>, let_go: bool, stopping: bool) -> u8 {
+    match (code, signal) {
+        (Some(0), _) if let_go && !stopping => PIPE_LET_GO,
+        (Some(code), _) => code.clamp(0, 255) as u8,
+        (None, Some(signal)) => (128 + signal).clamp(0, 255) as u8,
+        _ => 1,
+    }
+}
+
+/// Whether the other side of `lease` has closed it. box-exec never writes on it, so whatever is
+/// there to read is dropped, until its end of file; an error is a connection gone too.
+fn closed(lease: &UnixStream) -> bool {
+    let mut buf = [0u8; 64];
+    loop {
+        // SAFETY: a read into a buffer this function owns, of at most its length, on a socket it
+        // borrows; it never blocks.
+        let got = unsafe {
+            libc::recv(
+                lease.as_raw_fd(),
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                libc::MSG_DONTWAIT,
+            )
+        };
+        match got {
+            0 => return true,
+            n if n > 0 => continue,
+            _ => match io::Error::last_os_error().kind() {
+                io::ErrorKind::Interrupted => continue,
+                io::ErrorKind::WouldBlock => return false,
+                _ => return true,
+            },
+        }
+    }
+}
+
+/// Gives `exec_end` to the first `boxsvc` peer, then closes this process's copy and the socket, and
+/// keeps the connection it went over in `lease`. Anybody else is hung up on.
+fn hand_over(
+    listener: UnixListener,
+    exec_end: OwnedFd,
+    service_uid: u32,
+    socket: &Path,
+    lease: &OnceLock<UnixStream>,
+) {
     for conn in listener.incoming() {
         let Ok(conn) = conn else { continue };
         match peer_uid(&conn) {
@@ -295,7 +351,39 @@ fn hand_over(listener: UnixListener, exec_end: OwnedFd, service_uid: u32, socket
             drop(exec_end);
             drop(listener);
             let _ = std::fs::remove_file(socket);
+            let _ = lease.set(conn);
             return;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn a_lease_reads_closed_only_once_its_other_side_is() {
+        let (lease, exec) = UnixStream::pair().unwrap();
+        assert!(!closed(&lease));
+        // anything box-exec might have written is no close
+        (&exec).write_all(b"x").unwrap();
+        assert!(!closed(&lease));
+        drop(exec);
+        assert!(closed(&lease));
+    }
+
+    #[test]
+    fn only_a_clean_exit_after_box_exec_let_go_restarts() {
+        // box-exec let go, and Chromium quit as it does when its pipe closes
+        assert_eq!(exit_code(Some(0), None, true, false), PIPE_LET_GO);
+        // a person closed it, or box-exec closed it on purpose: stays closed
+        assert_eq!(exit_code(Some(0), None, false, false), 0);
+        // the launcher was told to stop: as Chromium exited
+        assert_eq!(exit_code(Some(0), None, true, true), 0);
+        // a crash is a crash either way
+        assert_eq!(exit_code(Some(21), None, true, false), 21);
+        assert_eq!(exit_code(None, Some(9), true, false), 137);
+        assert_eq!(exit_code(None, None, false, false), 1);
     }
 }

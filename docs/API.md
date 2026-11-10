@@ -440,7 +440,7 @@ Each screen's Chromium, driven over its DevTools pipe through [ultra-instinct](h
 | 500 | `internal` | `box-exec` asked ultra-instinct for a tool it may not use: a bug in `box-exec` |
 | 502 | `browser_backend` | The browser answered badly, too much, or not at all |
 | 503 | `browser_disabled` | `BOX_BROWSER`, `BOX_CHROME` or `BOX_DESKTOP` is off |
-| 503 | `browser_unavailable` | The screen has no browser `box-exec` can use: no transport yet, or its pipe closed (the next call takes the new Chromium's) |
+| 503 | `browser_unavailable` | The screen has no browser `box-exec` can use: no transport yet, or its pipe closed (the next call takes the new Chromium's; one whose pipe failed while it still ran is started again within a few seconds, and one a person closed stays closed until something opens it) |
 | 504 | `browser_timeout` | The call's budget ran out |
 
 `target_gone` is 409, not 404: the call named nothing wrong, the browser's state moved under it, as with `stale_ref`.
