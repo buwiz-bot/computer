@@ -9,7 +9,7 @@
 # entrypoint so a cold start (no running instance) still exits via the laptop.
 
 # flag_on VALUE [DEFAULT]: the box's on/off rule, the same as the entrypoint's and the daemons'.
-# shellcheck source=box-flag.sh
+# shellcheck source-path=SCRIPTDIR source=box-flag.sh
 . /usr/lib/box/flag.sh
 
 proxy_server=""

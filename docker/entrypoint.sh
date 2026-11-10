@@ -33,7 +33,7 @@ export BOX_EGRESS_PROXY_PORT="${BOX_EGRESS_PROXY_PORT:-${BOX_EGRESS_PROXY_BIND##
 mkdir -p "${BOX_CHROME_PROFILE}"
 
 # flag_on VALUE [DEFAULT]: the box's on/off rule, the same as box-chromium's and the daemons'.
-# shellcheck source=box-flag.sh
+# shellcheck source-path=SCRIPTDIR source=box-flag.sh
 . /usr/lib/box/flag.sh
 
 display_num() {
