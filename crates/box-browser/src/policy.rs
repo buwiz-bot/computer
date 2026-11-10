@@ -156,18 +156,29 @@ fn web_host(url: &str) -> Option<String> {
 /// What a refusal names for an address with no host to match: ultra-instinct's own words
 /// (`refused_place`), so a caller reads one phrasing whichever list refused (`a blob: page`,
 /// `a data: page`, `an https: URL with no host`, `(unknown url)` for a string with no scheme), and
-/// never the address. `refused_place` is given the scheme alone: it names a host whenever it can
-/// read one (`ftp://host/`, `file://host/`), and under box-browser's rule only an `http(s)` address
-/// has a host to match, so for every other one the scheme is what was refused. And only a scheme
-/// a browser has ([`SCHEMES`]) is named: `shop.example:443/cart` or `localhost:8080` start with
-/// what could pass for one, and naming it ("a localhost: page") would mislabel a host.
+/// never the address. For a scheme a browser has ([`SCHEMES`]), `refused_place` is given the
+/// scheme alone: it names a host whenever it can read one (`ftp://host/`, `file://host/`), and
+/// under box-browser's rule only an `http(s)` address has a host to match, so for every other one
+/// the scheme is what was refused. A scheme-less `host:port` (`shop.example:443/cart`,
+/// `localhost:8080`) is named by its host, as `refused_place` names it: that says more than
+/// "(unknown url)", and naming its start as a scheme ("a localhost: page") would mislabel a host.
+/// Any other start before a `:` is "(unknown url)".
 fn no_host(url: &str) -> String {
-    let scheme = url.trim().split_once(':').map_or("", |(scheme, _)| scheme);
+    let url = url.trim();
+    let scheme = url.split_once(':').map_or("", |(scheme, _)| scheme);
     if SCHEMES.iter().any(|s| s.eq_ignore_ascii_case(scheme)) {
-        refused_place(&format!("{scheme}:"))
-    } else {
-        refused_place("")
+        return refused_place(&format!("{scheme}:"));
     }
+    let unknown = refused_place("");
+    if host_of(url).is_none() {
+        // with no authority to read, `refused_place` names a host only for a `host:port`; its
+        // other answers are phrases (`a tel: page`), never a bare name
+        let named = refused_place(url);
+        if named != unknown && !named.contains(char::is_whitespace) {
+            return named;
+        }
+    }
+    unknown
 }
 
 /// The schemes a refusal names. Any other prefix before a `:` is "(unknown url)".
@@ -376,6 +387,8 @@ mod tests {
             ("file:///etc/passwd", "a file: page"),
             ("about:srcdoc", "an about: page"),
             ("https:shop.example", "an https: URL with no host"),
+            // no scheme, so no web address: off the list, named by its host
+            ("shop.example:443/cart", "shop.example"),
             ("//shop.example/", "(unknown url)"),
             ("", "(unknown url)"),
         ] {
@@ -411,6 +424,7 @@ mod tests {
             "chrome://shop.example/",
             "ftp://shop.example/",
             "shop.example",
+            "shop.example:443/cart",
             "//shop.example/",
             "https:shop.example",
             "https:/x://shop.example/",
@@ -465,9 +479,11 @@ mod tests {
             .is_ok());
     }
 
-    /// Where ultra-instinct reads no host either, both name a refused address the same way; where
-    /// it reads one in an address box-browser gives no host to (`ftp://`, `file://`), box-browser
-    /// names the scheme, its rule.
+    /// Where ultra-instinct reads no host either, both name a refused address the same way, a
+    /// scheme-less `host:port` by its host too. They differ by box-browser's rule in two places:
+    /// where ultra-instinct reads a host in an address box-browser gives none to (`ftp://`,
+    /// `file://`, `chrome://`), box-browser names the scheme; and a scheme it doesn't know
+    /// (`tel:`, `mailto:`, an app's own) is "(unknown url)" here, where ultra-instinct names it.
     #[test]
     fn a_hostless_refusal_is_named_as_ultra_instinct_names_it() {
         for url in [
@@ -482,27 +498,44 @@ mod tests {
             "https:///x",
             "HTTP://",
             "HTTPS:host",
+            "http:8080",
             "shop.example",
             "//shop.example/",
             "",
             "  ",
             ":x",
+            // a host and a port, no scheme: both name the host
+            "shop.example:443/cart",
+            "LocalHost:8080",
+            " 10.0.0.1:80",
         ] {
             assert!(host_of(url).is_none(), "{url}");
             assert_eq!(no_host(url), refused_place(url), "{url}");
         }
         assert_eq!(no_host("HTTPS:host"), "an https: URL with no host");
         assert_eq!(no_host("data:text/plain,hi"), "a data: page");
-        // a host and a port is no scheme: ultra-instinct would call it one, box-browser doesn't
-        for url in ["shop.example:443/cart", "localhost:8080", "x-unknown:thing"] {
+        assert_eq!(no_host("shop.example:443/cart"), "shop.example");
+        assert_eq!(no_host("LocalHost:8080"), "localhost");
+        assert_eq!(no_host(" 10.0.0.1:80"), "10.0.0.1");
+        // a scheme box-browser doesn't know is no name it gives
+        for (url, upstream) in [
+            ("x-unknown:thing", "a x-unknown: page"),
+            ("tel:5551234", "a tel: page"),
+            ("mailto:1234@x.example", "a mailto: page"),
+            ("com.example.app:/oauth", "a com.example.app: page"),
+        ] {
+            assert_eq!(refused_place(url), upstream, "{url}");
             assert_eq!(no_host(url), "(unknown url)", "{url}");
         }
+        // a host in an address that isn't a web one is no host to match: the scheme is named
         for (url, ours) in [
             ("ftp://shop.example/", "a ftp: page"),
             ("file://shop.example/etc/passwd", "a file: page"),
             ("chrome://settings/", "a chrome: page"),
+            ("x-unknown://shop.example/", "(unknown url)"),
         ] {
             assert!(host_of(url).is_some(), "{url}");
+            assert_ne!(no_host(url), refused_place(url), "{url}");
             assert_eq!(no_host(url), ours, "{url}");
         }
     }
