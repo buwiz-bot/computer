@@ -36,9 +36,10 @@ impl Opener for PipeOpener {
     }
 }
 
-/// The tools `open` puts on `pipe`, leased. `open` (`seam::open`) drops the pipe when its first call finds it closed. A copy is held across it,
-// so that, as for a drop later, the launcher hears the let-go while box-exec's end is still
-// open, and decides: a browser already gone counts for nothing.
+/// The tools `open` puts on `pipe`, leased. `open` (`seam::open`) drops the pipe when its first
+/// call finds it closed, so a copy is held across it: as for a drop later, the launcher hears the
+/// let-go while box-exec's end is still open, and decides. A browser already gone counts for
+/// nothing.
 fn open_leased(
     pipe: OwnedFd,
     lease: UnixStream,
@@ -102,6 +103,12 @@ impl Drop for Leased {
 /// Says the let-go on `lease` and waits up to `LEASE_ACK_WAIT` for the launcher's answer (or its
 /// end of file), then closes the lease. The caller still holds its end of the pipe, and closes it
 /// after.
+///
+/// It blocks the screen's thread, at most `LEASE_ACK_WAIT` for each half: only on a failure that
+/// takes the screen's browser away anyway (a closed pipe, a first look that found one), where the
+/// next call opens the screen again in any case. A launcher answers as soon as it reads the byte
+/// (it checks two things and writes one), and one that is gone answers with an end of file at
+/// once, so the wait runs out only for a launcher that is stuck.
 fn let_go(mut lease: UnixStream) {
     let _ = lease.set_write_timeout(Some(LEASE_ACK_WAIT));
     if lease.write_all(&[LEASE_LET_GO]).is_ok() {
@@ -217,46 +224,58 @@ mod tests {
         assert_eq!(&buf, b"{}\0");
     }
 
+    /// A screen's tools as the lease tests need them: only a close, and an end of the pipe whose
+    /// state at the drop is kept.
+    struct Pipe {
+        end: Option<UnixStream>,
+        open_at_drop: Arc<AtomicBool>,
+    }
+    impl Tools for Pipe {
+        fn call(&mut self, _: &str, _: &Value) -> Result<Value, ToolFailure> {
+            unreachable!()
+        }
+        fn set_policy(&mut self, _: &PolicyLists) -> Result<(), ToolFailure> {
+            unreachable!()
+        }
+        fn run_goal(&mut self, _: &str, _: &GoalBounds) -> Result<GoalReport, ToolFailure> {
+            unreachable!()
+        }
+        fn tabs(&mut self) -> Result<Vec<TabInfo>, ToolFailure> {
+            unreachable!()
+        }
+        fn open_tab(&mut self, _: &str) -> Result<String, ToolFailure> {
+            unreachable!()
+        }
+        fn switch_tab(&mut self, _: &str) -> Result<(), ToolFailure> {
+            unreachable!()
+        }
+        fn close_tab(&mut self, _: &str) -> Result<(), ToolFailure> {
+            unreachable!()
+        }
+        fn close(&mut self) {
+            self.end = None;
+        }
+    }
+    impl Drop for Pipe {
+        fn drop(&mut self) {
+            self.open_at_drop
+                .store(self.end.is_some(), Ordering::SeqCst);
+        }
+    }
+
+    impl Pipe {
+        fn idle() -> Self {
+            Self {
+                end: None,
+                open_at_drop: Arc::default(),
+            }
+        }
+    }
+
     /// What the launcher sees: a let-go, answered, while the pipe is still open when the tools are
     /// dropped; nothing at all, the lease just closing, after a close for a shutdown.
     #[test]
     fn a_drop_says_let_go_before_the_pipe_goes_and_a_close_says_nothing() {
-        struct Pipe {
-            end: Option<UnixStream>,
-            open_at_drop: Arc<AtomicBool>,
-        }
-        impl Tools for Pipe {
-            fn call(&mut self, _: &str, _: &Value) -> Result<Value, ToolFailure> {
-                unreachable!()
-            }
-            fn set_policy(&mut self, _: &PolicyLists) -> Result<(), ToolFailure> {
-                unreachable!()
-            }
-            fn run_goal(&mut self, _: &str, _: &GoalBounds) -> Result<GoalReport, ToolFailure> {
-                unreachable!()
-            }
-            fn tabs(&mut self) -> Result<Vec<TabInfo>, ToolFailure> {
-                unreachable!()
-            }
-            fn open_tab(&mut self, _: &str) -> Result<String, ToolFailure> {
-                unreachable!()
-            }
-            fn switch_tab(&mut self, _: &str) -> Result<(), ToolFailure> {
-                unreachable!()
-            }
-            fn close_tab(&mut self, _: &str) -> Result<(), ToolFailure> {
-                unreachable!()
-            }
-            fn close(&mut self) {
-                self.end = None;
-            }
-        }
-        impl Drop for Pipe {
-            fn drop(&mut self) {
-                self.open_at_drop
-                    .store(self.end.is_some(), Ordering::SeqCst);
-            }
-        }
         // a launcher that records what came, and when, and answers a let-go
         let launcher = |chromium: UnixStream, conn: UnixStream| {
             std::thread::spawn(move || {
@@ -327,33 +346,9 @@ mod tests {
     /// With no launcher to answer, a drop waits no longer than the bound.
     #[test]
     fn a_let_go_nobody_answers_costs_at_most_its_wait() {
-        struct Gone;
-        impl Tools for Gone {
-            fn call(&mut self, _: &str, _: &Value) -> Result<Value, ToolFailure> {
-                unreachable!()
-            }
-            fn set_policy(&mut self, _: &PolicyLists) -> Result<(), ToolFailure> {
-                unreachable!()
-            }
-            fn run_goal(&mut self, _: &str, _: &GoalBounds) -> Result<GoalReport, ToolFailure> {
-                unreachable!()
-            }
-            fn tabs(&mut self) -> Result<Vec<TabInfo>, ToolFailure> {
-                unreachable!()
-            }
-            fn open_tab(&mut self, _: &str) -> Result<String, ToolFailure> {
-                unreachable!()
-            }
-            fn switch_tab(&mut self, _: &str) -> Result<(), ToolFailure> {
-                unreachable!()
-            }
-            fn close_tab(&mut self, _: &str) -> Result<(), ToolFailure> {
-                unreachable!()
-            }
-        }
         let (lease, silent) = UnixStream::pair().unwrap();
         let started = std::time::Instant::now();
-        drop(Leased::new(lease, Box::new(Gone)));
+        drop(Leased::new(lease, Box::new(Pipe::idle())));
         let took = started.elapsed();
         assert!(took >= LEASE_ACK_WAIT - Duration::from_millis(50) && took < LEASE_ACK_WAIT * 2);
         drop(silent);
@@ -361,7 +356,7 @@ mod tests {
         let (lease, gone) = UnixStream::pair().unwrap();
         drop(gone);
         let started = std::time::Instant::now();
-        drop(Leased::new(lease, Box::new(Gone)));
+        drop(Leased::new(lease, Box::new(Pipe::idle())));
         assert!(started.elapsed() < Duration::from_millis(200));
     }
 
