@@ -111,6 +111,8 @@ COPY --from=builder --chmod=0755 /src/target/release/box-chrome-pipe /usr/local/
 COPY docker/app.buwiz.active_tab.json /etc/chromium/native-messaging-hosts/app.buwiz.active_tab.json
 COPY docker/active-tab /opt/box/active-tab
 COPY --from=builder --chmod=0755 /src/target/release/libbox-shm-private.so /usr/lib/box/libbox-shm-private.so
+# The on/off rule for a setting that entrypoint.sh and box-chromium source: read, not run.
+COPY --chmod=0644 docker/box-flag.sh /usr/lib/box/flag.sh
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY docker/box-prepare /usr/local/bin/box-prepare
 COPY docker/box-reset-desktop.sh /usr/local/bin/box-reset-desktop
