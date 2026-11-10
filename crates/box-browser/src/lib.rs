@@ -108,9 +108,7 @@ pub struct Browsers {
     opener: Arc<dyn Opener>,
     threads: Arc<Mutex<HashMap<String, SyncSender<Job>>>>,
     state_root: PathBuf,
-    /// `Some` when the main screen is closed to the layer (`BOX_CHROME=0`): its slot, `None` in it
-    /// when that can't be read, which closes every screen rather than guess.
-    main_closed: Option<Option<u16>>,
+    main: MainScreen,
 }
 
 impl std::fmt::Debug for Browsers {
@@ -119,9 +117,18 @@ impl std::fmt::Debug for Browsers {
             .field("enabled", &self.enabled)
             .field("confirm_press", &self.rules.globs())
             .field("state_root", &self.state_root)
-            .field("main_closed", &self.main_closed)
+            .field("main", &self.main)
             .finish()
     }
+}
+
+/// Whether the main screen is served by the layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MainScreen {
+    Open,
+    /// `BOX_CHROME=0`: closed, at this slot; `None` when the slot can't be read, which closes
+    /// every screen rather than guess which is the main one.
+    Closed(Option<u16>),
 }
 
 /// Where saved logins go: a folder per screen inside, `box-exec`'s alone (`docker/box-prepare`).
@@ -144,23 +151,28 @@ impl Browsers {
             Arc::new(pipe::PipeOpener),
             state_root,
         )
-        .with_main_closed((!box_common::env_bool("BOX_CHROME", true)).then(box_desktop::main_slot))
+        .with_main(if box_common::env_bool("BOX_CHROME", true) {
+            MainScreen::Open
+        } else {
+            MainScreen::Closed(box_desktop::main_slot())
+        })
     }
 
-    /// Closes the main screen, slot `main` (`None`: unknown, so every screen), to the layer, as
-    /// `BOX_CHROME=0` does; `None` leaves it open.
-    pub fn with_main_closed(mut self, main: Option<Option<u16>>) -> Self {
-        self.main_closed = main;
+    /// The main screen open or closed to the layer, as `BOX_CHROME` says.
+    pub(crate) fn with_main(mut self, main: MainScreen) -> Self {
+        self.main = main;
         self
     }
 
     /// Whether `display` is served: the layer is on, and it isn't the main screen while that's closed.
     pub fn serves(&self, display: &str) -> bool {
         self.enabled
-            && match self.main_closed {
-                None => true,
-                Some(None) => false,
-                Some(Some(main)) => box_desktop::display_number(display) != Some(main),
+            && match self.main {
+                MainScreen::Open => true,
+                MainScreen::Closed(None) => false,
+                MainScreen::Closed(Some(main)) => {
+                    box_desktop::display_number(display) != Some(main)
+                }
             }
     }
 
@@ -180,7 +192,7 @@ impl Browsers {
             opener,
             threads: Arc::new(Mutex::new(HashMap::new())),
             state_root,
-            main_closed: None,
+            main: MainScreen::Open,
         }
     }
 
