@@ -186,16 +186,15 @@ impl Screen {
         };
         let answer = self.tools()?.call(name, &args);
         let answer = answer.map_err(|f| self.failed(f, target))?;
-        // a shot is its base64, already a string: measured as it is, not written out again
-        let size = match answer.get("base64").and_then(Value::as_str) {
-            Some(data) if name == "browser_screenshot" => data.len(),
-            _ => serde_json::to_vec(&answer)
-                .map(|v| v.len())
-                .unwrap_or(usize::MAX),
+        // a shot is its base64, already a string: measured as it is. The rest is counted as it
+        // would be written, without writing it, and counting stops once past the cap.
+        let within = match answer.get("base64").and_then(Value::as_str) {
+            Some(data) if name == "browser_screenshot" => data.len() <= cap,
+            _ => box_common::json::len_within(&answer, cap).is_some(),
         };
-        if size > cap {
+        if !within {
             return Err(BrowserError::Backend(format!(
-                "the browser's answer to {name} is {size} bytes, more than {cap}"
+                "the browser's answer to {name} is more than {cap} bytes"
             )));
         }
         Ok(answer)
