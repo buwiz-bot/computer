@@ -1143,6 +1143,93 @@ async fn ultra_instinct_s_own_answer_is_read() {
     assert_eq!(email.value, None);
 }
 
+/// ultra-instinct's real `Server` with `values: true`, on a replayed page whose fields hold text:
+/// what box-browser shows of each.
+#[tokio::test]
+async fn ultra_instinct_s_values_are_read_and_held_back() {
+    use ultra_instinct_cdp::script::{Control, PageSpec, ScriptBuilder};
+    use ultra_instinct_cdp::{CdpTransport, ReplayTransport};
+
+    struct Replay;
+    impl Opener for Replay {
+        fn open(&self, _display: &str) -> Result<Box<dyn Tools>, BrowserError> {
+            let select = Control {
+                tag: "SELECT",
+                role: "combobox",
+                ..Control::combobox(13, 103, "Country", (20.0, 140.0, 200.0, 28.0))
+            };
+            let checkbox = Control {
+                tag: "INPUT",
+                role: "checkbox",
+                ..Control::button(14, 104, "Send me news", (20.0, 180.0, 20.0, 20.0))
+            };
+            let mut page = PageSpec::of(
+                &[
+                    Control::text_field(10, 100, "Email", (20.0, 20.0, 300.0, 28.0)),
+                    Control::text_field(11, 101, "Password", (20.0, 60.0, 300.0, 28.0)),
+                    Control::text_field(12, 102, "Card", (20.0, 100.0, 300.0, 28.0)),
+                    select,
+                    checkbox,
+                ],
+                "https://shop.example/join",
+                "Join",
+            );
+            let states = [
+                json!({"it": "email", "v": "kid@example.com"}),
+                json!({"it": "password", "v": "hunter2"}),
+                json!({"it": "text", "v": "4111111111111111"}),
+                json!({"o": ["Canada", "France"], "sel": "Canada"}),
+                json!({"it": "checkbox", "c": true}),
+            ];
+            for (node, state) in page.dom.iter_mut().zip(states) {
+                *node = node.clone().with_compact_state(state);
+            }
+            page.dom[1] = page.dom[1].clone().with_attr("type", "password");
+            page.dom[4] = page.dom[4].clone().with_attr("type", "checkbox");
+            let script = ScriptBuilder::new().observe_compact(&page).to_json();
+            let server = ultra_instinct_mcp::Server::with_connector(move |_url| {
+                ReplayTransport::parse(&script).map(|t| Box::new(t) as Box<dyn CdpTransport>)
+            });
+            Ok(Box::new(seam::ServerTools::new(server)))
+        }
+    }
+    let browsers = Browsers::new(
+        true,
+        Rules::default(),
+        Arc::new(Replay),
+        std::env::temp_dir(),
+    );
+    let snap = browsers.snap(":1", with_values()).await.unwrap();
+    let by = |label: &str| {
+        snap.elements
+            .iter()
+            .find(|e| e.label == label)
+            .unwrap_or_else(|| panic!("no {label}: {snap:?}"))
+    };
+    assert_eq!(
+        by("Email").value.as_deref(),
+        Some("kid@example.com"),
+        "{snap:?}"
+    );
+    // At this pin ultra-instinct reads a native select as a combobox, which takes typed text and
+    // has no input type or text value: it fails closed, sensitive, and sends no option. Were it
+    // to send one, `may_return_selected` lets it through.
+    let country = by("Country");
+    assert!(country.sensitive, "{snap:?}");
+    assert_eq!(country.value, None);
+    assert_eq!(by("Send me news").checked, Some(true), "{snap:?}");
+    for secret in ["Password", "Card"] {
+        let e = by(secret);
+        assert!(e.sensitive, "{secret}: {snap:?}");
+        assert_eq!((e.value.as_deref(), e.checked), (None, None), "{secret}");
+    }
+    let wire = serde_json::to_string(&snap).unwrap();
+    assert!(
+        !wire.contains("hunter2") && !wire.contains("4111111111111111"),
+        "{wire}"
+    );
+}
+
 #[test]
 fn a_jpegs_size_is_read_from_its_frame_header() {
     // SOI, an APP0 of 16 bytes, then a baseline SOF0 of 640x480

@@ -97,10 +97,12 @@ pub fn may_return_value(role: &str, input_type: Option<&str>, sensitive: bool) -
         })
 }
 
-/// Whether a select's chosen option may be returned. ultra-instinct gives a `<select>` no input
-/// type, so [`may_return_value`] would never let it through: an element with no input type that
-/// offers `select` and takes no typed text (no `type` action) is a choice among the page's own
-/// options, not a field anyone typed into. A sensitive one still shows nothing.
+/// Whether a select's chosen option may be returned. ultra-instinct reads an input type only for
+/// an `<input>`, so a `<select>` has none and [`may_return_value`] would never let it through.
+/// Of the elements with no input type, ultra-instinct reads a value only for a `<textarea>` (no
+/// `select` action) and a `<select>` (its chosen option, and it offers `select`; Chromium calls
+/// it a combobox, which adds `type`): so an element with no input type that offers `select` is
+/// a choice among the page's own options. A sensitive one still shows nothing.
 pub fn may_return_selected(
     role: &str,
     input_type: Option<&str>,
@@ -113,7 +115,6 @@ pub fn may_return_selected(
         && !role.eq_ignore_ascii_case("unknown")
         && input_type.is_none()
         && actions.iter().any(|a| a.eq_ignore_ascii_case("select"))
-        && !actions.iter().any(|a| a.eq_ignore_ascii_case("type"))
 }
 
 /// A `browser_get_state` `format: json` answer. Only with `values` are `value`, `checked` and
@@ -331,7 +332,7 @@ mod tests {
     }
 
     #[test]
-    fn a_select_s_option_is_returned_only_when_nothing_can_be_typed_into_it() {
+    fn a_select_s_option_is_returned_for_an_untyped_element_that_offers_select() {
         assert!(may_return_selected(
             "generic",
             None,
@@ -344,11 +345,18 @@ mod tests {
             &["focus", "click", "select"],
             true
         ));
-        // a combobox takes typed text: its value is a text field's, under that rule
-        assert!(!may_return_selected(
+        // a native select, as Chromium's accessibility tree has it
+        assert!(may_return_selected(
             "combobox",
             None,
-            &["click", "type", "select"],
+            &["focus", "click", "select", "type"],
+            false
+        ));
+        // a textarea: no input type, and nothing to select
+        assert!(!may_return_selected(
+            "text_field",
+            None,
+            &["click", "focus", "type"],
             false
         ));
         assert!(!may_return_selected(

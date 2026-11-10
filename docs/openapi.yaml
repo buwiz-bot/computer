@@ -393,7 +393,7 @@ components:
           description: |
             Only with `values` and never on a sensitive element: a field's text when its input type
             is known and isn't password or hidden, or a select's chosen option (an element with no
-            input type that offers `select` and takes no typed text).
+            input type that offers `select`).
         value_truncated: { type: boolean, description: "`value` was cut (at 400 characters here, or by the browser side)" }
         checked: { type: boolean, description: "Only with `values`, never on a sensitive element: a checkbox's or radio's state, or aria-checked" }
         expanded: { type: boolean, description: "Only with `values`, never on a sensitive element: aria-expanded" }
