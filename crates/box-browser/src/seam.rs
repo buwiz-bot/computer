@@ -141,10 +141,14 @@ pub struct PolicyLists {
 }
 
 impl PolicyLists {
+    /// The policy ultra-instinct's guard holds. Under an allow-list it refuses every `blob:` page,
+    /// as box-browser's own list does: so a page a goal run reaches on its own mid-run is refused
+    /// by the same rule as one an `act` starts on. With no list it changes nothing.
     pub fn to_policy(&self) -> Result<Policy, ToolFailure> {
         let mut policy =
             Policy::from_lists(&self.allow_domains.join(","), &self.confirm_press.join(","))
-                .map_err(|err| ToolFailure::Invalid(err.to_string()))?;
+                .map_err(|err| ToolFailure::Invalid(err.to_string()))?
+                .with_refuse_blob(true);
         for label in &self.confirmed {
             policy = policy.with_confirmed(label.clone());
         }
@@ -492,24 +496,38 @@ mod tests {
         );
     }
 
-    /// At this pin ultra-instinct's own allow-list lets a `blob:` page through by its origin, where
-    /// box-browser's (`policy::AllowList::check`, run before any call that can give input) refuses
-    /// it. Should ultra-instinct come to refuse it too, this says so at the next bump.
+    /// ultra-instinct's own allow-list, by default, lets a `blob:` page through by its origin; the
+    /// policy box-browser gives it refuses every one under a list, as box-browser's own list
+    /// (`policy::AllowList::check`) does. Should upstream's default or its switch change, this
+    /// says so at the next bump.
     #[test]
-    fn ultra_instinct_s_list_passes_a_blob_on_a_listed_origin_and_box_browser_s_does_not() {
+    fn the_policy_box_browser_builds_refuses_a_blob_as_its_own_list_does() {
         let lists = PolicyLists {
             allow_domains: vec!["shop.example".into()],
             ..PolicyLists::default()
         };
         let blob = "blob:https://shop.example/0b7c6a3e";
-        assert!(lists.to_policy().unwrap().check_url(blob).is_ok());
+        let upstream_default =
+            Policy::from_lists(&lists.allow_domains.join(","), "").expect("the list parses");
+        assert!(upstream_default.check_url(blob).is_ok());
+        let built = lists.to_policy().unwrap();
+        assert!(built.refuse_blob);
+        assert!(built.check_url(blob).is_err());
         let ours = crate::policy::AllowList::parse(Some(lists.allow_domains.as_slice())).unwrap();
         assert!(ours.check(Some(blob)).is_err());
-        // what both refuse
+        // what all three refuse, and what all three let through
         for url in ["data:text/html,hi", "javascript:1", "file:///etc/passwd"] {
-            assert!(lists.to_policy().unwrap().check_url(url).is_err(), "{url}");
+            assert!(upstream_default.check_url(url).is_err(), "{url}");
+            assert!(built.check_url(url).is_err(), "{url}");
             assert!(ours.check(Some(url)).is_err(), "{url}");
         }
+        for url in ["https://shop.example/cart", "about:blank"] {
+            assert!(built.check_url(url).is_ok(), "{url}");
+            assert!(ours.check(Some(url)).is_ok(), "{url}");
+        }
+        // with no list, the switch lets everything through, as box-browser's empty list does
+        let open = PolicyLists::default().to_policy().unwrap();
+        assert!(open.check_url(blob).is_ok());
     }
 
     #[test]

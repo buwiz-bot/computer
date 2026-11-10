@@ -365,8 +365,8 @@ pub const MAX_GOAL_CHARS: usize = 2000;
 pub struct SnapRequest {
     /// The most elements returned (the page's first ones in reading order).
     pub max_nodes: Option<usize>,
-    /// Ask for what the fields hold: `value`, `checked`, `expanded` on the elements that may show
-    /// them (never a sensitive one). Off, a snap carries none of them.
+    /// Ask for what the fields hold: `value`, `checked`, `expanded`, `selected`, `current` on the
+    /// elements that may show them (never a sensitive one). Off, a snap carries none of them.
     #[serde(default)]
     pub values: bool,
     /// The sites whose fields may be read: `values` needs it, and a page off it shows none. A
@@ -429,6 +429,12 @@ pub struct Element {
     /// With `values` asked for: an `aria-expanded` element's state.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expanded: Option<bool>,
+    /// With `values` asked for: an `aria-selected` element's state (a selected tab, option or row).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected: Option<bool>,
+    /// With `values` asked for: `aria-current` when the page sets it (`page`, `step`, `date`, …).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]

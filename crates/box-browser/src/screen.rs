@@ -12,7 +12,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use base64::Engine as _;
 use serde_json::{json, Value};
 
-use crate::policy::{AllowList, Confirms, Rules};
+use crate::policy::{same_label, AllowList, Confirms, Rules};
 use crate::seam::{BlockedBy, GoalBounds, GoalEnd, PolicyLists, ToolFailure, Tools};
 use crate::shape::{self, Seen};
 use crate::{
@@ -243,6 +243,8 @@ impl Screen {
                 el.value_truncated = false;
                 el.checked = None;
                 el.expanded = None;
+                el.selected = None;
+                el.current = None;
             }
         }
         let kept: Vec<&Seen> = page.elements.iter().take(limits.max_nodes).collect();
@@ -261,6 +263,8 @@ impl Screen {
                 value_truncated: e.value_truncated,
                 checked: e.checked,
                 expanded: e.expanded,
+                selected: e.selected,
+                current: e.current.clone(),
             })
             .collect();
         self.latest = Some(Snapshot {
@@ -333,7 +337,8 @@ impl Screen {
             })?;
         // The same node may now be another control: a list that re-rendered reuses its rows.
         // The caller chose by the label it saw, so a press on another label is no press of its.
-        if here.label != snapped_label {
+        // Labels compare as ultra-instinct compares them: a zero-width character is no change.
+        if !same_label(&here.label, &snapped_label) {
             self.latest = None;
             return Err(BrowserError::Stale(format!(
                 "@e{n} was {:?} and is now {:?}: snap again",
@@ -346,8 +351,11 @@ impl Screen {
         let token = req.confirm.as_deref();
         let redeemed = token.and_then(|token| self.confirms.peek(token, Some(&region)));
         match (self.gate(req, &here.label, &now), redeemed) {
-            // A token confirms the label it was given for, and nothing it has turned into.
-            (Some(label), Some(approved)) if approved == label => confirmed.push(approved),
+            // A token confirms the label it was given for, and nothing it has turned into (a
+            // zero-width character in either is no other label: ultra-instinct folds it away too).
+            (Some(label), Some(approved)) if same_label(&approved, &label) => {
+                confirmed.push(approved)
+            }
             // a token for another label stays as it was: it confirms only that label, here
             (Some(label), _) => {
                 let token = self.confirms.issue(&label, Some(&region))?;
@@ -665,9 +673,10 @@ impl Screen {
                 "`confirm` is not a token this screen gave, or it was used or is old".into(),
             ));
         }
-        // ultra-instinct's own list lets a `blob:` page through by its origin, and box-browser's
-        // doesn't: the page a run starts on is checked here, as an act's is. (A page the run
-        // itself goes to is ultra-instinct's to check, at its next press.)
+        // The page a run starts on is checked here, as an act's is, so a run on a page off the
+        // list is refused before anything runs. A page the run itself goes to is ultra-instinct's
+        // to check, at its next press, under the same rule: the policy box-browser gives it
+        // refuses every `blob:` page too (`seam::PolicyLists::to_policy`).
         if !allow.raw().is_empty() {
             let now = self.look(false)?;
             allow.check(now.url.as_deref())?;

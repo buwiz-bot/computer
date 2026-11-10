@@ -310,7 +310,7 @@ export type BrowserElement = {
   label: string;
   actions: string[];
   rect: BrowserRect;
-  /** A password field, or one that may be: its text, `checked` and `expanded` never come. */
+  /** A password field, or one that may be: its text, `checked`, `expanded`, `selected` and `current` never come. */
   sensitive?: boolean;
   /**
    * Only with `values: true`, never on a sensitive element: a field's text when its input type is
@@ -323,6 +323,10 @@ export type BrowserElement = {
   checked?: boolean;
   /** Only with `values: true`: `aria-expanded`. */
   expanded?: boolean;
+  /** Only with `values: true`: `aria-selected`, a selected tab, option or row. */
+  selected?: boolean;
+  /** Only with `values: true`: `aria-current` when it isn't `false` (`page`, `step`, `date`, …), lowercased. */
+  current?: string;
 };
 
 /** `POST /v1/browser/snap`. `{}` is the first 200 elements with no values. */
@@ -330,7 +334,7 @@ export type BrowserSnapRequest = {
   /** 1–1000 (default 200). */
   max_nodes?: number;
   /**
-   * Also what the fields hold (`value`, `checked`, `expanded`), never a sensitive field's. Default
+   * Also what the fields hold (`value`, `checked`, `expanded`, `selected`, `current`), never a sensitive field's. Default
    * false. A field counts as sensitive by its type or its label: text in a plainly typed field
    * whose label names no secret (a one-time code in a box labelled "Code 1", an account number)
    * does come, so ask only on pages whose fields the caller may read.

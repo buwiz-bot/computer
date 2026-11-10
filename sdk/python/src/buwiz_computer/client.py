@@ -340,8 +340,9 @@ class BuwizComputer:
         """The current tab's controls, each with an ``@eN`` ref good for this snapshot alone.
 
         ``fields``: ``max_nodes`` (1 to 1000, default 200). ``values=True`` also asks for what the
-        fields hold: elements may carry ``value`` (``value_truncated`` when cut), ``checked`` and
-        ``expanded``. A password's or any other sensitive field's never come; a field is sensitive
+        fields hold: elements may carry ``value`` (``value_truncated`` when cut), ``checked``,
+        ``expanded``, ``selected`` (``aria-selected``) and ``current`` (``aria-current``, such as
+        ``"page"``). A password's or any other sensitive field's never come; a field is sensitive
         by its type or label, so text in a plain field whose label names no secret does come.
         ``values`` needs ``allow_domains=[...]`` (in ``fields``), the sites whose fields may be
         read, else 400 ``invalid_request``; a page off the list shows none.

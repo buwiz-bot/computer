@@ -76,7 +76,14 @@ impl Tools for Fake {
                 if args.get("values") != Some(&json!(true)) {
                     for el in &mut elements {
                         let el = el.as_object_mut().unwrap();
-                        for key in ["value", "value_truncated", "checked", "expanded"] {
+                        for key in [
+                            "value",
+                            "value_truncated",
+                            "checked",
+                            "expanded",
+                            "selected_item",
+                            "aria_current",
+                        ] {
                             el.remove(key);
                         }
                     }
@@ -392,6 +399,10 @@ async fn a_snap_carries_no_values_unless_asked() {
             .push(json!({"index": 6, "region": "n60", "role": "checkbox",
             "label": "Gift wrap", "input_type": "checkbox", "checked": true,
             "actions": ["toggle"]}));
+        w.elements.push(
+            json!({"index": 7, "region": "n70", "role": "tab", "label": "Reviews",
+            "selected_item": true, "aria_current": "page", "actions": ["click"]}),
+        );
     }
     let snap = h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
     assert_eq!(
@@ -399,7 +410,14 @@ async fn a_snap_carries_no_values_unless_asked() {
         json!({"format": "json"})
     );
     let wire = serde_json::to_string(&snap).unwrap();
-    for absent in ["kid@example.com", "\"value", "checked", "expanded"] {
+    for absent in [
+        "kid@example.com",
+        "\"value",
+        "checked",
+        "expanded",
+        "selected",
+        "current",
+    ] {
         assert!(!wire.contains(absent), "{absent}: {wire}");
     }
     assert!(
@@ -434,7 +452,14 @@ async fn values_come_when_asked_and_never_for_a_password_or_a_sensitive_field() 
                    "value": "Large", "actions": ["focus", "click", "select"]}),
             json!({"index": 11, "region": "n110", "role": "textbox", "label": "Untyped",
                    "value": "no type, no text", "actions": ["type"]}),
+            json!({"index": 12, "region": "n120", "role": "tab", "label": "Reviews",
+                   "selected_item": true, "actions": ["click"]}),
+            json!({"index": 13, "region": "n130", "role": "link", "label": "Cart",
+                   "selected_item": false, "aria_current": "page", "actions": ["click"]}),
         ]);
+        // a sensitive field says nothing of these either
+        w.elements[6]["selected_item"] = json!(true);
+        w.elements[6]["aria_current"] = json!("step");
     }
     let snap = h.browsers.snap(":1", with_values()).await.unwrap();
     assert_eq!(
@@ -460,7 +485,16 @@ async fn values_come_when_asked_and_never_for_a_password_or_a_sensitive_field() 
             (None, None, None, false),
             "{secret}"
         );
+        assert_eq!((e.selected, e.current.as_deref()), (None, None), "{secret}");
     }
+    assert_eq!(
+        (by("Reviews").selected, by("Reviews").current.as_deref()),
+        (Some(true), None)
+    );
+    assert_eq!(
+        (by("Cart").selected, by("Cart").current.as_deref()),
+        (Some(false), Some("page"))
+    );
     let wire = serde_json::to_string(&snap).unwrap();
     for secret in ["hunter2", "4111111111111111", "csrf-s3cret"] {
         assert!(!wire.contains(secret), "{secret}: {wire}");
@@ -471,6 +505,19 @@ async fn values_come_when_asked_and_never_for_a_password_or_a_sensitive_field() 
         .contains("@e2 textbox \"Email\" value=\"kid@example.com\"\n"));
     assert!(snap.text.contains("@e3 textbox \"Password\" [sensitive]\n"));
     assert!(snap.text.contains("@e6 checkbox \"Gift wrap\" checked\n"));
+    assert!(
+        snap.text.contains("@e12 tab \"Reviews\" selected\n"),
+        "{}",
+        snap.text
+    );
+    assert!(
+        snap.text.contains("@e13 link \"Cart\" current=\"page\"\n"),
+        "{}",
+        snap.text
+    );
+    let reviews = &serde_json::to_value(&snap).unwrap()["elements"][11];
+    assert_eq!(reviews["selected"], json!(true));
+    assert!(reviews.get("current").is_none() && reviews.get("selected_item").is_none());
 
     // a press's own look of the page asks for nothing it holds
     h.browsers
@@ -871,8 +918,9 @@ async fn goal_runs_end_done_blocked_abstained_or_failed() {
     assert!(h.browsers.run_goal(":1", too_long).await.is_err());
 }
 
-/// ultra-instinct's list lets a `blob:` page on a listed origin through; a run under a list
-/// starting on one is refused by box-browser before ultra-instinct is asked.
+/// A run under a list starting on a `blob:` page is refused by box-browser before ultra-instinct is
+/// asked, as an act on one is. One the run reaches on its own is refused by ultra-instinct's guard,
+/// under the policy box-browser gives it (`seam`'s test).
 #[tokio::test]
 async fn a_goal_run_on_a_blob_page_is_refused_under_a_list() {
     let h = harness();
@@ -1205,6 +1253,7 @@ async fn ultra_instinct_s_values_are_read_and_held_back() {
                     Control::text_field(12, 102, "Card", (20.0, 100.0, 300.0, 28.0)),
                     select,
                     checkbox,
+                    Control::link(15, 105, "Reviews", (20.0, 220.0, 80.0, 20.0)),
                 ],
                 "https://shop.example/join",
                 "Join",
@@ -1215,6 +1264,7 @@ async fn ultra_instinct_s_values_are_read_and_held_back() {
                 json!({"it": "text", "v": "4111111111111111"}),
                 json!({"o": ["Canada", "France"], "sel": "Canada"}),
                 json!({"it": "checkbox", "c": true}),
+                json!({"as": true, "ac": "page"}),
             ];
             for (node, state) in page.dom.iter_mut().zip(states) {
                 *node = node.clone().with_compact_state(state);
@@ -1254,10 +1304,24 @@ async fn ultra_instinct_s_values_are_read_and_held_back() {
     assert!(country.sensitive, "{snap:?}");
     assert_eq!(country.value, None);
     assert_eq!(by("Send me news").checked, Some(true), "{snap:?}");
+    let reviews = by("Reviews");
+    assert!(!reviews.sensitive, "{snap:?}");
+    assert_eq!(
+        (reviews.selected, reviews.current.as_deref()),
+        (Some(true), Some("page")),
+        "{snap:?}"
+    );
+    assert!(
+        snap.text
+            .contains("\"Reviews\" selected current=\"page\"\n"),
+        "{}",
+        snap.text
+    );
     for secret in ["Password", "Card"] {
         let e = by(secret);
         assert!(e.sensitive, "{secret}: {snap:?}");
         assert_eq!((e.value.as_deref(), e.checked), (None, None), "{secret}");
+        assert_eq!((e.selected, e.current.as_deref()), (None, None), "{secret}");
     }
     let wire = serde_json::to_string(&snap).unwrap();
     assert!(
@@ -1621,7 +1685,7 @@ async fn a_page_off_the_list_shows_its_controls_and_none_of_what_they_hold() {
     h.world.lock().unwrap().elements.push(
         json!({"index": 6, "region": "n60", "role": "checkbox", "label": "Gift wrap",
                "input_type": "checkbox", "checked": true, "expanded": false,
-               "actions": ["toggle"]}),
+               "selected_item": true, "aria_current": "page", "actions": ["toggle"]}),
     );
     let asked = |list: &str| SnapRequest {
         values: true,
@@ -1632,13 +1696,20 @@ async fn a_page_off_the_list_shows_its_controls_and_none_of_what_they_hold() {
     let on = h.browsers.snap(":1", asked("shop.example")).await.unwrap();
     assert_eq!(on.elements[1].value.as_deref(), Some("kid@example.com"));
     assert_eq!(on.elements[5].checked, Some(true));
+    assert_eq!(on.elements[5].selected, Some(true));
+    assert_eq!(on.elements[5].current.as_deref(), Some("page"));
     // another Bot's list doesn't hold it: the controls come, and nothing they hold
     let off = h.browsers.snap(":1", asked("bank.example")).await.unwrap();
     assert_eq!(off.elements.len(), on.elements.len());
     assert_eq!(off.elements[1].label, "Email");
     for e in &off.elements {
         assert!(
-            e.value.is_none() && !e.value_truncated && e.checked.is_none() && e.expanded.is_none(),
+            e.value.is_none()
+                && !e.value_truncated
+                && e.checked.is_none()
+                && e.expanded.is_none()
+                && e.selected.is_none()
+                && e.current.is_none(),
             "{e:?}"
         );
     }
@@ -1661,4 +1732,105 @@ async fn a_page_off_the_list_shows_its_controls_and_none_of_what_they_hold() {
         h.browsers.snap(":1", asked("not a host")).await,
         Err(BrowserError::Invalid(_))
     ));
+}
+
+/// A label with a character that renders as nothing is the same label to box-browser as to
+/// ultra-instinct's guard: the press is asked about, and its token works, whichever look carried
+/// the character.
+#[tokio::test]
+async fn a_zero_width_character_neither_slips_past_a_confirm_nor_spoils_its_token() {
+    let h = harness();
+    h.world.lock().unwrap().elements[3] = button(4, "n40", "Pa\u{200B}y $18");
+    h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    let Err(BrowserError::ConfirmRequired { token, .. }) = h
+        .browsers
+        .act(":1", act("@e4", ActAction::Click, None))
+        .await
+    else {
+        panic!("a Pay click with a zero-width space went through");
+    };
+    assert!(calls_of(&h, "browser_click").is_empty());
+    // the page drops the character before the press: the same label, so the ref and the token
+    // both still hold
+    h.world.lock().unwrap().elements[3] = button(4, "n40", "Pay $18");
+    let mut approved = act("@e4", ActAction::Click, None);
+    approved.confirm = Some(token);
+    h.browsers.act(":1", approved).await.unwrap();
+    assert_eq!(calls_of(&h, "browser_click").len(), 1);
+
+    // snapped clean, pressed with a soft hyphen in it: asked about, not stale, not pressed
+    h.browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    h.world.lock().unwrap().elements[3] = button(4, "n40", "P\u{AD}ay $18");
+    let asked = h
+        .browsers
+        .act(":1", act("@e4", ActAction::Click, None))
+        .await;
+    assert!(
+        matches!(asked, Err(BrowserError::ConfirmRequired { .. })),
+        "{asked:?}"
+    );
+    assert_eq!(calls_of(&h, "browser_click").len(), 1);
+}
+
+/// ultra-instinct's real `Server`, as `seam::open` builds it, on a replayed page whose Pay button's
+/// label carries a zero-width space: the label comes clean from the source, the click is asked
+/// about, and the token lets that click through ultra-instinct's own guard as well.
+#[tokio::test]
+async fn ultra_instinct_s_labels_come_clean_and_a_zero_width_pay_is_confirmed() {
+    use ultra_instinct_cdp::script::{Control, PageSpec, ScriptBuilder};
+    use ultra_instinct_cdp::{CdpTransport, ReplayTransport};
+
+    struct Replay;
+    impl Opener for Replay {
+        fn open(&self, _display: &str) -> Result<Box<dyn Tools>, BrowserError> {
+            let page = PageSpec::of(
+                &[
+                    Control::text_field(20, 200, "Email", (400.0, 200.0, 200.0, 32.0)),
+                    Control::button(10, 100, "Pa\u{200B}y $18", (400.0, 300.0, 80.0, 32.0)),
+                ],
+                "https://shop.example/cart",
+                "Cart",
+            );
+            // the snap; the first act's look, refused by box-browser before any press; the second
+            // act's look, then the press's two looks (its gate and its ticket) and the press
+            let script = ScriptBuilder::new()
+                .observe_compact(&page)
+                .observe_compact(&page)
+                .observe_compact(&page)
+                .observe_compact(&page)
+                .observe_compact(&page)
+                .pointer_click()
+                .to_json();
+            let server = ultra_instinct_mcp::Server::with_connector(move |_url| {
+                ReplayTransport::parse(&script).map(|t| Box::new(t) as Box<dyn CdpTransport>)
+            })
+            .require_snapshot(true)
+            .with_tool_allowlist(seam::ALLOWED);
+            Ok(Box::new(seam::ServerTools::new(server)))
+        }
+    }
+    let browsers = Browsers::new(
+        true,
+        Rules::default(),
+        Arc::new(Replay),
+        std::env::temp_dir(),
+    );
+    let snap = browsers.snap(":1", SnapRequest::default()).await.unwrap();
+    let pay = snap
+        .elements
+        .iter()
+        .find(|e| e.role == "button")
+        .unwrap_or_else(|| panic!("no button: {snap:?}"));
+    assert_eq!(pay.label, "Pay $18", "{snap:?}");
+    let pay = pay.reference.clone();
+    let Err(BrowserError::ConfirmRequired { label, token }) =
+        browsers.act(":1", act(&pay, ActAction::Click, None)).await
+    else {
+        panic!("the Pay click went through unasked");
+    };
+    assert_eq!(label, "Pay $18");
+    let mut approved = act(&pay, ActAction::Click, None);
+    approved.confirm = Some(token);
+    let done = browsers.act(":1", approved).await;
+    assert!(matches!(&done, Ok(d) if d.ok), "{done:?}");
 }

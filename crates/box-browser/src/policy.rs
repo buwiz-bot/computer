@@ -126,10 +126,7 @@ impl AllowList {
         };
         match web_host(url) {
             None if is_blank(url) => Ok(()),
-            None => Err(BrowserError::DomainNotAllowed(format!(
-                "{}: (no host)",
-                url.split(':').next().unwrap_or_default().trim()
-            ))),
+            None => Err(BrowserError::DomainNotAllowed(no_host(url))),
             Some(host) if self.hosts.iter().any(|p| p.matches(&host)) => Ok(()),
             Some(host) => Err(BrowserError::DomainNotAllowed(host)),
         }
@@ -147,6 +144,32 @@ fn web_host(url: &str) -> Option<String> {
         return None;
     }
     host_of(url)
+}
+
+/// What a refusal names for an address with no host to match, in ultra-instinct's words
+/// (`refused_place`), so a caller reads one phrasing whichever list refused: `a blob: page`,
+/// `a data: page`, `an https: URL with no host`, or `(unknown url)` for a string with no scheme.
+/// The address itself is never echoed.
+fn no_host(url: &str) -> String {
+    let url = url.trim();
+    let scheme = url.split_once(':').map(|(s, _)| s).filter(|s| {
+        let mut chars = s.chars();
+        chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+            && chars.all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+    });
+    match scheme.map(str::to_ascii_lowercase) {
+        Some(web) if web == "http" || web == "https" => format!("an {web}: URL with no host"),
+        Some(scheme) => format!("a {scheme}: page"),
+        None => "(unknown url)".into(),
+    }
+}
+
+/// Whether two labels are the same label as ultra-instinct matches them: invisible characters
+/// (zero-width spaces and joiners, a soft hyphen, …) dropped and whitespace folded on both sides
+/// (`ultra_instinct_core::normalize_label`). Case counts: a label whose case changed is asked
+/// about again, which is the stricter way.
+pub fn same_label(a: &str, b: &str) -> bool {
+    a == b || ultra_instinct_core::normalize_label(a) == ultra_instinct_core::normalize_label(b)
 }
 
 /// `about:blank`, with or without a fragment or a query: the one hostless page a list lets in.
@@ -237,6 +260,28 @@ mod tests {
         assert!(Rules::parse("").unwrap().globs().is_empty());
     }
 
+    /// A character that renders as nothing doesn't hide a label from the globs, in the label or in
+    /// a glob from the environment; the same label with one is the same label.
+    #[test]
+    fn an_invisible_character_hides_nothing_from_the_confirm_rules() {
+        let rules = Rules::default();
+        for label in [
+            "Pa\u{200B}y $18",
+            "\u{FEFF}Pay $18",
+            "P\u{AD}a\u{34F}y\u{2060} $18",
+            "Place\u{200C} \u{200D}order",
+            "  pay   $18 ",
+        ] {
+            assert!(rules.needs_confirm(label), "{label:?}");
+        }
+        let from_env = Rules::parse("Pa\u{200B}y*").unwrap();
+        assert!(from_env.needs_confirm("Pay $18"));
+        assert!(same_label("Pa\u{200B}y $18", "Pay $18"));
+        assert!(same_label("Pay  $18", "Pay $18"));
+        assert!(!same_label("Pay $18", "Pay $19"));
+        assert!(!same_label("pay $18", "Pay $18"));
+    }
+
     #[test]
     fn an_allow_list_lets_its_hosts_and_about_blank_through() {
         let list =
@@ -265,6 +310,20 @@ mod tests {
         ));
         assert!(list.check(None).is_err());
         assert!(AllowList::parse(None).unwrap().check(None).is_ok());
+        // a page with no host is named by its scheme, never by the address it holds
+        for (url, named) in [
+            ("data:text/html,<b>secret</b>", "a data: page"),
+            (" BLOB:https://shop.example/0b7c", "a blob: page"),
+            ("file:///etc/passwd", "a file: page"),
+            ("https:shop.example", "an https: URL with no host"),
+            ("//shop.example/", "(unknown url)"),
+            ("", "(unknown url)"),
+        ] {
+            assert!(
+                matches!(list.check(Some(url)), Err(BrowserError::DomainNotAllowed(h)) if h == named),
+                "{url}"
+            );
+        }
         assert!(AllowList::parse(Some(&["not a host".into()])).is_err());
     }
 
@@ -312,8 +371,9 @@ mod tests {
         ));
     }
 
-    /// ultra-instinct lets a `blob:` page through by its origin; box-browser doesn't, whatever the
-    /// origin, since a blob's content is whatever the page made it, not the listed site's page.
+    /// A `blob:` page is off a list whatever its origin, since its content is whatever the page made
+    /// it, not the listed site's page. (ultra-instinct's guard refuses it too, with the policy
+    /// box-browser gives it: `seam`.)
     #[test]
     fn a_blob_page_is_off_a_list_even_on_a_listed_origin() {
         let list =
@@ -332,6 +392,12 @@ mod tests {
                 "{blob}"
             );
         }
+        // named as ultra-instinct names one: the same words whichever list refused it
+        assert!(matches!(
+            list.check(Some("blob:https://shop.example/x")),
+            Err(BrowserError::DomainNotAllowed(h))
+                if h == ultra_instinct_guard::refused_place("blob:https://shop.example/x")
+        ));
         // with no list, nothing is checked
         assert!(AllowList::parse(None)
             .unwrap()

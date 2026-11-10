@@ -386,7 +386,7 @@ components:
           maxItems: 8
           items: { type: string }
         rect: { $ref: "#/components/schemas/BrowserRect" }
-        sensitive: { type: boolean, description: "A password field, or one that may be: its text, checked and expanded never come" }
+        sensitive: { type: boolean, description: "A password field, or one that may be: its text, checked, expanded, selected and current never come" }
         value:
           type: string
           maxLength: 401
@@ -397,6 +397,8 @@ components:
         value_truncated: { type: boolean, description: "`value` was cut at 400 characters. At this ultra-instinct pin the browser side reads at most a field's first 200 characters and does not flag that cut, so a 200-character `value` may be the start of a longer text without this" }
         checked: { type: boolean, description: "Only with `values`, never on a sensitive element: a checkbox's or radio's state, or aria-checked" }
         expanded: { type: boolean, description: "Only with `values`, never on a sensitive element: aria-expanded" }
+        selected: { type: boolean, description: "Only with `values`, never on a sensitive element: aria-selected (a selected tab, option or row)" }
+        current: { type: string, maxLength: 161, examples: ["page"], description: "Only with `values`, never on a sensitive element: aria-current when it isn't false (`page`, `step`, `date`, …), lowercased" }
     BrowserSnapRequest:
       type: object
       additionalProperties: false
@@ -405,7 +407,7 @@ components:
         values:
           type: boolean
           default: false
-          description: Also what the fields hold (`value`, `value_truncated`, `checked`, `expanded`), never a sensitive element's. A field is sensitive by its type or label, so text in a plainly typed field whose label names no secret does come
+          description: Also what the fields hold (`value`, `value_truncated`, `checked`, `expanded`, `selected`, `current`), never a sensitive element's. A field is sensitive by its type or label, so text in a plainly typed field whose label names no secret does come
         allow_domains:
           allOf: [{ $ref: "#/components/schemas/AllowDomains" }]
           description: The sites whose fields may be read. `values` needs it (400 invalid_request without), and a page off the list shows none of what its fields hold
@@ -1832,8 +1834,8 @@ paths:
         The current tab's interactive elements in reading order, read by ultra-instinct (DOM and
         accessibility tree), each with an `@eN` ref good while this is the tab's latest snapshot. A
         password field's text never comes. With no body, the first 200. With `values: true`,
-        elements may carry `value`, `value_truncated`, `checked` and `expanded`; a sensitive one
-        never does.
+        elements may carry `value`, `value_truncated`, `checked`, `expanded`, `selected` and
+        `current`; a sensitive one never does.
       security: [{ bearer: [] }]
       parameters:
         - name: display

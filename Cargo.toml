@@ -30,14 +30,17 @@ box-a11y = { path = "crates/box-a11y" }
 box-browser = { path = "crates/box-browser" }
 # ultra-instinct (hexuria/ultra-instinct, MIT): the observe -> gate -> ticket -> execute loop that
 # box-browser drives a screen's Chromium through, and its DevTools pipe transport. Pinned to
-# 0ff09c4 on ultra-instinct's main (its PR #102, phase 2: the pipe server, snapshot-bound presses,
+# 6507ebd on ultra-instinct's main (its PR #102, phase 2: the pipe server, snapshot-bound presses,
 # stable error codes, run_goal; #104, label folding; #106, the guard on keys and form submits,
 # BlockKind, uploads; #114, clicks are real pointer presses by default; #118, an allow-list passes
-# only http(s) on a listed host, about:blank and a blob: by its origin); its docs/embedding.md is
-# the guide. box-browser's `seam` is the only place that knows its types.
-ultra-instinct-mcp = { git = "https://github.com/hexuria/ultra-instinct", rev = "0ff09c4905b9ea56cb62d7c16a3d886cdbc1ebe7", default-features = false }
-ultra-instinct-guard = { git = "https://github.com/hexuria/ultra-instinct", rev = "0ff09c4905b9ea56cb62d7c16a3d886cdbc1ebe7", default-features = false }
-ultra-instinct-cdp = { git = "https://github.com/hexuria/ultra-instinct", rev = "0ff09c4905b9ea56cb62d7c16a3d886cdbc1ebe7", default-features = false }
+# only http(s) on a listed host, about:blank and a blob: by its origin; #120, `refuse_blob`, no
+# blob: at all under a list; #124, labels drop zero-width characters, and aria-selected /
+# aria-current come with `values`); its docs/embedding.md is the guide. box-browser's `seam` is the
+# only place that knows its types; `ultra-instinct-core` is for its `normalize_label` alone.
+ultra-instinct-mcp = { git = "https://github.com/hexuria/ultra-instinct", rev = "6507ebdb64d026d290ed20d0a65eee9f0208c2b9", default-features = false }
+ultra-instinct-guard = { git = "https://github.com/hexuria/ultra-instinct", rev = "6507ebdb64d026d290ed20d0a65eee9f0208c2b9", default-features = false }
+ultra-instinct-cdp = { git = "https://github.com/hexuria/ultra-instinct", rev = "6507ebdb64d026d290ed20d0a65eee9f0208c2b9", default-features = false }
+ultra-instinct-core = { git = "https://github.com/hexuria/ultra-instinct", rev = "6507ebdb64d026d290ed20d0a65eee9f0208c2b9", default-features = false }
 box-egress-tunnel = { path = "crates/box-egress-tunnel" }
 tokio-tungstenite = { version = "0.26", features = ["connect", "rustls-tls-webpki-roots"] }
 axum = { version = "0.8", features = ["json", "macros"] }

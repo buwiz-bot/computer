@@ -49,6 +49,10 @@ pub struct Seen {
     pub value_truncated: bool,
     pub checked: Option<bool>,
     pub expanded: Option<bool>,
+    /// `aria-selected`: ultra-instinct's `selected_item`.
+    pub selected: Option<bool>,
+    /// `aria-current` (`page`, `step`, …): ultra-instinct's `aria_current`, clipped as a label is.
+    pub current: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -130,8 +134,9 @@ pub fn may_return_selected(
         && actions.iter().any(|a| a.eq_ignore_ascii_case("select"))
 }
 
-/// A `browser_get_state` `format: json` answer. Only with `values` are `value`, `checked` and
-/// `expanded` read, and never for a sensitive element, whatever the answer holds.
+/// A `browser_get_state` `format: json` answer. Only with `values` are `value`, `checked`,
+/// `expanded`, `selected_item` and `aria_current` read, and never for a sensitive element,
+/// whatever the answer holds.
 pub fn page(answer: &Value, values: bool) -> Result<Page, BrowserError> {
     let elements = answer
         .get("elements")
@@ -198,6 +203,8 @@ pub fn page(answer: &Value, values: bool) -> Result<Page, BrowserError> {
             value_truncated,
             checked: state("checked"),
             expanded: state("expanded"),
+            selected: state("selected_item"),
+            current: text(el, "aria_current", MAX_LABEL_CHARS).filter(|_| values && !sensitive),
         });
     }
     Ok(Page {
@@ -214,8 +221,9 @@ pub fn page(answer: &Value, values: bool) -> Result<Page, BrowserError> {
 }
 
 /// The lines a model reads: `@eN role "label"`, `[sensitive]` for a password field, and, when
-/// they were asked for and may be shown, a field's ` value="…"`, ` checked`/` unchecked` and
-/// ` expanded`/` collapsed`. Cut at [`MAX_RENDER_BYTES`].
+/// they were asked for and may be shown, a field's ` value="…"`, ` checked`/` unchecked`,
+/// ` expanded`/` collapsed`, ` selected` (a selected tab, option or row) and ` current="page"`.
+/// Cut at [`MAX_RENDER_BYTES`].
 pub fn render(elements: &[crate::Element]) -> String {
     let mut out = String::new();
     for el in elements {
@@ -235,6 +243,12 @@ pub fn render(elements: &[crate::Element]) -> String {
                 Some(true) => line.push_str(" expanded"),
                 Some(false) => line.push_str(" collapsed"),
                 None => {}
+            }
+            if el.selected == Some(true) {
+                line.push_str(" selected");
+            }
+            if let Some(current) = &el.current {
+                line.push_str(&format!(" current={current:?}"));
             }
         }
         line.push('\n');
@@ -427,6 +441,13 @@ mod tests {
                 {"index": 6, "region": "n6", "role": "textbox", "label": "Bio",
                  "input_type": "text", "value": "short… [truncated 9 chars]",
                  "value_truncated": true, "actions": ["type"]},
+                {"index": 7, "region": "n7", "role": "tab", "label": "Reviews",
+                 "selected_item": true, "aria_current": "page", "actions": ["click"]},
+                {"index": 8, "region": "n8", "role": "textbox", "label": "PIN",
+                 "input_type": "text", "sensitive": true, "selected_item": false,
+                 "aria_current": "step", "actions": ["type"]},
+                {"index": 9, "region": "n9", "role": "link", "label": "Step 2",
+                 "aria_current": "s".repeat(MAX_LABEL_CHARS + 9), "actions": ["click"]},
             ]
         });
         let off = page(&answer, false).unwrap();
@@ -434,6 +455,12 @@ mod tests {
             assert_eq!(
                 (e.value.as_deref(), e.checked, e.expanded, e.value_truncated),
                 (None, None, None, false),
+                "{}",
+                e.label
+            );
+            assert_eq!(
+                (e.selected, e.current.as_deref()),
+                (None, None),
                 "{}",
                 e.label
             );
@@ -461,6 +488,16 @@ mod tests {
         assert!(e[4].value_truncated);
         assert!(e[5].value_truncated);
         assert!(!e[2].value_truncated);
+        assert_eq!(
+            (e[6].selected, e[6].current.as_deref()),
+            (Some(true), Some("page"))
+        );
+        assert_eq!((e[7].selected, e[7].current.as_deref()), (None, None));
+        assert_eq!(e[1].selected, None);
+        assert_eq!(
+            e[8].current.as_ref().unwrap().chars().count(),
+            MAX_LABEL_CHARS + 1
+        );
     }
 
     #[test]
