@@ -211,7 +211,7 @@ pub fn page(answer: &Value, values: bool) -> Result<Page, BrowserError> {
                 .get("aria_current")
                 .and_then(Value::as_str)
                 .filter(|_| values && !sensitive)
-                .map(|c| c.to_lowercase().chars().take(MAX_CURRENT_CHARS).collect()),
+                .and_then(current),
         });
     }
     Ok(Page {
@@ -225,6 +225,17 @@ pub fn page(answer: &Value, values: bool) -> Result<Page, BrowserError> {
             .unwrap_or(elements.len()),
         elements: seen,
     })
+}
+
+/// An `aria-current` value as ultra-instinct reads one, held to that here too: trimmed and
+/// lowercased, `true` when it is set empty, none for `false`, at most [`MAX_CURRENT_CHARS`].
+fn current(raw: &str) -> Option<String> {
+    let value = raw.trim().to_lowercase();
+    match value.as_str() {
+        "false" => None,
+        "" => Some("true".into()),
+        _ => Some(value.chars().take(MAX_CURRENT_CHARS).collect()),
+    }
 }
 
 /// The lines a model reads: `@eN role "label"`, `[sensitive]` for a password field, and, when
@@ -503,6 +514,11 @@ mod tests {
         assert_eq!(e[1].selected, None);
         // lowercased and cut at ultra-instinct's own 16, with no marker, whatever the answer holds
         assert_eq!(e[8].current.as_deref(), Some("step-step-step-s"));
+        // aria-current="false" is no current; set empty, it is "true"
+        assert_eq!(current(" FALSE "), None);
+        assert_eq!(current(""), Some("true".into()));
+        assert_eq!(current("  "), Some("true".into()));
+        assert_eq!(current(" Page "), Some("page".into()));
     }
 
     #[test]
