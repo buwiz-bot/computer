@@ -158,11 +158,33 @@ fn web_host(url: &str) -> Option<String> {
 /// `a data: page`, `an https: URL with no host`, `(unknown url)` for a string with no scheme), and
 /// never the address. `refused_place` is given the scheme alone: it names a host whenever it can
 /// read one (`ftp://host/`, `file://host/`), and under box-browser's rule only an `http(s)` address
-/// has a host to match, so for every other one the scheme is what was refused.
+/// has a host to match, so for every other one the scheme is what was refused. And only a scheme
+/// a browser has ([`SCHEMES`]) is named: `shop.example:443/cart` or `localhost:8080` start with
+/// what could pass for one, and naming it ("a localhost: page") would mislabel a host.
 fn no_host(url: &str) -> String {
     let scheme = url.trim().split_once(':').map_or("", |(scheme, _)| scheme);
-    refused_place(&format!("{scheme}:"))
+    if SCHEMES.iter().any(|s| s.eq_ignore_ascii_case(scheme)) {
+        refused_place(&format!("{scheme}:"))
+    } else {
+        refused_place("")
+    }
 }
+
+/// The schemes a refusal names. Any other prefix before a `:` is "(unknown url)".
+const SCHEMES: [&str; 12] = [
+    "http",
+    "https",
+    "blob",
+    "data",
+    "file",
+    "javascript",
+    "about",
+    "view-source",
+    "chrome",
+    "ftp",
+    "ws",
+    "wss",
+];
 
 /// Whether two labels are the same label as ultra-instinct matches them: invisible characters
 /// (zero-width spaces and joiners, a soft hyphen, …) dropped and whitespace folded on both sides
@@ -459,6 +481,7 @@ mod tests {
             "https:shop.example",
             "https:///x",
             "HTTP://",
+            "HTTPS:host",
             "shop.example",
             "//shop.example/",
             "",
@@ -467,6 +490,12 @@ mod tests {
         ] {
             assert!(host_of(url).is_none(), "{url}");
             assert_eq!(no_host(url), refused_place(url), "{url}");
+        }
+        assert_eq!(no_host("HTTPS:host"), "an https: URL with no host");
+        assert_eq!(no_host("data:text/plain,hi"), "a data: page");
+        // a host and a port is no scheme: ultra-instinct would call it one, box-browser doesn't
+        for url in ["shop.example:443/cart", "localhost:8080", "x-unknown:thing"] {
+            assert_eq!(no_host(url), "(unknown url)", "{url}");
         }
         for (url, ours) in [
             ("ftp://shop.example/", "a ftp: page"),
