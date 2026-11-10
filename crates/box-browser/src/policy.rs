@@ -14,7 +14,7 @@
 use std::io::Read;
 use std::time::{Duration, Instant};
 
-use ultra_instinct_guard::{host_of, HostPattern, LabelGlob};
+use ultra_instinct_guard::{host_of, refused_place, HostPattern, LabelGlob};
 
 use crate::BrowserError;
 
@@ -153,25 +153,15 @@ fn web_host(url: &str) -> Option<String> {
     host_of(url)
 }
 
-/// What a refusal names for an address with no host to match, in ultra-instinct's words
-/// (`refused_place`), so a caller reads one phrasing whichever list refused: `a blob: page`,
-/// `a data: page`, `an https: URL with no host`, or `(unknown url)` for a string with no scheme.
-/// The address itself is never echoed.
+/// What a refusal names for an address with no host to match: ultra-instinct's own words
+/// (`refused_place`), so a caller reads one phrasing whichever list refused (`a blob: page`,
+/// `a data: page`, `an https: URL with no host`, `(unknown url)` for a string with no scheme), and
+/// never the address. `refused_place` is given the scheme alone: it names a host whenever it can
+/// read one (`ftp://host/`, `file://host/`), and under box-browser's rule only an `http(s)` address
+/// has a host to match, so for every other one the scheme is what was refused.
 fn no_host(url: &str) -> String {
-    let url = url.trim();
-    let scheme = url.split_once(':').map(|(s, _)| s).filter(|s| {
-        let mut chars = s.chars();
-        chars.next().is_some_and(|c| c.is_ascii_alphabetic())
-            && chars.all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
-    });
-    match scheme.map(str::to_ascii_lowercase) {
-        Some(web) if web == "http" || web == "https" => format!("an {web}: URL with no host"),
-        Some(scheme) if scheme.starts_with(['a', 'e', 'i', 'o', 'u']) => {
-            format!("an {scheme}: page")
-        }
-        Some(scheme) => format!("a {scheme}: page"),
-        None => "(unknown url)".into(),
-    }
+    let scheme = url.trim().split_once(':').map_or("", |(scheme, _)| scheme);
+    refused_place(&format!("{scheme}:"))
 }
 
 /// Whether two labels are the same label as ultra-instinct matches them: invisible characters
@@ -451,6 +441,41 @@ mod tests {
             .unwrap()
             .check(Some("blob:https://shop.example/x"))
             .is_ok());
+    }
+
+    /// Where ultra-instinct reads no host either, both name a refused address the same way; where
+    /// it reads one in an address box-browser gives no host to (`ftp://`, `file://`), box-browser
+    /// names the scheme, its rule.
+    #[test]
+    fn a_hostless_refusal_is_named_as_ultra_instinct_names_it() {
+        for url in [
+            "data:text/html,<b>x</b>",
+            "blob:https://shop.example/0b7c",
+            " BLOB:https://shop.example/x",
+            "about:blankety",
+            "about:srcdoc",
+            "javascript:alert(1)",
+            "view-source:https://shop.example/",
+            "https:shop.example",
+            "https:///x",
+            "HTTP://",
+            "shop.example",
+            "//shop.example/",
+            "",
+            "  ",
+            ":x",
+        ] {
+            assert!(host_of(url).is_none(), "{url}");
+            assert_eq!(no_host(url), refused_place(url), "{url}");
+        }
+        for (url, ours) in [
+            ("ftp://shop.example/", "a ftp: page"),
+            ("file://shop.example/etc/passwd", "a file: page"),
+            ("chrome://settings/", "a chrome: page"),
+        ] {
+            assert!(host_of(url).is_some(), "{url}");
+            assert_eq!(no_host(url), ours, "{url}");
+        }
     }
 
     #[test]
