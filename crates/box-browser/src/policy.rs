@@ -109,9 +109,12 @@ impl AllowList {
         &self.raw
     }
 
-    /// May the browser go to `url`, or give input on a page there? While there's a list, only a
-    /// listed host, or `about:blank`, may: an address with no host to check (`file:`, `data:`) or
-    /// none at all may not.
+    /// May the browser go to `url`, or give input on a page there? While there's a list, only an
+    /// `http:`/`https:` address on a listed host, or `about:blank`, may. The scheme decides first:
+    /// any other address (`data:`, `file:`, `blob:`, `view-source:`, `javascript:`, `chrome:`, a
+    /// string with no scheme) is refused whatever its text holds, so `data:…,https://shop.example/`
+    /// is not on shop.example. `blob:https://shop.example/…` and `view-source:https://…` are
+    /// refused too: their content isn't the listed site's page.
     pub fn check(&self, url: Option<&str>) -> Result<(), BrowserError> {
         if self.hosts.is_empty() {
             return Ok(());
@@ -121,7 +124,7 @@ impl AllowList {
                 "the page's address is unknown".into(),
             ));
         };
-        match host_of(url) {
+        match web_host(url) {
             None if is_blank(url) => Ok(()),
             None => Err(BrowserError::DomainNotAllowed(format!(
                 "{}: (no host)",
@@ -131,6 +134,19 @@ impl AllowList {
             Some(host) => Err(BrowserError::DomainNotAllowed(host)),
         }
     }
+}
+
+/// The host of an `http:` or `https:` address (scheme in any case, after a trim), read the way
+/// ultra-instinct's `host_of` reads it (userinfo and port dropped); `None` for every other scheme,
+/// and for an `http(s):` address without `//` right after the scheme.
+fn web_host(url: &str) -> Option<String> {
+    let url = url.trim();
+    let (scheme, rest) = url.split_once(':')?;
+    let web = scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https");
+    if !web || !rest.starts_with("//") {
+        return None;
+    }
+    host_of(url)
 }
 
 /// `about:blank`, with or without a fragment or a query: the one hostless page a list lets in.
@@ -250,6 +266,50 @@ mod tests {
         assert!(list.check(None).is_err());
         assert!(AllowList::parse(None).unwrap().check(None).is_ok());
         assert!(AllowList::parse(Some(&["not a host".into()])).is_err());
+    }
+
+    #[test]
+    fn only_a_web_address_has_a_host_to_match() {
+        let list = AllowList::parse(Some(&["shop.example".into()])).unwrap();
+        for ok in [
+            "https://shop.example/",
+            "HTTPS://shop.example/cart",
+            "Http://shop.example",
+            "  https://shop.example/  ",
+            "https://user:pw@shop.example:8443/x",
+            " ABOUT:BLANK?x",
+        ] {
+            assert!(list.check(Some(ok)).is_ok(), "{ok}");
+        }
+        for refused in [
+            "data:text/html,https://shop.example/",
+            "DATA:text/html;base64,aHR0cHM6Ly9zaG9wLmV4YW1wbGUv,https://shop.example/",
+            "  data:,https://shop.example/",
+            "blob:https://shop.example/0b7c6a3e-1d2f-4c1a-9d9e-3f1e2a7b6c5d",
+            "view-source:https://shop.example/",
+            "javascript:'https://shop.example/'",
+            "file://shop.example/etc/passwd",
+            "chrome://shop.example/",
+            "ftp://shop.example/",
+            "shop.example",
+            "//shop.example/",
+            "https:shop.example",
+            "https:/x://shop.example/",
+            "",
+        ] {
+            assert!(
+                matches!(
+                    list.check(Some(refused)),
+                    Err(BrowserError::DomainNotAllowed(_))
+                ),
+                "{refused}"
+            );
+        }
+        // userinfo is not the host
+        assert!(matches!(
+            list.check(Some("https://shop.example@evil.example/")),
+            Err(BrowserError::DomainNotAllowed(host)) if host == "evil.example"
+        ));
     }
 
     #[test]
