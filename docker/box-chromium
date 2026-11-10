@@ -50,9 +50,43 @@ if flag_on "${BOX_BROWSER:-}" 1; then
   fi
 fi
 # On a pipe, this stays to start Chromium again when the launcher exits 75: box-exec let go of a
-# browser that still worked, and it quit when its pipe closed (box_chrome::pipe::PIPE_LET_GO). A Bot's
+# browser that still ran, and it quit when its pipe closed (box_chrome::pipe::PIPE_LET_GO). A Bot's
 # screen has no other restart loop. Any other exit, a person closing it (0) or a crash, ends this
 # as before. It comes back on about:blank, as the main screen's does, not on the page first asked.
+#
+# This shell stays between its caller and the launcher, so a TERM, INT or HUP sent to it is passed
+# on to the launcher (which passes it to Chromium's group) and waited for, and nothing starts again
+# after one.
+child=""
+stopping=""
+signals=0
+pass_on() {
+  stopping=1
+  signals=$((signals + 1))
+  if [ -n "${child}" ]; then
+    kill -s "$1" "${child}" 2>/dev/null
+  fi
+}
+# The child's status. A trap that runs during `wait` ends it early, with the child still running:
+# wait again. One that runs just after the child ended finds it reaped (127): the status stands.
+wait_child() {
+  code=""
+  while :; do
+    seen=${signals}
+    wait "${child}"
+    got=$?
+    if [ -n "${code}" ] && [ "${got}" -eq 127 ]; then
+      return
+    fi
+    code=${got}
+    if [ "${signals}" = "${seen}" ]; then
+      return
+    fi
+  done
+}
+trap 'pass_on TERM' TERM
+trap 'pass_on INT' INT
+trap 'pass_on HUP' HUP
 while :; do
   # shellcheck disable=SC2086 # the launcher's words, like the proxy flags, are split on purpose
   ${launcher} chromium \
@@ -73,12 +107,18 @@ while :; do
     ${proxy_server} \
     ${proxy_bypass} \
     ${proxy_webrtc} \
-    "$@"
-  code=$?
-  if [ -z "${launcher}" ] || [ "${code}" -ne 75 ]; then
+    "$@" &
+  child=$!
+  # told to stop as it started: it hears it now
+  if [ -n "${stopping}" ]; then
+    kill -s TERM "${child}" 2>/dev/null
+  fi
+  wait_child
+  if [ -n "${stopping}" ] || [ -z "${launcher}" ] || [ "${code}" -ne 75 ]; then
     exit "${code}"
   fi
   echo "box-chromium: chromium quit when box-exec let go of its pipe; starting it again in 2s" >&2
   sleep 2
+  [ -z "${stopping}" ] || exit "${code}"
   set -- about:blank
 done
