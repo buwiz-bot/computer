@@ -240,9 +240,9 @@ impl Browsers {
     }
 
     /// Asks every screen's browser to quit and lets go of its pipe, within `grace`: for
-    /// box-exec's shutdown. Each launcher ends what's left of its Chromium after that. The lease on
-    /// each is held until its launcher is gone (`pipe::Leased`), so these browsers are closed, not
-    /// started again.
+    /// box-exec's shutdown. Each launcher ends what's left of its Chromium after that. No let-go is
+    /// said on any lease (`pipe::Leased`), so these browsers are closed, not started again, however
+    /// long they take to quit.
     pub async fn close_all(&self, grace: Duration) {
         let senders: Vec<SyncSender<Job>> = self.lock().drain().map(|(_, s)| s).collect();
         let mut waits = Vec::new();

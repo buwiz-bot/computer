@@ -14,13 +14,19 @@
 //! These are the helpers both sides use; who is on the other end of a socket is
 //! `box_common::peer::peer_uid`.
 //!
-//! The connection the end came over is kept open by both sides for as long as `box-exec` holds the
-//! end: it's how the launcher tells why Chromium went. Chromium quits, with status 0, once its pipe
-//! closes, as it does when a person closes it. If `box-exec` lets go of a browser that still works
-//! (its pipe failed, say), it closes that connection first, and the launcher, seeing it closed when
-//! Chromium exits 0, exits [`PIPE_LET_GO`] instead, so the screen's restart loop starts a new
-//! Chromium with a fresh pipe. A close `box-exec` means (its shutdown) drops the pipe first and
-//! keeps the connection until the launcher is gone, so that browser stays closed.
+//! The connection the end came over, the lease, is kept open by both sides for as long as
+//! `box-exec` holds the end: it's how the launcher tells why Chromium went. Chromium quits, with
+//! status 0, once its pipe closes, and with the same 0 when a person closes it, so the status alone
+//! can't say. When `box-exec` drops a pipe it may still be able to use (a call met a failure that
+//! looked like a closed pipe), it writes [`LEASE_LET_GO`] on the lease, waits up to
+//! [`LEASE_ACK_WAIT`] for [`LEASE_ACK`], and only then closes the pipe. The launcher, on reading the
+//! byte, decides before it answers: it is a let-go only if Chromium is still alive and its end of
+//! the pipe isn't shut. A person's close shuts that end, or ends Chromium, before `box-exec` can
+//! hear of it, so a let-go `box-exec` sends in answer to one counts for nothing. When Chromium then
+//! exits 0 after a counted let-go, the launcher exits [`PIPE_LET_GO`], and the screen's restart
+//! loop starts it again. A lease that only closes means nothing: `box-exec`'s shutdown closes the
+//! pipe and the lease with no byte, and those browsers stay closed.
+//!
 
 use std::io;
 use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
@@ -28,9 +34,15 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
 /// The launcher's status when Chromium quit because `box-exec` let go of its pipe while it still
-/// worked: a status the restart loops (`docker/entrypoint.sh`, `docker/box-chromium`) start it
+/// ran (a counted [`LEASE_LET_GO`]): a status the restart loops (`docker/entrypoint.sh`, `docker/box-chromium`) start it
 /// again on, where a 0, a person closing the browser, is left closed. `EX_TEMPFAIL`.
 pub const PIPE_LET_GO: u8 = 75;
+/// What `box-exec` writes on the lease before it drops a pipe it may still be able to use.
+pub const LEASE_LET_GO: u8 = b'L';
+/// The launcher's answer to [`LEASE_LET_GO`], once it has decided.
+pub const LEASE_ACK: u8 = b'A';
+/// How long `box-exec` waits for [`LEASE_ACK`] before it closes the pipe anyway.
+pub const LEASE_ACK_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// The socket's name in a screen's run folder.
 pub const SOCKET_NAME: &str = "cdp.sock";

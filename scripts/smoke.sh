@@ -752,11 +752,14 @@ echo "snap after the relaunch ${code}"
 echo "==> a launcher starts Chromium again only when box-exec let go of a pipe that still worked"
 # No route makes box-exec drop a live pipe, so a stand-in takes its place: a second, headless
 # Chromium on a launcher of its own, in a folder like a run folder, and, as boxsvc, a few lines of
-# Python that take its pipe as box-exec does, hear Chromium answer, and let go three ways. Letting
-# go of the lease first (what box-exec does when a working pipe fails) is 75, which the restart
-# loops start Chromium again on; dropping the pipe and keeping the lease (box-exec's shutdown) and
-# a Browser.close (a person closing it) are 0, left closed. Chromium quits with 0 on its own in
-# all three: the status is the launcher's call.
+# Python that take its pipe as box-exec does, hear Chromium answer, and let go as box-exec would:
+#   let-go:   L on the lease, its answer, then the pipe closed (a pipe that failed): 75, started again
+#   close:    the lease and the pipe closed with no L (box-exec's shutdown): 0, left closed
+#   person:   Browser.close, the lease held (a person closing it): 0
+#   inflight: Browser.close, the pipe read to its end as a call in flight would, then L, as the
+#             call's failure sends it: 0, since Chromium had shut its pipe or exited first
+# Chromium quits with 0 on its own in every case: the status is the launcher's call. Then
+# box-chromium, on that launcher, is sent a TERM: it reaches the launcher, and nothing restarts.
 lease_out="$("${COMPOSE[@]}" exec -T box sh <<'LEASE'
 set -u
 dir=/tmp/pipe-smoke
@@ -777,28 +780,63 @@ while b"\0" not in got:
     if not more:
         sys.exit("the pipe closed before Chromium answered")
     got += more
+def let_go():
+    try:
+        lease.settimeout(1)
+        lease.sendall(b"L")
+        lease.recv(1)
+    except OSError:
+        pass
 if how == "let-go":
+    let_go()
     lease.close()
     pipe.close()
 elif how == "close":
+    lease.close()
     pipe.close()
-    lease.recv(1)
-else:
+elif how == "person":
     pipe.sendall(b"{\"id\":2,\"method\":\"Browser.close\"}\0")
     lease.recv(1)
+elif how == "inflight":
+    pipe.sendall(b"{\"id\":2,\"method\":\"Browser.close\"}\0")
+    while pipe.recv(65536):
+        pass
+    let_go()
+    lease.close()
+    pipe.close()
+else:
+    lease.recv(1)
 '
-for how in let-go close person; do
+launch() {
   rm -rf /tmp/pipe-smoke-home/profile
-  setpriv --reuid=1000 --regid=1000 --clear-groups env HOME=/tmp/pipe-smoke-home \
-    /usr/local/bin/box-chrome-pipe "$dir/cdp.sock" -- chromium --headless=new --no-sandbox \
-    --disable-gpu --user-data-dir=/tmp/pipe-smoke-home/profile about:blank >/dev/null 2>&1 &
+  setpriv --reuid=1000 --regid=1000 --clear-groups env HOME=/tmp/pipe-smoke-home "$@" \
+    >/dev/null 2>&1 &
   launcher=$!
   for _ in $(seq 100); do [ -S "$dir/cdp.sock" ] && break; sleep 0.1; done
+}
+for how in let-go close person inflight; do
+  launch /usr/local/bin/box-chrome-pipe "$dir/cdp.sock" -- chromium --headless=new --no-sandbox \
+    --disable-gpu --user-data-dir=/tmp/pipe-smoke-home/profile about:blank
   setpriv --reuid=990 --regid=990 --clear-groups python3 -c "$PY" "$dir/cdp.sock" "$how"
   code=0
   wait "$launcher" || code=$?
   echo "LEASE ${how} ${code}"
 done
+# box-chromium on a pipe: its TERM reaches the launcher and Chromium, and nothing starts again
+launch env BOX_BROWSER=1 BOX_SCREEN_RUN="$dir" BOX_EGRESS_TUNNEL=0 \
+  BOX_CHROME_PROFILE=/tmp/pipe-smoke-home/profile /usr/local/bin/box-chromium --headless=new
+setpriv --reuid=990 --regid=990 --clear-groups python3 -c "$PY" "$dir/cdp.sock" hold &
+holder=$!
+sleep 1
+kill -TERM "$launcher"
+code=0
+wait "$launcher" || code=$?
+sleep 3
+left=$(pgrep -u box -f "pipe-smoke-home/profile" | wc -l)
+offered=no
+[ -e "$dir/cdp.sock" ] && offered=yes
+kill "$holder" 2>/dev/null
+echo "TRAP code=${code} left=${left} offered=${offered}"
 rm -rf "$dir" /tmp/pipe-smoke-home
 LEASE
 )"
@@ -806,6 +844,8 @@ echo "${lease_out}"
 echo "${lease_out}" | grep -qx 'LEASE let-go 75'
 echo "${lease_out}" | grep -qx 'LEASE close 0'
 echo "${lease_out}" | grep -qx 'LEASE person 0'
+echo "${lease_out}" | grep -qx 'LEASE inflight 0'
+echo "${lease_out}" | grep -q '^TRAP code=[0-9]* left=0 offered=no$'
 
 echo "==> the home volume outlives the container: logins, profiles, a Bot's slot and user"
 # spost <json>: POST /v1/screen, the answer in ${screen}.

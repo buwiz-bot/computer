@@ -6,17 +6,17 @@
 //! bus: anybody who could bind there could otherwise give `box-exec` a browser of their own.
 //!
 //! The connection the end came over is kept beside the tools, as the lease on that browser
-//! ([`Leased`]): letting go of a browser that still works closes the lease first, so the launcher
-//! knows to start Chromium again (`box_chrome::pipe::PIPE_LET_GO`); a close for a shutdown lets
-//! the browser go first, and it stays closed.
+//! ([`Leased`]): dropping the tools says "let go" on it first and waits for the launcher's answer,
+//! so a browser that still runs is started again (`box_chrome::pipe` has the protocol); a close
+//! for a shutdown says nothing, and those browsers stay closed.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
 
-use box_chrome::pipe::{recv_fd, socket_path};
+use box_chrome::pipe::{recv_fd, socket_path, LEASE_ACK_WAIT, LEASE_LET_GO};
 use box_common::peer::peer_uid;
 use serde_json::Value;
 
@@ -25,8 +25,7 @@ use crate::{BrowserError, Opener};
 
 /// How long the launcher has to hand the pipe over.
 const HANDOVER: Duration = Duration::from_secs(2);
-/// How long a close for a shutdown waits for the launcher to be gone, so Chromium is seen to have
-/// quit while the lease was still held.
+/// How long a close for a shutdown waits for the launcher to be gone.
 const CLOSE_WAIT: Duration = Duration::from_secs(3);
 
 /// Opens a screen's tools over its real pipe.
@@ -42,9 +41,12 @@ impl Opener for PipeOpener {
 }
 
 /// A screen's tools, with the lease on its browser: the connection its launcher handed the pipe
-/// over on. Dropped, the lease closes before the tools (and with them the pipe) do, so the
-/// launcher sees box-exec let go of a working browser, and it is started again. [`Tools::close`],
-/// for a shutdown, lets the pipe go first and holds the lease until the launcher is gone, so that
+/// over on. Dropped (a failure that looked like a closed pipe), they write
+/// `box_chrome::pipe::LEASE_LET_GO` on the lease and wait up to `LEASE_ACK_WAIT` for the
+/// launcher's answer before the tools, and with them the pipe, go: the launcher decides while
+/// box-exec's end is still open, so a Chromium that still ran is started again, and one a person
+/// had already closed isn't. box-exec can't tell those two apart itself; the launcher can.
+/// [`Tools::close`], for a shutdown, sends nothing: the pipe and the lease just close, and that
 /// browser stays closed.
 pub struct Leased {
     lease: Option<UnixStream>,
@@ -62,8 +64,15 @@ impl Leased {
 
 impl Drop for Leased {
     fn drop(&mut self) {
-        // the lease first; the tools, and the pipe, after this returns
-        drop(self.lease.take());
+        // the let-go and its answer first; the tools, and the pipe, after this returns
+        if let Some(mut lease) = self.lease.take() {
+            let _ = lease.set_write_timeout(Some(LEASE_ACK_WAIT));
+            if lease.write_all(&[LEASE_LET_GO]).is_ok() {
+                let _ = lease.set_read_timeout(Some(LEASE_ACK_WAIT));
+                // the answer, an end of file (the launcher gone), or the wait out
+                let _ = lease.read(&mut [0u8; 1]);
+            }
+        }
     }
 }
 
@@ -98,8 +107,7 @@ impl Tools for Leased {
 
     fn close(&mut self) {
         self.tools.close();
-        // The launcher closes its side once Chromium is gone and it exits: until then, the lease
-        // says this close was meant.
+        // No let-go. The launcher closes its side once Chromium is gone and it exits.
         if let Some(mut lease) = self.lease.take() {
             let _ = lease.set_read_timeout(Some(CLOSE_WAIT));
             let mut buf = [0u8; 64];
@@ -177,14 +185,13 @@ mod tests {
         assert_eq!(&buf, b"{}\0");
     }
 
-    /// What the launcher sees: its lease closed before Chromium's pipe when box-exec lets go, and
-    /// still held when a close for a shutdown has let the pipe go.
+    /// What the launcher sees: a let-go, answered, while the pipe is still open when the tools are
+    /// dropped; nothing at all, the lease just closing, after a close for a shutdown.
     #[test]
-    fn a_lease_closes_before_the_pipe_and_after_a_close() {
+    fn a_drop_says_let_go_before_the_pipe_goes_and_a_close_says_nothing() {
         struct Pipe {
             end: Option<UnixStream>,
-            launcher: Arc<UnixStream>,
-            lease_closed_first: Arc<AtomicBool>,
+            open_at_drop: Arc<AtomicBool>,
         }
         impl Tools for Pipe {
             fn call(&mut self, _: &str, _: &Value) -> Result<Value, ToolFailure> {
@@ -214,43 +221,91 @@ mod tests {
         }
         impl Drop for Pipe {
             fn drop(&mut self) {
-                if self.end.is_some() {
-                    self.launcher.set_nonblocking(true).unwrap();
-                    let gone = matches!((&*self.launcher).read(&mut [0u8; 1]), Ok(0));
-                    self.lease_closed_first.store(gone, Ordering::SeqCst);
-                }
+                self.open_at_drop
+                    .store(self.end.is_some(), Ordering::SeqCst);
             }
         }
-        let leased = |first: &Arc<AtomicBool>| {
-            let (lease, launcher) = UnixStream::pair().unwrap();
-            let (end, _chromium) = UnixStream::pair().unwrap();
-            let launcher = Arc::new(launcher);
+        // a launcher that records what came, and when, and answers a let-go
+        let launcher = |chromium: UnixStream, conn: UnixStream| {
+            std::thread::spawn(move || {
+                let mut heard = Vec::new();
+                let mut byte = [0u8; 1];
+                while matches!((&conn).read(&mut byte), Ok(1)) {
+                    // the pipe is still box-exec's while it decides
+                    chromium.set_nonblocking(true).unwrap();
+                    let open = !matches!((&chromium).read(&mut [0u8; 1]), Ok(0));
+                    heard.push((byte[0], open));
+                    (&conn).write_all(&[box_chrome::pipe::LEASE_ACK]).unwrap();
+                }
+                heard
+            })
+        };
+        let open_at_drop = Arc::new(AtomicBool::new(false));
+        let leased = || {
+            let (lease, conn) = UnixStream::pair().unwrap();
+            let (end, chromium) = UnixStream::pair().unwrap();
             let tools = Pipe {
                 end: Some(end),
-                launcher: Arc::clone(&launcher),
-                lease_closed_first: Arc::clone(first),
+                open_at_drop: Arc::clone(&open_at_drop),
             };
-            (Leased::new(lease, Box::new(tools)), launcher)
+            (
+                Leased::new(lease, Box::new(tools)),
+                launcher(chromium, conn),
+            )
         };
-        let first = Arc::new(AtomicBool::new(false));
-        let (dropped, _launcher) = leased(&first);
+        let (dropped, heard) = leased();
         drop(dropped);
-        assert!(
-            first.load(Ordering::SeqCst),
-            "the pipe closed before the lease"
-        );
+        assert!(open_at_drop.load(Ordering::SeqCst));
+        assert_eq!(heard.join().unwrap(), [(LEASE_LET_GO, true)]);
 
-        // a close: the pipe goes, and the lease is held until the launcher hangs up
-        let (mut closing, launcher) = leased(&first);
-        let hang_up = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(200));
-            launcher.shutdown(std::net::Shutdown::Both).unwrap();
-        });
+        let (mut closing, heard) = leased();
         let started = std::time::Instant::now();
         closing.close();
-        assert!(started.elapsed() >= Duration::from_millis(150));
-        assert!(started.elapsed() < CLOSE_WAIT);
-        hang_up.join().unwrap();
+        drop(closing);
+        assert!(heard.join().unwrap().is_empty());
+        let _ = started;
+        assert!(!open_at_drop.load(Ordering::SeqCst));
+    }
+
+    /// With no launcher to answer, a drop waits no longer than the bound.
+    #[test]
+    fn a_let_go_nobody_answers_costs_at_most_its_wait() {
+        struct Gone;
+        impl Tools for Gone {
+            fn call(&mut self, _: &str, _: &Value) -> Result<Value, ToolFailure> {
+                unreachable!()
+            }
+            fn set_policy(&mut self, _: &PolicyLists) -> Result<(), ToolFailure> {
+                unreachable!()
+            }
+            fn run_goal(&mut self, _: &str, _: &GoalBounds) -> Result<GoalReport, ToolFailure> {
+                unreachable!()
+            }
+            fn tabs(&mut self) -> Result<Vec<TabInfo>, ToolFailure> {
+                unreachable!()
+            }
+            fn open_tab(&mut self, _: &str) -> Result<String, ToolFailure> {
+                unreachable!()
+            }
+            fn switch_tab(&mut self, _: &str) -> Result<(), ToolFailure> {
+                unreachable!()
+            }
+            fn close_tab(&mut self, _: &str) -> Result<(), ToolFailure> {
+                unreachable!()
+            }
+        }
+        let (lease, silent) = UnixStream::pair().unwrap();
+        let started = std::time::Instant::now();
+        drop(Leased::new(lease, Box::new(Gone)));
+        let took = started.elapsed();
+        assert!(took >= LEASE_ACK_WAIT - Duration::from_millis(50) && took < LEASE_ACK_WAIT * 2);
+        drop(silent);
+        // the launcher already gone: no wait at all
+        let (lease, gone) = UnixStream::pair().unwrap();
+        drop(gone);
+        let started = std::time::Instant::now();
+        drop(Leased::new(lease, Box::new(Gone)));
+        assert!(started.elapsed() < Duration::from_millis(200));
     }
 
     #[test]

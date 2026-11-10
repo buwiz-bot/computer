@@ -133,9 +133,10 @@ impl Screen {
     }
 
     /// A tool's failure as a box-browser error. A closed pipe drops the tools, so the next call
-    /// opens the screen's new browser. If the browser was still there (a pipe that failed, not one
-    /// that closed), dropping them closes its lease first, so its launcher has it started again
-    /// (`pipe::Leased`): the screen doesn't stay without one.
+    /// opens the screen's new browser. Dropping them tells the launcher first (`pipe::Leased`):
+    /// if Chromium was still running with its pipe open (a pipe that failed, not one that closed),
+    /// it is started again, so the screen doesn't stay without one; if a person had closed it, it
+    /// stays closed.
     fn failed(&mut self, failure: ToolFailure, target: Option<&str>) -> BrowserError {
         match failure {
             ToolFailure::Invalid(m) => BrowserError::Invalid(m),
