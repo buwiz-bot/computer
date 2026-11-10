@@ -375,6 +375,7 @@ async fn a_password_field_s_text_is_never_returned() {
 fn with_values() -> SnapRequest {
     SnapRequest {
         values: true,
+        allow_domains: Some(vec!["shop.example".into()]),
         ..Default::default()
     }
 }
@@ -1511,6 +1512,19 @@ async fn a_page_off_the_list_shows_its_controls_and_none_of_what_they_hold() {
         );
     }
     assert!(!off.text.contains("kid@example.com"), "{}", off.text);
+    // values with no list, or an empty one, would read whatever page is current: refused
+    for none in [None, Some(Vec::new())] {
+        let bare = SnapRequest {
+            values: true,
+            allow_domains: none,
+            ..Default::default()
+        };
+        let refused = h.browsers.snap(":1", bare).await;
+        assert!(
+            matches!(&refused, Err(BrowserError::Invalid(m)) if m.contains("values needs allow_domains")),
+            "{refused:?}"
+        );
+    }
     // a list that isn't one is refused, as on act
     assert!(matches!(
         h.browsers.snap(":1", asked("not a host")).await,

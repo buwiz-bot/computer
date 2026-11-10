@@ -258,6 +258,18 @@ impl Browsers {
     ) -> Result<SnapResponse, BrowserError> {
         let limits = req.limits()?;
         let allow = policy::AllowList::parse(req.allow_domains.as_deref())?;
+        // No list is no restriction everywhere else. Here it would read whatever page happens to
+        // be current, so a caller says which sites it means.
+        if req.values
+            && req
+                .allow_domains
+                .as_deref()
+                .is_none_or(<[String]>::is_empty)
+        {
+            return Err(BrowserError::Invalid(
+                "values needs allow_domains: name the sites whose fields may be read".into(),
+            ));
+        }
         self.run(display, CALL_BUDGET, move |s| s.snap(&limits, &allow))
             .await
     }
@@ -357,8 +369,8 @@ pub struct SnapRequest {
     /// them (never a sensitive one). Off, a snap carries none of them.
     #[serde(default)]
     pub values: bool,
-    /// With `values`: a page off this list shows none. A snap gives no input, so the list
-    /// guards nothing else here.
+    /// The sites whose fields may be read: `values` needs it, and a page off it shows none. A
+    /// snap gives no input, so the list guards nothing else here.
     pub allow_domains: Option<Vec<String>>,
 }
 

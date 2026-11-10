@@ -106,7 +106,8 @@ enum BrowserCmd {
         /// sensitive field's
         #[arg(long)]
         values: bool,
-        /// With --values: a page off this list shows none (repeat for several hosts)
+        /// The sites whose fields may be read: --values needs at least one, and a page off the
+        /// list shows none (repeat for several hosts)
         #[arg(long = "allow-domain")]
         allow_domains: Vec<String>,
     },

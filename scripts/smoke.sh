@@ -592,6 +592,10 @@ printf '%s' "${body}" | grep -q '"seen":true'
 
 # With values asked for, the email field's typed text comes back; the password's and the card's never do.
 bpost snap '{"values":true}'
+echo "values with no list ${code}"
+[[ "${code}" == "400" ]]
+printf '%s' "${body}" | grep -q 'values needs allow_domains'
+bpost snap "{\"values\":true,\"allow_domains\":${allow}}"
 [[ "${code}" == "200" ]]
 printf '%s' "${body}" | python3 -c '
 import json, sys

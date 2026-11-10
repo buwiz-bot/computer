@@ -336,7 +336,7 @@ export type BrowserSnapRequest = {
    * does come, so ask only on pages whose fields the caller may read.
    */
   values?: boolean;
-  /** With `values`: a page off this list shows none. */
+  /** `values` needs it (else `400 invalid_request`): the sites whose fields may be read. A page off the list shows none. */
   allow_domains?: AllowDomains;
 };
 

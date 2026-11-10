@@ -408,7 +408,7 @@ components:
           description: Also what the fields hold (`value`, `value_truncated`, `checked`, `expanded`), never a sensitive element's. A field is sensitive by its type or label, so text in a plainly typed field whose label names no secret does come
         allow_domains:
           allOf: [{ $ref: "#/components/schemas/AllowDomains" }]
-          description: With `values`, a page off this list shows none of what its fields hold
+          description: The sites whose fields may be read. `values` needs it (400 invalid_request without), and a page off the list shows none of what its fields hold
     BrowserSnapResponse:
       type: object
       required: [snapshot, display, url, title, elements, total, truncated, text, elapsed_ms]
