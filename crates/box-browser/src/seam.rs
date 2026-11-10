@@ -7,14 +7,14 @@
 //!
 //! [`open`] is the seam. It takes the screen's end of Chromium's DevTools pipe, a unix socket
 //! `box-exec` was handed (`box_chrome::pipe`), and gives back the screen's tools: an
-//! `ultra_instinct_cdp::PipeBrowser` on it, and an `ultra_instinct_mcp::Server` whose connector
+//! `ultra_instinct_cdp::CdpBrowser` on it, and an `ultra_instinct_mcp::Server` whose connector
 //! attaches to a tab of that browser.
 
 use std::os::fd::OwnedFd;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use ultra_instinct_cdp::{PipeBrowser, PipeLimits};
+use ultra_instinct_cdp::{CdpBrowser, PipeLimits};
 use ultra_instinct_guard::Policy;
 use ultra_instinct_mcp::{
     BlockKind, Downloads, RunLimits, RunOutcome, Server, ToolError, ToolLimits, Uploads,
@@ -61,20 +61,13 @@ pub const ALLOWED: [&str; 17] = [
 /// `box-chrome-pipe` gives Chromium one end of a socket pair as both fd 3 (Chromium reads) and
 /// fd 4 (Chromium writes), so `pipe`, the other end, is both directions: what Chromium writes on
 /// fd 4 is read here, and what's written here Chromium reads on fd 3. ultra-instinct's
-/// `PipeBrowser` takes Chromium's fd 4 side as the reader and its fd 3 side as the writer, so
+/// `CdpBrowser` takes Chromium's fd 4 side as the reader and its fd 3 side as the writer, so
 /// both are this socket. It makes the writer non-blocking, a flag every copy of the socket
 /// shares: both copies are its own, and nothing else here keeps one. The socket counts as
 /// closed for Chromium only once every copy of this end is: both live in the server, and go
 /// with it.
 pub fn open(pipe: OwnedFd) -> Result<Box<dyn Tools>, ToolFailure> {
-    let reader = pipe
-        .try_clone()
-        .map_err(|err| ToolFailure::Unavailable(format!("the pipe can't be shared: {err}")))?;
-    let limits = PipeLimits {
-        max_frame_bytes: MAX_FRAME_BYTES,
-        call_deadline: CALL_DEADLINE,
-    };
-    let browser = PipeBrowser::with_limits(reader, pipe, limits);
+    let browser = browser_on(pipe)?;
     // The tab tools speak the pipe's own `Target.*`; a press needs the snapshot its index was
     // read in, and refuses `stale_ref` when the element it showed has moved or changed.
     let mut server = Server::with_pipe(browser)
@@ -99,6 +92,18 @@ pub fn open(pipe: OwnedFd) -> Result<Box<dyn Tools>, ToolFailure> {
         }
     }
     Ok(Box::new(ServerTools::new(server)))
+}
+
+/// ultra-instinct's browser on `pipe`, both directions, under box-browser's limits.
+fn browser_on(pipe: OwnedFd) -> Result<CdpBrowser, ToolFailure> {
+    let reader = pipe
+        .try_clone()
+        .map_err(|err| ToolFailure::Unavailable(format!("the pipe can't be shared: {err}")))?;
+    let limits = PipeLimits {
+        max_frame_bytes: MAX_FRAME_BYTES,
+        call_deadline: CALL_DEADLINE,
+    };
+    Ok(CdpBrowser::with_limits(reader, pipe, limits))
 }
 
 /// A tab, as box-browser lists it.
@@ -190,8 +195,9 @@ pub enum BlockedBy {
     /// see which.
     Confirm { label: String },
     /// The page, or the form a press would send, is off the allow-list. `host` is its host, or for
-    /// an address with none its scheme (`a blob: page`), as a tool's refusal names it; `None` when
-    /// its address couldn't be read. A confirm can't let it through.
+    /// an address with none its scheme (`a blob: page`; a scheme-less `host:port` its host), as a
+    /// tool's refusal names it; `None` when its address couldn't be read. A confirm can't let it
+    /// through.
     Domain { host: Option<String> },
     /// The run stopped itself.
     Loop,
@@ -538,6 +544,16 @@ mod tests {
         assert!(matches!(ToolFailure::from(err), ToolFailure::Invalid(_)));
         let err = ToolError::Browser("socket".into());
         assert!(matches!(ToolFailure::from(err), ToolFailure::Browser(_)));
+        // attached mode's refusal of a tab it didn't open (never met on a pipe) has no stable
+        // code of its own: it reads as the browser's failure
+        let not_owned = ultra_instinct_cdp::CdpError::NotOwned {
+            target_id: "T1".into(),
+        };
+        assert!(ToolError::from_cdp(&not_owned).is_none());
+        assert!(matches!(
+            ToolFailure::from(ToolError::cdp(&not_owned)),
+            ToolFailure::Browser(_)
+        ));
     }
 
     #[test]
@@ -561,7 +577,7 @@ mod tests {
             max_frame_bytes: MAX_FRAME_BYTES,
             call_deadline: Duration::from_secs(2),
         };
-        let browser = PipeBrowser::with_limits(end.try_clone().unwrap(), end, limits);
+        let browser = CdpBrowser::with_limits(end.try_clone().unwrap(), end, limits);
         // more than the socket holds, and nobody reading on the other side
         let big = format!("{{\"text\":\"{}\"}}", "x".repeat(8 << 20));
         let cut = browser.call("Input.insertText", &big).unwrap_err();
@@ -577,7 +593,176 @@ mod tests {
             ),
             "{after:?}"
         );
+        // closed by the cut-off itself, not by anything on the other side
+        assert!(after.to_string().contains("cut off mid-write"), "{after}");
         drop(chromium);
+    }
+
+    /// What Chromium's end of a pipe saw, played by [`chromium`].
+    struct Seen {
+        /// Requests read whole.
+        requests: usize,
+        /// Its read met an end of file: every copy of box-browser's end is closed.
+        eof: bool,
+        /// A write after that failed: nothing on box-browser's side reads any more.
+        write_refused: bool,
+    }
+
+    /// Chromium's end of a pipe, played by a thread: each request it reads is answered with what
+    /// `answer` makes of its id and method (nothing, for `None`), until its read ends.
+    fn chromium(
+        side: std::os::unix::net::UnixStream,
+        mut answer: impl FnMut(i64, &str) -> Option<Value> + Send + 'static,
+    ) -> std::thread::JoinHandle<Seen> {
+        use std::io::{BufRead, Write};
+        side.set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        std::thread::spawn(move || {
+            let mut writer = side.try_clone().unwrap();
+            let mut reader = std::io::BufReader::new(side);
+            let mut requests = 0;
+            let eof = loop {
+                let mut frame = Vec::new();
+                match reader.read_until(0, &mut frame) {
+                    Ok(0) => break true,
+                    Ok(_) if frame.last() == Some(&0) => {}
+                    _ => break false,
+                }
+                frame.pop();
+                let request: Value = serde_json::from_slice(&frame).unwrap();
+                requests += 1;
+                let id = request["id"].as_i64().unwrap();
+                if let Some(reply) = answer(id, request["method"].as_str().unwrap_or_default()) {
+                    let mut bytes = reply.to_string().into_bytes();
+                    bytes.push(0);
+                    if writer.write_all(&bytes).is_err() {
+                        break false;
+                    }
+                }
+            };
+            let write_refused = writer.write_all(b"{}\0").is_err();
+            Seen {
+                requests,
+                eof,
+                write_refused,
+            }
+        })
+    }
+
+    /// The browser `open` serves is under box-browser's frame cap and call deadline, and its
+    /// writer is non-blocking on the one socket: the flag is the socket's, so every copy of it,
+    /// the reader too, has it. Hence `open` keeps no copy of its own.
+    #[test]
+    fn the_pipe_is_opened_under_box_browser_s_limits_and_made_non_blocking() {
+        use std::os::fd::AsRawFd;
+        let (end, _chromium) = std::os::unix::net::UnixStream::pair().unwrap();
+        let probe = end.try_clone().unwrap();
+        let non_blocking = |fd| unsafe { libc::fcntl(fd, libc::F_GETFL) } & libc::O_NONBLOCK != 0;
+        assert!(!non_blocking(probe.as_raw_fd()));
+        let browser = browser_on(end.into()).unwrap();
+        assert!(non_blocking(probe.as_raw_fd()));
+        assert_eq!(
+            browser.limits(),
+            PipeLimits {
+                max_frame_bytes: MAX_FRAME_BYTES,
+                call_deadline: CALL_DEADLINE,
+            }
+        );
+    }
+
+    /// A frame over the cap costs only the call it answers: the next call on the pipe is answered.
+    #[test]
+    fn a_frame_over_the_cap_costs_only_its_call() {
+        let (end, side) = std::os::unix::net::UnixStream::pair().unwrap();
+        let limits = PipeLimits {
+            max_frame_bytes: 4096,
+            call_deadline: Duration::from_secs(5),
+        };
+        let browser = CdpBrowser::with_limits(end.try_clone().unwrap(), end, limits);
+        let chromium = chromium(side, |id, method| {
+            Some(match method {
+                "Page.captureScreenshot" => {
+                    json!({"id": id, "result": {"data": "x".repeat(8192)}})
+                }
+                _ => json!({"id": id, "result": {"product": "Chrome"}}),
+            })
+        });
+        let big = browser.call("Page.captureScreenshot", "{}").unwrap_err();
+        assert!(
+            matches!(
+                big,
+                ultra_instinct_cdp::CdpError::FrameTooLarge { limit: 4096 }
+            ),
+            "{big:?}"
+        );
+        assert!(matches!(
+            ToolFailure::from(ToolError::from_cdp(&big).expect("a typed failure")),
+            ToolFailure::TooLarge(_)
+        ));
+        let next = browser.call("Browser.getVersion", "{}").unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&next).unwrap()["product"],
+            "Chrome"
+        );
+        drop(browser);
+        assert_eq!(chromium.join().unwrap().requests, 2);
+    }
+
+    /// A call whose answer doesn't come is given up at its deadline, not before or long after;
+    /// it went out whole, so the pipe isn't closed for it, and the next call is answered.
+    #[test]
+    fn a_call_is_given_up_at_its_deadline_and_the_pipe_goes_on() {
+        let (end, side) = std::os::unix::net::UnixStream::pair().unwrap();
+        let deadline = Duration::from_secs(1);
+        let limits = PipeLimits {
+            max_frame_bytes: MAX_FRAME_BYTES,
+            call_deadline: deadline,
+        };
+        let browser = CdpBrowser::with_limits(end.try_clone().unwrap(), end, limits);
+        let chromium = chromium(side, |id, method| {
+            (method != "Runtime.evaluate").then(|| json!({"id": id, "result": {}}))
+        });
+        let start = Instant::now();
+        let slow = browser.call("Runtime.evaluate", "{}").unwrap_err();
+        let waited = start.elapsed();
+        assert!(
+            matches!(slow, ultra_instinct_cdp::CdpError::Timeout { .. }),
+            "{slow:?}"
+        );
+        assert!(
+            waited >= deadline && waited < deadline + Duration::from_secs(2),
+            "{waited:?}"
+        );
+        assert!(matches!(
+            ToolFailure::from(ToolError::from_cdp(&slow).expect("a typed failure")),
+            ToolFailure::Timeout(_)
+        ));
+        assert!(browser.call("Browser.getVersion", "{}").is_ok());
+        drop(browser);
+        assert_eq!(chromium.join().unwrap().requests, 2);
+    }
+
+    /// Dropping a screen's tools closes the socket both ways: Chromium's read meets an end of
+    /// file, and its write finds nobody reading. The launcher's protocol rests on it: Chromium
+    /// quits once its pipe closes.
+    #[test]
+    fn dropping_the_tools_closes_both_directions_of_the_pipe() {
+        let (end, side) = std::os::unix::net::UnixStream::pair().unwrap();
+        let chromium = chromium(side, |id, method| {
+            Some(match method {
+                "Target.getTargets" => json!({"id": id, "result": {"targetInfos": [
+                    {"targetId": "T1", "type": "page", "url": "about:blank", "title": ""}
+                ]}}),
+                _ => json!({"id": id, "result": {}}),
+            })
+        });
+        let mut tools = open(end.into()).unwrap();
+        assert_eq!(tools.tabs().unwrap().len(), 1);
+        drop(tools);
+        let seen = chromium.join().unwrap();
+        assert!(seen.requests >= 2);
+        assert!(seen.eof, "Chromium's read didn't end");
+        assert!(seen.write_refused, "Chromium's write still went somewhere");
     }
 
     #[test]
