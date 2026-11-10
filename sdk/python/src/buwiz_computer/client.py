@@ -340,8 +340,9 @@ class BuwizComputer:
         """The current tab's controls, each with an ``@eN`` ref good for this snapshot alone.
 
         ``fields``: ``max_nodes`` (1 to 1000, default 200). ``values=True`` also asks for what the
-        fields hold: elements may carry ``value`` (``value_truncated`` when cut), ``checked`` and
-        ``expanded``. A password's or any other sensitive field's never come; a field is sensitive
+        fields hold: elements may carry ``value`` (``value_truncated`` when cut), ``checked``,
+        ``expanded``, ``selected`` (``aria-selected``) and ``current`` (``aria-current``, such as
+        ``"page"``). A password's or any other sensitive field's never come; a field is sensitive
         by its type or label, so text in a plain field whose label names no secret does come.
         ``values`` needs ``allow_domains=[...]`` (in ``fields``), the sites whose fields may be
         read, else 400 ``invalid_request``; a page off the list shows none.
@@ -365,7 +366,9 @@ class BuwizComputer:
         through ultra-instinct's ticketed guard. A click or key on a label like ``Pay*``, or an
         Enter that would send a form whose submit button is one, fails with 409
         ``confirm_required``; its ``error.details.confirm`` goes back as ``confirm`` once a person
-        approved ``error.details.label``."""
+        approved ``error.details.label``. 409 ``stale_ref`` means nothing was pressed; 409
+        ``pressed_other`` means the press landed on another element (``error.details.label`` when
+        known): something was pressed, so snap before doing anything else."""
         body: dict[str, Any] = {"ref": ref, "action": action}
         for key, value in (
             ("text", text),

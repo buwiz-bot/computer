@@ -30,6 +30,13 @@ pub fn map_browser(err: BrowserError) -> ApiError {
         ),
         BrowserError::Invalid(_) => ApiError::invalid_request(message),
         BrowserError::Stale(_) => ApiError::new(StatusCode::CONFLICT, "stale_ref", message),
+        BrowserError::PressedOther { label, .. } => {
+            let err = ApiError::new(StatusCode::CONFLICT, "pressed_other", message);
+            match label {
+                Some(label) => err.with_details(json!({ "label": label })),
+                None => err,
+            }
+        }
         BrowserError::ConfirmRequired { label, token } => {
             ApiError::new(StatusCode::CONFLICT, "confirm_required", message)
                 .with_details(json!({ "label": label, "confirm": token }))
@@ -210,6 +217,29 @@ fn state_owner(display: &str) -> Result<String, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_press_on_another_element_is_its_own_conflict() {
+        let err = map_browser(BrowserError::PressedOther {
+            reference: "@e4".into(),
+            label: Some("Delete account".into()),
+        });
+        let wire = serde_json::to_value(err.into_response_body()).unwrap();
+        assert_eq!(err.status(), StatusCode::CONFLICT);
+        assert_eq!(wire["error"]["code"], "pressed_other");
+        assert_eq!(wire["error"]["details"]["label"], "Delete account");
+        let message = wire["error"]["message"].as_str().unwrap();
+        assert!(message.contains("@e4") && message.contains("something was pressed"));
+        let bare = map_browser(BrowserError::PressedOther {
+            reference: "@e4".into(),
+            label: None,
+        });
+        assert!(
+            serde_json::to_value(bare.into_response_body()).unwrap()["error"]
+                .get("details")
+                .is_none()
+        );
+    }
 
     #[test]
     fn a_body_is_its_json_or_nothing() {

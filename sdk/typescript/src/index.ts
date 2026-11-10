@@ -310,7 +310,7 @@ export type BrowserElement = {
   label: string;
   actions: string[];
   rect: BrowserRect;
-  /** A password field, or one that may be: its text, `checked` and `expanded` never come. */
+  /** A password field, or one that may be: its text, `checked`, `expanded`, `selected` and `current` never come. */
   sensitive?: boolean;
   /**
    * Only with `values: true`, never on a sensitive element: a field's text when its input type is
@@ -323,6 +323,10 @@ export type BrowserElement = {
   checked?: boolean;
   /** Only with `values: true`: `aria-expanded`. */
   expanded?: boolean;
+  /** Only with `values: true`: `aria-selected`, a selected tab, option or row. */
+  selected?: boolean;
+  /** Only with `values: true`: `aria-current` when it isn't `false` (`page`, `step`, `date`, …), lowercased, at most 16 characters. */
+  current?: string;
 };
 
 /** `POST /v1/browser/snap`. `{}` is the first 200 elements with no values. */
@@ -330,7 +334,7 @@ export type BrowserSnapRequest = {
   /** 1–1000 (default 200). */
   max_nodes?: number;
   /**
-   * Also what the fields hold (`value`, `checked`, `expanded`), never a sensitive field's. Default
+   * Also what the fields hold (`value`, `checked`, `expanded`, `selected`, `current`), never a sensitive field's. Default
    * false. A field counts as sensitive by its type or its label: text in a plainly typed field
    * whose label names no secret (a one-time code in a box labelled "Code 1", an account number)
    * does come, so ask only on pages whose fields the caller may read.
@@ -743,7 +747,9 @@ export class BuwizComputer {
    * Click, type, select, key, scroll or focus an element by ref, through ultra-instinct's ticketed
    * guard. A click or key on a label like `Pay*`, or an Enter that would send a form whose submit
    * button is one, is refused with `409 confirm_required` until `confirm` brings back
-   * `error.details.confirm`.
+   * `error.details.confirm`. `409 stale_ref` means nothing was pressed; `409 pressed_other` means
+   * the press landed on another element (`error.details.label` when known): something was
+   * pressed, so snap before doing anything else.
    */
   async browserAct(request: BrowserActRequest, display?: string): Promise<BrowserActResponse> {
     return this.authJson("POST", onScreen(`${this.execUrl}/v1/browser/act`, display), request, BROWSER_CALL_MS);

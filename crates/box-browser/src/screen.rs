@@ -12,7 +12,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use base64::Engine as _;
 use serde_json::{json, Value};
 
-use crate::policy::{AllowList, Confirms, Rules};
+use crate::policy::{same_label, AllowList, Confirms, Rules};
 use crate::seam::{BlockedBy, GoalBounds, GoalEnd, PolicyLists, ToolFailure, Tools};
 use crate::shape::{self, Seen};
 use crate::{
@@ -72,9 +72,9 @@ pub(crate) fn serve(mut screen: Screen, jobs: Receiver<Job>) {
         let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&mut screen)));
         if ran.is_err() {
             // What the call was in the middle of is unknown, so its snapshot and policy go. The
-            // pipe stays: Chromium quits, with status 0, as soon as box-exec's end closes, and the
-            // restart loop takes a 0 for a person closing it, so dropping the pipe here would close
-            // the screen's browser for good.
+            // pipe stays: Chromium quits as soon as box-exec's end closes, and though its launcher
+            // then has it started again (`pipe::Leased`), the person at the screen would lose
+            // their tabs to a panic of box-exec's.
             screen.forget();
         }
     }
@@ -133,7 +133,10 @@ impl Screen {
     }
 
     /// A tool's failure as a box-browser error. A closed pipe drops the tools, so the next call
-    /// opens the screen's new browser.
+    /// opens the screen's new browser. Dropping them tells the launcher first (`pipe::Leased`):
+    /// if Chromium was still running with its pipe open (a pipe that failed, not one that closed),
+    /// it is started again, so the screen doesn't stay without one; if a person had closed it, it
+    /// stays closed.
     fn failed(&mut self, failure: ToolFailure, target: Option<&str>) -> BrowserError {
         match failure {
             ToolFailure::Invalid(m) => BrowserError::Invalid(m),
@@ -243,6 +246,8 @@ impl Screen {
                 el.value_truncated = false;
                 el.checked = None;
                 el.expanded = None;
+                el.selected = None;
+                el.current = None;
             }
         }
         let kept: Vec<&Seen> = page.elements.iter().take(limits.max_nodes).collect();
@@ -261,6 +266,8 @@ impl Screen {
                 value_truncated: e.value_truncated,
                 checked: e.checked,
                 expanded: e.expanded,
+                selected: e.selected,
+                current: e.current.clone(),
             })
             .collect();
         self.latest = Some(Snapshot {
@@ -333,7 +340,8 @@ impl Screen {
             })?;
         // The same node may now be another control: a list that re-rendered reuses its rows.
         // The caller chose by the label it saw, so a press on another label is no press of its.
-        if here.label != snapped_label {
+        // Labels compare as ultra-instinct compares them: a zero-width character is no change.
+        if !same_label(&here.label, &snapped_label) {
             self.latest = None;
             return Err(BrowserError::Stale(format!(
                 "@e{n} was {:?} and is now {:?}: snap again",
@@ -346,8 +354,11 @@ impl Screen {
         let token = req.confirm.as_deref();
         let redeemed = token.and_then(|token| self.confirms.peek(token, Some(&region)));
         match (self.gate(req, &here.label, &now), redeemed) {
-            // A token confirms the label it was given for, and nothing it has turned into.
-            (Some(label), Some(approved)) if approved == label => confirmed.push(approved),
+            // A token confirms the label it was given for, and nothing it has turned into (a
+            // zero-width character in either is no other label: ultra-instinct folds it away too).
+            (Some(label), Some(approved)) if same_label(&approved, &label) => {
+                confirmed.push(approved)
+            }
             // a token for another label stays as it was: it confirms only that label, here
             (Some(label), _) => {
                 let token = self.confirms.issue(&label, Some(&region))?;
@@ -413,14 +424,21 @@ impl Screen {
             self.policy = None;
         }
         let done = done?;
-        // ultra-instinct finds the index again on its own fresh look. If that was another element,
-        // the page moved under the call, and the caller must know, not be told it went well.
+        // ultra-instinct resolves the index in the snapshot this look just read, so its answer
+        // names the element box-browser meant. Should it name another, that one was pressed: the
+        // caller must hear that something happened, not that nothing did (`stale_ref`).
         if let Some(acted_on) = done.get("region").and_then(Value::as_str) {
             if acted_on != region {
                 self.latest = None;
-                return Err(BrowserError::Stale(format!(
-                    "the page moved as @e{n} was acted on, and another element took it: snap again"
-                )));
+                let label = now
+                    .elements
+                    .iter()
+                    .find(|e| e.region == acted_on)
+                    .map(|e| shape::clip(&e.label, shape::MAX_LABEL_CHARS));
+                return Err(BrowserError::PressedOther {
+                    reference: format!("@e{n}"),
+                    label,
+                });
             }
         }
         Ok(ActResponse {
@@ -665,9 +683,10 @@ impl Screen {
                 "`confirm` is not a token this screen gave, or it was used or is old".into(),
             ));
         }
-        // ultra-instinct's own list lets a `blob:` page through by its origin, and box-browser's
-        // doesn't: the page a run starts on is checked here, as an act's is. (A page the run
-        // itself goes to is ultra-instinct's to check, at its next press.)
+        // The page a run starts on is checked here, as an act's is, so a run on a page off the
+        // list is refused before anything runs. A page the run itself goes to is ultra-instinct's
+        // to check, at its next press, under the same rule: the policy box-browser gives it
+        // refuses every `blob:` page too (`seam::PolicyLists::to_policy`).
         if !allow.raw().is_empty() {
             let now = self.look(false)?;
             allow.check(now.url.as_deref())?;

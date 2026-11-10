@@ -65,7 +65,8 @@ components:
               description: |
                 What a caller needs to act on this error, for the few that have any. `confirm_required`:
                 `{label, confirm}`, the label a person approves and the token sent back as `confirm`.
-                `domain_not_allowed`: `{host}`. Absent otherwise.
+                `domain_not_allowed`: `{host}`. `pressed_other`: `{label}`, the element that was
+                pressed instead, when it is known. Absent otherwise.
     Health:
       type: object
       required: [status]
@@ -386,7 +387,7 @@ components:
           maxItems: 8
           items: { type: string }
         rect: { $ref: "#/components/schemas/BrowserRect" }
-        sensitive: { type: boolean, description: "A password field, or one that may be: its text, checked and expanded never come" }
+        sensitive: { type: boolean, description: "A password field, or one that may be: its text, checked, expanded, selected and current never come" }
         value:
           type: string
           maxLength: 401
@@ -397,6 +398,8 @@ components:
         value_truncated: { type: boolean, description: "`value` was cut at 400 characters. At this ultra-instinct pin the browser side reads at most a field's first 200 characters and does not flag that cut, so a 200-character `value` may be the start of a longer text without this" }
         checked: { type: boolean, description: "Only with `values`, never on a sensitive element: a checkbox's or radio's state, or aria-checked" }
         expanded: { type: boolean, description: "Only with `values`, never on a sensitive element: aria-expanded" }
+        selected: { type: boolean, description: "Only with `values`, never on a sensitive element: aria-selected (a selected tab, option or row)" }
+        current: { type: string, maxLength: 16, examples: ["page"], description: "Only with `values`, never on a sensitive element: aria-current when it isn't false (`page`, `step`, `date`, …; `true` when set empty), lowercased, at most 16 characters" }
     BrowserSnapRequest:
       type: object
       additionalProperties: false
@@ -405,7 +408,7 @@ components:
         values:
           type: boolean
           default: false
-          description: Also what the fields hold (`value`, `value_truncated`, `checked`, `expanded`), never a sensitive element's. A field is sensitive by its type or label, so text in a plainly typed field whose label names no secret does come
+          description: Also what the fields hold (`value`, `value_truncated`, `checked`, `expanded`, `selected`, `current`), never a sensitive element's. A field is sensitive by its type or label, so text in a plainly typed field whose label names no secret does come
         allow_domains:
           allOf: [{ $ref: "#/components/schemas/AllowDomains" }]
           description: The sites whose fields may be read. `values` needs it (400 invalid_request without), and a page off the list shows none of what its fields hold
@@ -1832,8 +1835,8 @@ paths:
         The current tab's interactive elements in reading order, read by ultra-instinct (DOM and
         accessibility tree), each with an `@eN` ref good while this is the tab's latest snapshot. A
         password field's text never comes. With no body, the first 200. With `values: true`,
-        elements may carry `value`, `value_truncated`, `checked` and `expanded`; a sensitive one
-        never does.
+        elements may carry `value`, `value_truncated`, `checked`, `expanded`, `selected` and
+        `current`; a sensitive one never does.
       security: [{ bearer: [] }]
       parameters:
         - name: display
@@ -1900,7 +1903,9 @@ paths:
       description: |
         On the element `ref` names in the tab's latest snapshot, where it is now, through
         ultra-instinct's gate and one-shot ticket. A click or key on a label matching
-        BOX_BROWSER_CONFIRM_PRESS (default `Pay*`, `Delete*`, `Buy*`, `Place order*`), or an Enter or
+        BOX_BROWSER_CONFIRM_PRESS (default `Pay*`, `Delete*`, `Buy*`, `Place order*`, `Checkout*`,
+        `Submit order*`, `Confirm purchase*`, `Remove*`, `Order*`, `Purchase*`, `Subscribe*`; a label
+        that only starts like one, such as "Order history", is asked about too), or an Enter or
         Space that would send a form whose submit button matches, is 409 confirm_required with
         `error.details.{label, confirm}` until `confirm` brings the token back.
       security: [{ bearer: [] }]
@@ -1932,7 +1937,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "409":
-          description: stale_ref, the ref is from an older snapshot, or its element is gone, moved, or now shows another label; confirm_required, a person must approve `error.details.label`; target_gone, the tab is gone; dialog_open, a JavaScript dialog holds the tab
+          description: stale_ref, the ref is from an older snapshot, or its element is gone, moved, or now shows another label, and nothing was pressed; pressed_other, the press landed on another element (`error.details.label` when known), so something was pressed and the caller snaps before anything else; confirm_required, a person must approve `error.details.label`; target_gone, the tab is gone; dialog_open, a JavaScript dialog holds the tab
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }

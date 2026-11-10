@@ -102,8 +102,8 @@ enum BrowserCmd {
         /// The most elements returned (1 to 1000, default 200)
         #[arg(long)]
         max_nodes: Option<u64>,
-        /// Also what fields hold (value, checked, expanded), never a password's or another
-        /// sensitive field's
+        /// Also what fields hold (value, checked, expanded, selected, current), never a password's
+        /// or another sensitive field's
         #[arg(long)]
         values: bool,
         /// The sites whose fields may be read: --values needs at least one, and a page off the

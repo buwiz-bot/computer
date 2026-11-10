@@ -44,9 +44,20 @@ pub enum BrowserError {
     Unavailable(String),
     #[error("{0}")]
     Invalid(String),
-    /// A ref from an older snapshot, or an element that's gone.
+    /// A ref from an older snapshot, or an element that's gone. Nothing was pressed.
     #[error("{0}")]
     Stale(String),
+    /// The press went out and landed on another element than the one `reference` named: something
+    /// WAS pressed. `label` is that element's, when the look before the press showed it.
+    #[error(
+        "the press meant for {reference} landed on another element{}: something was pressed, so \
+         snap before doing anything else",
+        label.as_ref().map(|l| format!(" ({l:?})")).unwrap_or_default()
+    )]
+    PressedOther {
+        reference: String,
+        label: Option<String>,
+    },
     /// The press needs a person to confirm `label`; `token` goes back as `confirm`.
     #[error("pressing {label:?} needs a person's confirm: send the token back as `confirm`")]
     ConfirmRequired { label: String, token: String },
@@ -229,7 +240,9 @@ impl Browsers {
     }
 
     /// Asks every screen's browser to quit and lets go of its pipe, within `grace`: for
-    /// box-exec's shutdown. Each launcher ends what's left of its Chromium after that.
+    /// box-exec's shutdown. Each launcher ends what's left of its Chromium after that. No let-go is
+    /// said on any lease (`pipe::Leased`), so these browsers are closed, not started again, however
+    /// long they take to quit.
     pub async fn close_all(&self, grace: Duration) {
         let senders: Vec<SyncSender<Job>> = self.lock().drain().map(|(_, s)| s).collect();
         let mut waits = Vec::new();
@@ -365,8 +378,8 @@ pub const MAX_GOAL_CHARS: usize = 2000;
 pub struct SnapRequest {
     /// The most elements returned (the page's first ones in reading order).
     pub max_nodes: Option<usize>,
-    /// Ask for what the fields hold: `value`, `checked`, `expanded` on the elements that may show
-    /// them (never a sensitive one). Off, a snap carries none of them.
+    /// Ask for what the fields hold: `value`, `checked`, `expanded`, `selected`, `current` on the
+    /// elements that may show them (never a sensitive one). Off, a snap carries none of them.
     #[serde(default)]
     pub values: bool,
     /// The sites whose fields may be read: `values` needs it, and a page off it shows none. A
@@ -429,6 +442,13 @@ pub struct Element {
     /// With `values` asked for: an `aria-expanded` element's state.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expanded: Option<bool>,
+    /// With `values` asked for: an `aria-selected` element's state (a selected tab, option or row).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected: Option<bool>,
+    /// With `values` asked for: `aria-current` when the page sets it (`page`, `step`, `date`, …),
+    /// lowercased, at most 16 characters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]

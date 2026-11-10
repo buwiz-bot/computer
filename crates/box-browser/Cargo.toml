@@ -21,6 +21,7 @@ base64 = { workspace = true }
 ultra-instinct-mcp = { workspace = true }
 ultra-instinct-guard = { workspace = true }
 ultra-instinct-cdp = { workspace = true }
+ultra-instinct-core = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

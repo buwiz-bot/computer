@@ -153,7 +153,7 @@ start_chrome() {
   # so CUA screenshots are a usable desktop, not a banner.
   # No DevTools port: it has no login, and every user in the box shares this loopback. A DevTools
   # pipe instead, through box-chrome-pipe: Chromium gets one end as fds 3 and 4, and the other is
-  # handed once, at ${BOX_SCREEN_RUN}/cdp.sock, to box-exec alone (docs/USERS.md). BOX_BROWSER=0
+  # handed once, at ${BOX_SCREEN_RUN}/cdp.sock, to a boxsvc peer: box-exec (docs/USERS.md). BOX_BROWSER=0
   # starts it with no pipe. box-chrome-pipe lives as long as Chromium, passes signals on and exits
   # as it does, so chrome.pid and this loop see what they always did.
   # Closing/crashing the browser must not take the box down — restart it.
@@ -207,12 +207,18 @@ start_chrome() {
       # A browser the person closed stays closed: exit 0 is a deliberate close from the live
       # screen, and a window that reappears two seconds later is not a box anyone can use. The
       # dock's launcher and `open_url` start it again when it is wanted. Anything else is a
-      # crash, and a crash must not take the box down — restart it.
+      # crash, and a crash must not take the box down — restart it. 75 is box-chrome-pipe's own:
+      # box-exec let go of a browser that still worked, and Chromium quit when its pipe closed
+      # (box_chrome::pipe::PIPE_LET_GO), so it is started again with a fresh pipe.
       if [[ "${code}" -eq 0 ]]; then
         echo "chromium closed; not restarting (the dock launcher or open_url starts it again)" >&2
         break
       fi
-      echo "chromium exited with ${code}; restarting in 2s" >&2
+      if [[ "${code}" -eq 75 ]]; then
+        echo "chromium quit when box-exec let go of its pipe; restarting in 2s" >&2
+      else
+        echo "chromium exited with ${code}; restarting in 2s" >&2
+      fi
       sleep 2
     done
   ) &
