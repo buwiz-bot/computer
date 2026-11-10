@@ -34,7 +34,9 @@ use std::time::Duration;
 use box_chrome::pipe::{send_fd, PIPE_LET_GO};
 use box_common::peer::peer_uid;
 
-/// The only user the pipe is handed to.
+/// The only user the pipe is handed to. `box-exec` and `box-host` both run as it, and the kernel
+/// can't tell this launcher which program a peer is: another user's `/proc/<pid>/exe` is closed to
+/// it, and a process's name is its own to set. Only a user of `box-exec`'s own could (docs/USERS.md).
 const SERVICE_USER: &str = "boxsvc";
 
 /// Chromium's pid, which is also its process group's id, for the signal handler.

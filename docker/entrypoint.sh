@@ -153,7 +153,7 @@ start_chrome() {
   # so CUA screenshots are a usable desktop, not a banner.
   # No DevTools port: it has no login, and every user in the box shares this loopback. A DevTools
   # pipe instead, through box-chrome-pipe: Chromium gets one end as fds 3 and 4, and the other is
-  # handed once, at ${BOX_SCREEN_RUN}/cdp.sock, to box-exec alone (docs/USERS.md). BOX_BROWSER=0
+  # handed once, at ${BOX_SCREEN_RUN}/cdp.sock, to a boxsvc peer: box-exec (docs/USERS.md). BOX_BROWSER=0
   # starts it with no pipe. box-chrome-pipe lives as long as Chromium, passes signals on and exits
   # as it does, so chrome.pid and this loop see what they always did.
   # Closing/crashing the browser must not take the box down — restart it.

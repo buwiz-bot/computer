@@ -84,7 +84,7 @@ tini
       │    ├── Xvfb :1  (1280x800x24)      if BOX_DESKTOP=1
       │    ├── xfce4-session
       │    ├── box-chrome-pipe → chromium (profile in the home volume; no DevTools port; --remote-debugging-pipe,
-      │    │     the other end offered once at /run/box/x/<slot>/run/cdp.sock, to box-exec alone)
+      │    │     the other end offered once at /run/box/x/<slot>/run/cdp.sock, to a boxsvc peer: box-exec)
       │    │     optional --proxy-server=http://127.0.0.1:8791 when BOX_EGRESS_TUNNEL=1
       │    │     not in the death-watch — closing the browser must not kill the box
       │    └── box-egress-tunnel  (WS 8790, CONNECT 127.0.0.1:8791, admin 127.0.0.1:8792)
@@ -167,7 +167,7 @@ CUA is first-party in this image:
 
 ## Browser (DevTools pipe)
 
-**Who holds the pipe.** Every screen's Chromium is started through `box-chrome-pipe`: by the entrypoint's restart loop for the main screen, and by `box-chromium` (the dock, `box-screen open`) for any screen. It runs as the screen's desktop user, makes a socket pair, and starts Chromium with `--remote-debugging-pipe` and one end on fds 3 and 4. It keeps the other end and listens at `/run/box/x/<slot>/run/cdp.sock`, in the folder only the desktop and `boxsvc` may enter. The first peer the kernel says is `boxsvc` gets the end (`SCM_RIGHTS`). The launcher then closes its own copy and removes the socket. Anyone else is hung up on. A lock next to the socket (`cdp.lock`) makes one launcher per screen: a second start, which Chromium turns into a window of the running instance, gets no pipe and touches nothing.
+**Who holds the pipe.** Every screen's Chromium is started through `box-chrome-pipe`: by the entrypoint's restart loop for the main screen, and by `box-chromium` (the dock, `box-screen open`) for any screen. It runs as the screen's desktop user, makes a socket pair, and starts Chromium with `--remote-debugging-pipe` and one end on fds 3 and 4. It keeps the other end and listens at `/run/box/x/<slot>/run/cdp.sock`, in the folder only the desktop and `boxsvc` may enter. The first peer the kernel says is `boxsvc` gets the end (`SCM_RIGHTS`): `box-exec`, the one that connects, though `box-host` is `boxsvc` too and the launcher can't tell them apart (the kernel names a uid, gid and pid, and another user's `/proc/<pid>/exe` is closed to it). Only a user of its own for `box-exec` would let the launcher name it: [USERS.md](USERS.md). The launcher then closes its own copy and removes the socket. Anyone else is hung up on. A lock next to the socket (`cdp.lock`) makes one launcher per screen: a second start, which Chromium turns into a window of the running instance, gets no pipe and touches nothing.
 
 **Who takes it.** `box-exec` connects when a `/v1/browser/*` call first needs the screen. It checks that the listener is that screen's desktop user (`SO_PEERCRED`) before it reads, and takes exactly one fd. The fd goes to the screen's own thread in `box-browser`, which owns it, and everything spoken over it, for as long as Chromium runs. When Chromium exits, the pipe closes: the call that finds it answers `503 browser_unavailable`, and the next one takes the new Chromium's pipe from its launcher (the image smoke kills Chromium and checks this). The connection the end came over is kept beside it, as its lease (below).
 

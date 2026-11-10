@@ -6,7 +6,8 @@
 //! group `boxsvc`, mode 0750: a command's user can't enter it). It hands the end over with
 //! `SCM_RIGHTS` only to a peer the kernel says is `boxsvc`, then closes its own copy and removes
 //! the socket. From then on `box-exec` holds the only other end of the browser's protocol. Nothing
-//! listens on TCP.
+//! listens on TCP. The check is of a user, not a program: `box-host` is `boxsvc` too, and never
+//! connects, but could take the end if it did (docs/USERS.md).
 //!
 //! `box-exec`, for its part, checks that what listens at `cdp.sock` is that screen's own desktop
 //! user before it takes what is offered, as it checks the screen's X server and accessibility bus.
