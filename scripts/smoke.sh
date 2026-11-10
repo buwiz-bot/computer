@@ -934,6 +934,126 @@ after_uid="$(bot_uid)"
 [[ "${after_uid}" == "${keep_uid}" ]]
 echo "uid kept ${after_uid}"
 
+echo "==> BOX_CHROME=0 (as Buwiz Bot's broker makes a computer): a Bot's own screen still has /v1/browser/*, and a login is filled through it"
+# The broker's fill: open the page on the Bot's screen, read the front tab, snap with the card's
+# site as allow_domains, type each field by ref (the password only into a sensitive one), and press
+# Enter in the password field: a "Sign in" form asks no confirm. The password is a fake marker that
+# must never come back.
+"${COMPOSE[@]}" down --remove-orphans >/dev/null 2>&1 || true
+if [[ "${COMPOSE[0]}" == "sudo" ]]; then
+  sudo -n env BOX_CHROME=0 docker compose -p "${PROJECT}" up -d --force-recreate
+else
+  BOX_CHROME=0 "${COMPOSE[@]}" up -d --force-recreate
+fi
+ok=0
+for _ in $(seq 1 90); do
+  if curl -fsS -H "Authorization: Bearer ${TOKEN}" "${HOST_URL}/v1/ready" 2>/dev/null | grep -q '"desktop_ready":true'; then
+    ok=1
+    break
+  fi
+  sleep 1
+done
+if [[ "${ok}" != "1" ]]; then
+  echo "the BOX_CHROME=0 box never became ready" >&2
+  "${COMPOSE[@]}" logs || true
+  exit 1
+fi
+curl -fsS -H "Authorization: Bearer ${TOKEN}" "${HOST_URL}/v1/info" | python3 -c '
+import json, sys
+c = json.load(sys.stdin)["capabilities"]
+assert c["chrome"]["enabled"] is False, c["chrome"]
+assert c["browser"]["enabled"] is True, c.get("browser")
+print("BOX_CHROME=0: chrome off, browser on")
+'
+# The main screen has no Chromium: its browser is unavailable, not disabled.
+bpost snap '{}'
+echo "main screen snap ${code} ${body}"
+[[ "${code}" == "503" ]]
+printf '%s' "${body}" | grep -q '"code":"browser_unavailable"'
+curl -fsS -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+  -d '{"command":["sh","-c","nohup perl /workspace/shared/browser-shop.pl >/dev/null 2>&1 & for i in $(seq 50); do curl -fsS -o /dev/null http://127.0.0.1:6910/login && exit 0; sleep 0.1; done; exit 1"]}' \
+  "${EXEC_URL}/v1/exec" | grep -q '"exit_code":0'
+spost '{"action":"up","bot":"smoke"}'
+echo "screen up ${screen}"
+bot_display="$(printf '%s' "${screen}" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert "error" not in d, d; print(d["display"])')"
+spost '{"action":"open","bot":"smoke","url":"http://127.0.0.1:6910/login"}'
+echo "screen open ${screen}"
+on="?display=${bot_display}"
+seen=0
+for _ in $(seq 1 40); do
+  bpost "wait${on}" '{"text":"Fixture sign-in","load":"load","timeout_ms":5000}'
+  if [[ "${code}" == "200" ]] && printf '%s' "${body}" | grep -q '"seen":true'; then
+    seen=1
+    break
+  fi
+  sleep 0.5
+done
+echo "bot screen wait ${code} ${body}"
+[[ "${seen}" == "1" ]]
+front=""
+for _ in $(seq 1 40); do
+  front="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" "${HOST_URL}/v1/chrome/active-tab${on}")"
+  if printf '%s' "${front}" | grep -q '"url":"http://127.0.0.1:6910/login"'; then
+    break
+  fi
+  sleep 0.25
+done
+echo "front tab ${front}"
+printf '%s' "${front}" | grep -q '"url":"http://127.0.0.1:6910/login"'
+bpost "snap${on}" "{\"allow_domains\":${allow}}"
+echo "bot screen snap ${code}"
+[[ "${code}" == "200" ]]
+printf '%s' "${body}" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+assert d["url"] == "http://127.0.0.1:6910/login", d["url"]
+by = {e["label"]: e for e in d["elements"] if e["role"] == "text_field"}
+assert not by["Email"].get("sensitive"), by["Email"]
+assert by["Password"].get("sensitive") is True, by["Password"]
+print("sign-in form: the email field is not sensitive, the password field is")
+'
+snapshot="$(printf '%s' "${body}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["snapshot"])')"
+email="$(ref_of Email text_field)"
+bpost "act${on}" "{\"ref\":\"${email}\",\"snapshot\":${snapshot},\"action\":\"type\",\"text\":\"kid@example.com\",\"allow_domains\":${allow}}"
+echo "type email ${code}"
+[[ "${code}" == "200" ]]
+# A fresh snap before each field, as the broker does: a ref is good for its snapshot only.
+bpost "snap${on}" "{\"allow_domains\":${allow}}"
+[[ "${code}" == "200" ]]
+snapshot="$(printf '%s' "${body}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["snapshot"])')"
+pw="$(ref_of Password text_field)"
+bpost "act${on}" "{\"ref\":\"${pw}\",\"snapshot\":${snapshot},\"action\":\"type\",\"text\":\"fake-smoke-login-pw\",\"allow_domains\":${allow}}"
+echo "type password ${code}"
+[[ "${code}" == "200" ]]
+if printf '%s' "${body}" | grep -q 'fake-smoke-login-pw'; then
+  echo "a typed password came back" >&2
+  exit 1
+fi
+bpost "act${on}" "{\"ref\":\"${pw}\",\"action\":\"key\",\"text\":\"Enter\",\"allow_domains\":${allow}}"
+echo "enter in the sign-in form ${code} ${body}"
+[[ "${code}" == "200" ]]
+bpost "wait${on}" '{"text":"signed in as kid@example.com","timeout_ms":10000}'
+echo "signed in ${code} ${body}"
+printf '%s' "${body}" | grep -q '"seen":true'
+bpost "snap${on}" "{\"values\":true,\"allow_domains\":${allow}}"
+[[ "${code}" == "200" ]]
+if printf '%s' "${body}" | grep -q 'fake-smoke-login-pw'; then
+  echo "a typed password came back in a snap" >&2
+  exit 1
+fi
+# Off the card's site: nothing typed.
+bpost "act${on}" "{\"ref\":\"${pw}\",\"action\":\"type\",\"text\":\"x\",\"allow_domains\":[\"example.org\"]}"
+echo "off the card's site ${code}"
+[[ "${code}" == "403" ]]
+printf '%s' "${body}" | grep -q '"code":"domain_not_allowed"'
+bpost "state${on}" '{"op":"save","name":"signin"}'
+echo "bot screen state save ${code} ${body}"
+[[ "${code}" == "200" ]]
+bpost "state${on}" '{"op":"load","name":"signin"}'
+echo "bot screen state load ${code} ${body}"
+[[ "${code}" == "200" ]]
+spost '{"action":"down","bot":"smoke"}'
+
 echo "==> BOX_DESKTOP=0 still serves exec+host"
 "${COMPOSE[@]}" down --remove-orphans >/dev/null 2>&1 || true
 if [[ "${COMPOSE[0]}" == "sudo" ]]; then

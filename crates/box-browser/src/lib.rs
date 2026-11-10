@@ -36,7 +36,7 @@ pub use seam::Tools;
 /// What a call can fail with. `box-exec` maps each onto a status and a code.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum BrowserError {
-    /// `BOX_BROWSER`, `BOX_CHROME` or `BOX_DESKTOP` is off.
+    /// `BOX_BROWSER` or `BOX_DESKTOP` is off.
     #[error("the browser layer is off on this computer")]
     Disabled,
     /// The screen has no browser box-exec can use now.
@@ -124,16 +124,17 @@ impl std::fmt::Debug for Browsers {
 pub const DEFAULT_STATE_ROOT: &str = "/home/box/browser-state";
 
 impl Browsers {
-    /// On when `BOX_BROWSER`, `BOX_CHROME` and `BOX_DESKTOP` are, over each screen's real pipe.
+    /// On when `BOX_BROWSER` and `BOX_DESKTOP` are ([`box_common::browser_layer_on`]), over each
+    /// screen's real pipe. `BOX_CHROME=0` starts no Chromium on the main screen, so there it's
+    /// `503 browser_unavailable` until one runs; a Bot's own screen starts its own.
     pub fn from_env() -> Self {
-        let on = |name: &str| box_common::env_bool(name, true);
         let state_root = std::env::var("BOX_BROWSER_STATE_DIR")
             .ok()
             .filter(|s| !s.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from(DEFAULT_STATE_ROOT));
         Self::new(
-            on("BOX_BROWSER") && on("BOX_CHROME") && on("BOX_DESKTOP"),
+            box_common::browser_layer_on(),
             Rules::from_env(),
             Arc::new(pipe::PipeOpener),
             state_root,

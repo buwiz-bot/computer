@@ -41,6 +41,8 @@ pub struct AppState {
     pub host_bind: SocketAddr,
     pub desktop: DesktopConfig,
     pub chrome: ChromeConfig,
+    /// `/v1/browser/*` is served ([`box_common::browser_layer_on`]).
+    pub browser: bool,
     pub cua: CuaConfig,
     pub egress: EgressConfig,
     pub shutdown: Arc<Notify>,
@@ -60,6 +62,7 @@ impl AppState {
             host_bind: config.host_bind,
             desktop: DesktopConfig::from_env(),
             chrome: ChromeConfig::from_env(),
+            browser: box_common::browser_layer_on(),
             cua: CuaConfig::from_env(),
             egress: EgressConfig::from_env()?,
             shutdown: Arc::new(Notify::new()),
@@ -124,6 +127,10 @@ struct Capabilities {
     desktop: Capability,
     viewer: ViewerCapability,
     chrome: Capability,
+    /// `/v1/browser/*`: on with `BOX_BROWSER` and `BOX_DESKTOP`, whatever `BOX_CHROME` says. Ready
+    /// once the desktop is; a screen with no browser on a pipe still answers
+    /// `503 browser_unavailable`.
+    browser: Capability,
     cua: Capability,
     egress_tunnel: Capability,
 }
@@ -285,6 +292,10 @@ async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
                     enabled: st.enabled,
                     ready: st.ready,
                 }
+            },
+            browser: Capability {
+                enabled: state.browser,
+                ready: state.browser && desktop_ready,
             },
             cua: Capability {
                 enabled: state.cua.enabled,
@@ -497,6 +508,7 @@ mod tests {
             host_bind: "0.0.0.0:1340".parse().unwrap(),
             desktop: DesktopConfig::disabled(),
             chrome: ChromeConfig::disabled(),
+            browser: false,
             cua: CuaConfig::disabled(),
             egress: EgressConfig::disabled(),
             shutdown: Arc::new(Notify::new()),
@@ -613,6 +625,8 @@ mod tests {
         assert_eq!(body["capabilities"]["viewer"]["ready"], false);
         assert_eq!(body["capabilities"]["chrome"]["enabled"], false);
         assert_eq!(body["capabilities"]["chrome"]["ready"], false);
+        assert_eq!(body["capabilities"]["browser"]["enabled"], false);
+        assert_eq!(body["capabilities"]["browser"]["ready"], false);
         assert_eq!(body["capabilities"]["cua"]["enabled"], false);
         assert_eq!(body["capabilities"]["cua"]["ready"], false);
         assert_eq!(body["capabilities"]["egress_tunnel"]["enabled"], false);
