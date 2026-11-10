@@ -257,7 +257,8 @@ impl Browsers {
         req: SnapRequest,
     ) -> Result<SnapResponse, BrowserError> {
         let limits = req.limits()?;
-        self.run(display, CALL_BUDGET, move |s| s.snap(&limits))
+        let allow = policy::AllowList::parse(req.allow_domains.as_deref())?;
+        self.run(display, CALL_BUDGET, move |s| s.snap(&limits, &allow))
             .await
     }
 
@@ -356,6 +357,9 @@ pub struct SnapRequest {
     /// them (never a sensitive one). Off, a snap carries none of them.
     #[serde(default)]
     pub values: bool,
+    /// With `values`: a page off this list shows none. A snap gives no input, so the list
+    /// guards nothing else here.
+    pub allow_domains: Option<Vec<String>>,
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -1213,7 +1213,8 @@ async fn ultra_instinct_s_values_are_read_and_held_back() {
     );
     // At this pin ultra-instinct reads a native select as a combobox, which takes typed text and
     // has no input type or text value: it fails closed, sensitive, and sends no option. Were it
-    // to send one, `may_return_selected` lets it through.
+    // to send one as a combobox, `may_return_selected` still holds it back: a combobox may be
+    // a box a person typed in.
     let country = by("Country");
     assert!(country.sensitive, "{snap:?}");
     assert_eq!(country.value, None);
@@ -1410,7 +1411,7 @@ fn no_press_goes_out_without_time_to_answer() {
         crate::screen::Screen::new(":1".into(), h.opener.clone(), Arc::new(Rules::default()));
     let allow = crate::policy::AllowList::parse(None).unwrap();
     screen
-        .snap(&SnapRequest::default().limits().unwrap())
+        .snap(&SnapRequest::default().limits().unwrap(), &allow)
         .unwrap();
     screen.set_deadline(Some(std::time::Instant::now() + Duration::from_secs(1)));
     assert!(matches!(
@@ -1480,4 +1481,39 @@ async fn an_answer_past_its_cap_is_refused() {
         matches!(&err, BrowserError::Backend(m) if m.contains("answer to browser_get_state is more than")),
         "{err:?}"
     );
+}
+
+#[tokio::test]
+async fn a_page_off_the_list_shows_its_controls_and_none_of_what_they_hold() {
+    let h = harness();
+    h.world.lock().unwrap().elements.push(
+        json!({"index": 6, "region": "n60", "role": "checkbox", "label": "Gift wrap",
+               "input_type": "checkbox", "checked": true, "expanded": false,
+               "actions": ["toggle"]}),
+    );
+    let asked = |list: &str| SnapRequest {
+        values: true,
+        allow_domains: Some(vec![list.into()]),
+        ..Default::default()
+    };
+    // the page is shop.example's: a list that holds it shows the email
+    let on = h.browsers.snap(":1", asked("shop.example")).await.unwrap();
+    assert_eq!(on.elements[1].value.as_deref(), Some("kid@example.com"));
+    assert_eq!(on.elements[5].checked, Some(true));
+    // another Bot's list doesn't hold it: the controls come, and nothing they hold
+    let off = h.browsers.snap(":1", asked("bank.example")).await.unwrap();
+    assert_eq!(off.elements.len(), on.elements.len());
+    assert_eq!(off.elements[1].label, "Email");
+    for e in &off.elements {
+        assert!(
+            e.value.is_none() && !e.value_truncated && e.checked.is_none() && e.expanded.is_none(),
+            "{e:?}"
+        );
+    }
+    assert!(!off.text.contains("kid@example.com"), "{}", off.text);
+    // a list that isn't one is refused, as on act
+    assert!(matches!(
+        h.browsers.snap(":1", asked("not a host")).await,
+        Err(BrowserError::Invalid(_))
+    ));
 }

@@ -106,6 +106,9 @@ enum BrowserCmd {
         /// sensitive field's
         #[arg(long)]
         values: bool,
+        /// With --values: a page off this list shows none (repeat for several hosts)
+        #[arg(long = "allow-domain")]
+        allow_domains: Vec<String>,
     },
     /// POST /v1/browser/act: click, type, select, key, scroll or focus an element by ref
     Act {
@@ -632,12 +635,16 @@ fn compact(mut body: serde_json::Value) -> serde_json::Value {
 
 async fn browser(on: &BuwizComputer, cmd: BrowserCmd) -> Result<()> {
     let answer = match cmd {
-        BrowserCmd::Snap { max_nodes, values } => {
-            on.browser_snap(compact(json!({
+        BrowserCmd::Snap {
+            max_nodes,
+            values,
+            allow_domains,
+        } => {
+            let body = compact(json!({
                 "max_nodes": max_nodes,
                 "values": values.then_some(true),
-            })))
-            .await?
+            }));
+            on.browser_snap(with_allow(body, allow_domains)).await?
         }
         BrowserCmd::Act {
             reference,

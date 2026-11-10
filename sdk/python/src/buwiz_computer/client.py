@@ -341,7 +341,9 @@ class BuwizComputer:
 
         ``fields``: ``max_nodes`` (1 to 1000, default 200). ``values=True`` also asks for what the
         fields hold: elements may carry ``value`` (``value_truncated`` when cut), ``checked`` and
-        ``expanded``. A password's or any other sensitive field's never come.
+        ``expanded``. A password's or any other sensitive field's never come; a field is sensitive
+        by its type or label, so text in a plain field whose label names no secret does come.
+        With ``values``, ``allow_domains=[...]`` (in ``fields``) shows none for a page off the list.
         """
         body = dict(fields)
         if values:

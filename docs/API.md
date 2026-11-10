@@ -454,7 +454,7 @@ Each screen's Chromium, driven over its DevTools pipe through [ultra-instinct](h
 ### `POST /v1/browser/snap`
 
 ```json
-{ "max_nodes": 200, "values": true }
+{ "max_nodes": 200, "values": true, "allow_domains": ["shop.example"] }
 ```
 
 ```json
@@ -481,9 +481,10 @@ Each screen's Chromium, driven over its DevTools pipe through [ultra-instinct](h
 - The current tab's interactive elements in reading order, the first `max_nodes` (1–1000, default 200). `truncated` when the page had more.
 - `rect` is the page's viewport in CSS pixels, not screen pixels.
 - `values` (default `false`): also what the fields hold. Without it no element carries `value`, `value_truncated`, `checked` or `expanded`, and `text` shows none of them. With it, never on a `sensitive` element, and otherwise:
-  - `value`: a field's text, when its input type is known and isn't `password` or `hidden` (an `<input>` of any other type, `text` when it names none); a `<textarea>` or a content-editable box has no input type to read, so its text doesn't come. A native `<select>`'s chosen option (its labels, comma-separated when several are): an element with no input type, a select's role (`generic`, `combobox` or `listbox`, as ultra-instinct names one) and the `select` action; a text widget that also offers `select` shows no text. Today ultra-instinct reads Chromium's `<select>` as a combobox whose type and text it can't read, and so fails closed: it's `sensitive`, and its option doesn't come. At most 400 characters; `value_truncated: true` when it was cut. At this ultra-instinct pin the browser side reads no more than a field's first 200 characters and doesn't flag that cut, so a 200-character `value` may be the start of a longer text with no `value_truncated`. A checkbox's or a radio's `value` doesn't come; its `checked` does.
+  - `value`: a field's text, when its input type is known and isn't `password` or `hidden` (an `<input>` of any other type, `text` when it names none); a `<textarea>` or a content-editable box has no input type to read, so its text doesn't come. A native `<select>`'s chosen option (its labels, comma-separated when several are): an element with no input type, a select's role (`generic` or `listbox`, as ultra-instinct names one) and the `select` action; a text widget that also offers `select`, and a `combobox` (which may be a box a person types in), show no text. Today ultra-instinct reads Chromium's `<select>` as a combobox, and marks it `sensitive` besides, so a native select's option doesn't come. At most 400 characters; `value_truncated: true` when it was cut. At this ultra-instinct pin the browser side reads no more than a field's first 200 characters and doesn't flag that cut, so a 200-character `value` may be the start of a longer text with no `value_truncated`. A checkbox's or a radio's `value` doesn't come; its `checked` does.
   - `checked`: a checkbox's or a radio's state (a `<label>` for one carries it too), or `aria-checked`. `expanded`: `aria-expanded`. Each only when the page says.
   - `text` adds ` value="…"`, ` checked` / ` unchecked` and ` expanded` / ` collapsed` to the element's line.
+  - **What `values` can show.** Before `values`, no field's text was ever returned. A field is held back by its input type (`password`, `hidden`) or by a label that names a secret (password, PIN, CVV, card, one-time code, …): text in a plainly typed field whose label names none, such as a one-time code in a box labelled `Code 1`, an account number or an ID, does come. Ask for `values` only on pages whose fields the caller may read, and send `allow_domains` with it: a page off the list shows its controls and none of `value`, `checked` or `expanded`.
   - The values are in this answer alone: the screen keeps only refs and labels, and no error or log line carries them. A press's own look at the page never asks for them.
 - A ref is good while this is the current tab's **latest** snapshot. A newer snap, a navigation, or a tab opened, switched or closed ends it.
 

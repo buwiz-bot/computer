@@ -227,9 +227,24 @@ impl Screen {
         shape::page(&answer, values)
     }
 
-    pub fn snap(&mut self, limits: &SnapLimits) -> Result<SnapResponse, BrowserError> {
+    /// `allow` is for `values` alone: what the fields of a page off the list hold is not the
+    /// caller's to read, so that page's snap comes as one without values does. Its controls
+    /// still come: a caller must see a page to leave it.
+    pub fn snap(
+        &mut self,
+        limits: &SnapLimits,
+        allow: &AllowList,
+    ) -> Result<SnapResponse, BrowserError> {
         let started = Instant::now();
-        let page = self.look(limits.values)?;
+        let mut page = self.look(limits.values)?;
+        if limits.values && allow.check(page.url.as_deref()).is_err() {
+            for el in &mut page.elements {
+                el.value = None;
+                el.value_truncated = false;
+                el.checked = None;
+                el.expanded = None;
+            }
+        }
         let kept: Vec<&Seen> = page.elements.iter().take(limits.max_nodes).collect();
         let truncated = kept.len() < page.elements.len() || page.total > page.elements.len();
         let id = next_snapshot();

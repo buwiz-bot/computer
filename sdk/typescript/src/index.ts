@@ -314,7 +314,7 @@ export type BrowserElement = {
   sensitive?: boolean;
   /**
    * Only with `values: true`, never on a sensitive element: a field's text when its input type is
-   * known and isn't `password` or `hidden`, or a select's chosen option. At most 400 characters.
+   * known and isn't `password` or `hidden`, or a select's chosen option. At most 400 characters, and a `…` after them when it was cut.
    */
   value?: string;
   /** `value` was cut, here or by the browser side. */
@@ -329,8 +329,15 @@ export type BrowserElement = {
 export type BrowserSnapRequest = {
   /** 1–1000 (default 200). */
   max_nodes?: number;
-  /** Also what the fields hold (`value`, `checked`, `expanded`), never a sensitive field's. Default false. */
+  /**
+   * Also what the fields hold (`value`, `checked`, `expanded`), never a sensitive field's. Default
+   * false. A field counts as sensitive by its type or its label: text in a plainly typed field
+   * whose label names no secret (a one-time code in a box labelled "Code 1", an account number)
+   * does come, so ask only on pages whose fields the caller may read.
+   */
   values?: boolean;
+  /** With `values`: a page off this list shows none. */
+  allow_domains?: AllowDomains;
 };
 
 export type BrowserSnapResponse = {

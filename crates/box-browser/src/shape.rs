@@ -103,19 +103,20 @@ pub fn may_return_value(role: &str, input_type: Option<&str>, sensitive: bool) -
 }
 
 /// The roles ultra-instinct gives a choice among a page's own options, at its pin: a native
-/// `<select>` is `generic` from the page (which offers `select` only for a SELECT tag) or
-/// `combobox` from Chromium's accessibility tree, and an ARIA listbox is `listbox`. A text field
-/// is `text_field`, so none of these.
-const SELECT_ROLES: [&str; 3] = ["generic", "combobox", "listbox"];
+/// `<select>` is `generic` from the page (which offers `select` only for a SELECT tag), and an
+/// ARIA listbox is `listbox`. Not `combobox`, though Chromium's accessibility tree calls a native
+/// select one: an ARIA combobox may be a box a person types in, with no input type to say so,
+/// and its text is no option of the page's. A text field is `text_field`, so none of these.
+const SELECT_ROLES: [&str; 2] = ["generic", "listbox"];
 
 /// Whether a select's chosen option may be returned. ultra-instinct reads an input type only for
 /// an `<input>`, so a `<select>` has none and [`may_return_value`] would never let it through.
 /// Of the elements with no input type, ultra-instinct reads a value only for a `<textarea>` (no
-/// `select` action) and a `<select>` (its chosen option, and it offers `select`; Chromium calls
-/// it a combobox, which adds `type`): so an element with no input type, a select's role
-/// ([`SELECT_ROLES`]) and the `select` action is a choice among the page's own options. Anything
-/// else with no input type, such as a text widget that also offers `select`, shows no text. A
-/// sensitive one still shows nothing.
+/// `select` action) and a `<select>` (its chosen option, and it offers `select`): so an element
+/// with no input type, a select's role ([`SELECT_ROLES`]) and the `select` action is a choice
+/// among the page's own options. Anything else with no input type shows no text: a text widget
+/// that also offers `select`, and a combobox, which may hold what a person typed. A sensitive
+/// one still shows nothing.
 pub fn may_return_selected(
     role: &str,
     input_type: Option<&str>,
@@ -360,8 +361,9 @@ mod tests {
             &["focus", "click", "select"],
             true
         ));
-        // a native select, as Chromium's accessibility tree has it
-        assert!(may_return_selected(
+        // a combobox may be a box a person types in, with no input type to say so: no text,
+        // though Chromium's accessibility tree calls a native select one too
+        assert!(!may_return_selected(
             "combobox",
             None,
             &["focus", "click", "select", "type"],
