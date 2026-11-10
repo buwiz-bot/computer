@@ -25,8 +25,6 @@ use crate::{BrowserError, Opener};
 
 /// How long the launcher has to hand the pipe over.
 const HANDOVER: Duration = Duration::from_secs(2);
-/// How long a close for a shutdown waits for the launcher to be gone.
-const CLOSE_WAIT: Duration = Duration::from_secs(3);
 
 /// Opens a screen's tools over its real pipe.
 pub struct PipeOpener;
@@ -106,13 +104,10 @@ impl Tools for Leased {
     }
 
     fn close(&mut self) {
+        // No let-go: a lease that only closes means nothing, so this browser stays closed however
+        // long Chromium takes to quit.
+        drop(self.lease.take());
         self.tools.close();
-        // No let-go. The launcher closes its side once Chromium is gone and it exits.
-        if let Some(mut lease) = self.lease.take() {
-            let _ = lease.set_read_timeout(Some(CLOSE_WAIT));
-            let mut buf = [0u8; 64];
-            while matches!(lease.read(&mut buf), Ok(n) if n > 0) {}
-        }
     }
 }
 
@@ -262,8 +257,8 @@ mod tests {
         let started = std::time::Instant::now();
         closing.close();
         drop(closing);
+        assert!(started.elapsed() < LEASE_ACK_WAIT);
         assert!(heard.join().unwrap().is_empty());
-        let _ = started;
         assert!(!open_at_drop.load(Ordering::SeqCst));
     }
 
