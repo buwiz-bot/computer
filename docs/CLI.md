@@ -569,6 +569,7 @@ Usage: buwiz-computer browser snap [OPTIONS]
 Options:
       --display <DISPLAY>      Another of the box's screens (:N)
       --max-nodes <MAX_NODES>  The most elements returned (1 to 1000, default 200)
+      --values                 Also what fields hold (value, checked, expanded), never a password's or another sensitive field's
   -h, --help                   Print help
 ```
 

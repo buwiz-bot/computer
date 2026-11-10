@@ -352,11 +352,16 @@ pub const MAX_GOAL_CHARS: usize = 2000;
 pub struct SnapRequest {
     /// The most elements returned (the page's first ones in reading order).
     pub max_nodes: Option<usize>,
+    /// Ask for what the fields hold: `value`, `checked`, `expanded` on the elements that may show
+    /// them (never a sensitive one). Off, a snap carries none of them.
+    #[serde(default)]
+    pub values: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct SnapLimits {
     pub max_nodes: usize,
+    pub values: bool,
 }
 
 impl SnapRequest {
@@ -367,7 +372,10 @@ impl SnapRequest {
                 "max_nodes is 1 to {MAX_NODES}, not {max_nodes}"
             )));
         }
-        Ok(SnapLimits { max_nodes })
+        Ok(SnapLimits {
+            max_nodes,
+            values: self.values,
+        })
     }
 }
 
@@ -392,9 +400,19 @@ pub struct Element {
     /// A password field, or one that may be: its text is never returned.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub sensitive: bool,
-    /// A field's text, only when it's known not to be a password's.
+    /// With `values` asked for: a field's text, only when its type is known and isn't a
+    /// password's or a hidden one's, or a select's chosen option; never a sensitive element's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
+    /// `value` was cut, here or by ultra-instinct.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub value_truncated: bool,
+    /// With `values` asked for: a checkbox's, radio's or `aria-checked` element's state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checked: Option<bool>,
+    /// With `values` asked for: an `aria-expanded` element's state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expanded: Option<bool>,
 }
 
 #[derive(Clone, Debug, Serialize)]

@@ -310,10 +310,27 @@ export type BrowserElement = {
   label: string;
   actions: string[];
   rect: BrowserRect;
-  /** A password field, or one that may be: its text never comes. */
+  /** A password field, or one that may be: its text, `checked` and `expanded` never come. */
   sensitive?: boolean;
-  /** A field's text, only when it's known not to be a password's. */
+  /**
+   * Only with `values: true`, never on a sensitive element: a field's text when its input type is
+   * known and isn't `password` or `hidden`, or a select's chosen option. At most 400 characters.
+   */
   value?: string;
+  /** `value` was cut, here or by the browser side. */
+  value_truncated?: boolean;
+  /** Only with `values: true`: a checkbox's or radio's state, or `aria-checked`. */
+  checked?: boolean;
+  /** Only with `values: true`: `aria-expanded`. */
+  expanded?: boolean;
+};
+
+/** `POST /v1/browser/snap`. `{}` is the first 200 elements with no values. */
+export type BrowserSnapRequest = {
+  /** 1–1000 (default 200). */
+  max_nodes?: number;
+  /** Also what the fields hold (`value`, `checked`, `expanded`), never a sensitive field's. Default false. */
+  values?: boolean;
 };
 
 export type BrowserSnapResponse = {
@@ -325,7 +342,7 @@ export type BrowserSnapResponse = {
   elements: BrowserElement[];
   total: number;
   truncated: boolean;
-  /** One line per element, `@eN role "label"`. */
+  /** One line per element, `@eN role "label"`, and what it holds when `values` was asked for. */
   text: string;
   elapsed_ms: number;
 };
@@ -711,7 +728,7 @@ export class BuwizComputer {
   }
 
   /** The current tab's controls, each with an `@eN` ref good for this snapshot alone. */
-  async browserSnap(request: { max_nodes?: number } = {}, display?: string): Promise<BrowserSnapResponse> {
+  async browserSnap(request: BrowserSnapRequest = {}, display?: string): Promise<BrowserSnapResponse> {
     return this.authJson("POST", onScreen(`${this.execUrl}/v1/browser/snap`, display), request, BROWSER_CALL_MS);
   }
 
