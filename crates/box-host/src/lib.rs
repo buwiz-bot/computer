@@ -938,15 +938,115 @@ mod tests {
             rules_put(r#"{"v":1,"version":8,"exit":"direct","mode":"all"}"#),
         )
         .await;
+        // no proxy to ask: what's in force isn't known, and the answer says that, not "unchanged"
         assert_eq!(got, StatusCode::SERVICE_UNAVAILABLE);
-        assert!(body["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("nothing was changed"));
+        assert_eq!(body["error"]["code"], "rules_state_unknown");
         assert_eq!(
             std::fs::read_to_string(dir.path().join("rules.json")).unwrap(),
             before
         );
+    }
+
+    /// box-host against an admin port that answers `GET /v1/rules` with `in_force` after `get_ms`,
+    /// and every reload after `reload_ms`, with the version asked for in force.
+    async fn with_slow_admin(
+        in_force: u64,
+        get_ms: u64,
+        reload_ms: u64,
+    ) -> (AppState, tempfile::TempDir) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = tempfile::tempdir().unwrap();
+        let admin = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let admin_bind = admin.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = admin.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let n = s.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    let (wait, body) = if req.starts_with("GET /v1/rules") {
+                        (
+                            get_ms,
+                            format!(
+                                r#"{{"version":{in_force},"exit":"direct","mode":"all","allow":0,"block":1}}"#
+                            ),
+                        )
+                    } else {
+                        (reload_ms, format!(r#"{{"version":{in_force}}}"#))
+                    };
+                    tokio::time::sleep(Duration::from_millis(wait)).await;
+                    let _ = s
+                        .write_all(
+                            format!(
+                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                                body.len()
+                            )
+                            .as_bytes(),
+                        )
+                        .await;
+                });
+            }
+        });
+        let mut st = state();
+        st.egress = EgressConfig {
+            enabled: false,
+            proxy: true,
+            ws_bind: "127.0.0.1:8790".parse().unwrap(),
+            proxy_bind: "127.0.0.1:8791".parse().unwrap(),
+            admin_bind,
+            rules_path: dir.path().join("rules.json"),
+        };
+        (st, dir)
+    }
+
+    #[tokio::test]
+    async fn a_reload_that_timed_out_after_it_took_is_found_out_and_answered_truly() {
+        let before = r#"{"v":1,"version":2,"exit":"direct","mode":"all"}"#;
+        let new = r#"{"v":1,"version":7,"exit":"direct","mode":"all","block":["x.test"]}"#;
+        // the reload's answer comes too late, but the proxy has the new set in force
+        let (st, dir) = with_slow_admin(7, 0, 3000).await;
+        std::fs::write(dir.path().join("rules.json"), before).unwrap();
+        let (got, body) = send_to(st, rules_put(new)).await;
+        assert_eq!(got, StatusCode::OK, "{body}");
+        assert!(
+            std::fs::read_to_string(dir.path().join("rules.json"))
+                .unwrap()
+                .contains("x.test"),
+            "the file is the set in force"
+        );
+        // and when the proxy can't be asked at all: unknown, said so, the file the last known set
+        let (st, dir) = with_slow_admin(7, 3000, 3000).await;
+        std::fs::write(dir.path().join("rules.json"), before).unwrap();
+        let (got, body) = send_to(st, rules_put(new)).await;
+        assert_eq!(got, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["error"]["code"], "rules_state_unknown");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("rules.json")).unwrap(),
+            before
+        );
+    }
+
+    #[tokio::test]
+    async fn a_staged_file_with_no_version_is_said_to_be_staged() {
+        let (st, dir, task) = with_proxy(false).await;
+        std::fs::write(
+            dir.path().join("rules.json"),
+            r#"{"v":1,"exit":"direct","mode":"all"}"#,
+        )
+        .unwrap();
+        let reload = box_common::local_request(
+            &st.egress.admin_bind.to_string(),
+            "POST",
+            "/v1/rules/reload",
+            Duration::from_secs(2),
+            4096,
+        )
+        .await
+        .unwrap();
+        assert_eq!(reload.status, 200);
+        let (_, egress) = send_to(st, egress_get()).await;
+        assert_eq!(egress["rules_origin"], "staged", "{egress}");
+        task.abort();
     }
 
     #[tokio::test]

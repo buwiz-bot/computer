@@ -18,6 +18,7 @@ use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+
 use std::time::Duration;
 
 use axum::body::Bytes;
@@ -40,16 +41,36 @@ const ADMIN_CAP: usize = 16 * 1024;
 #[derive(Clone, Debug, Default)]
 pub struct RulesTurn {
     turn: std::sync::Arc<tokio::sync::Mutex<()>>,
-    set: std::sync::Arc<AtomicU64>,
+    origin: std::sync::Arc<std::sync::Mutex<Origin>>,
+}
+
+/// Where the rules in force came from, said as it happens, never worked out from numbers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Origin {
+    /// what box-keeper put in place at start
+    #[default]
+    Staged,
+    /// a `PUT` since, of this version
+    Set(u64),
+}
+
+impl RulesTurn {
+    fn set(&self, version: u64) {
+        *self.origin.lock().unwrap_or_else(|e| e.into_inner()) = Origin::Set(version);
+    }
 }
 
 /// `staged` or `set`, for the version in force; `None` with no rules.
 pub(crate) fn origin(state: &AppState, in_force: Option<u64>) -> Option<&'static str> {
     let version = in_force?;
-    Some(if state.rules_turn.set.load(Ordering::SeqCst) == version {
-        "set"
-    } else {
-        "staged"
+    let origin = *state
+        .rules_turn
+        .origin
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    Some(match origin {
+        Origin::Set(set) if set == version => "set",
+        _ => "staged",
     })
 }
 
@@ -218,13 +239,26 @@ pub(crate) async fn put_rules(
         )
     })?;
     let outcome = reload(&state, rules.version).await;
-    if matches!(outcome, Reload::InForce) {
-        state.rules_turn.set.store(rules.version, Ordering::SeqCst);
+    let applied = |rules: &Rules| {
+        state.rules_turn.set(rules.version);
         tracing::info!(version = rules.version, "egress rules applied");
-        return Ok(Json(Applied {
+        Json(Applied {
             applied: true,
-            rules: RulesSummary::from(&rules),
-        }));
+            rules: RulesSummary::from(rules),
+        })
+    };
+    if matches!(outcome, Reload::InForce) {
+        return Ok(applied(&rules));
+    }
+    // not told it's in force: the truth first, from the proxy itself. A reload that timed out may
+    // well have taken; one that answered otherwise may not be the last word either
+    // (a proxy that read the file and refused it has said what it holds: none of it)
+    let truth = match outcome {
+        Reload::Refused(_) => Ok(None),
+        _ => in_force(&state).await,
+    };
+    if truth == Ok(Some(rules.version)) {
+        return Ok(applied(&rules));
     }
     // not in force: the file goes back to what it was, never ahead of the proxy
     let restore = tokio::task::spawn_blocking(move || match before {
@@ -238,10 +272,17 @@ pub(crate) async fn put_rules(
     if !matches!(restore, Ok(Ok(()))) {
         tracing::warn!("the rules file could not be put back after a set that didn't take");
     }
-    if !matches!(outcome, Reload::Down) {
-        // what was in force before, read again from the file just put back
-        let _ = reload(&state, 0).await;
-    }
+    let Ok(_) = truth else {
+        // the proxy can't be asked: the file is the last set it's known to have held, and what's
+        // in force now isn't known
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "rules_state_unknown",
+            "the browser's network proxy didn't answer, so whether the new rules are in force isn't known; the rules file is the last set it was known to hold. Ask again (GET /v1/egress) before relying on either",
+        ));
+    };
+    // what the proxy holds isn't this set: it reads the file just put back
+    let _ = reload(&state, 0).await;
     Err(match outcome {
         Reload::Other(version) => ApiError::new(
             StatusCode::CONFLICT,
