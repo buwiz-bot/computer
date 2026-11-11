@@ -29,7 +29,7 @@ pub use env::{browser_layer_on, env_bool, env_nonempty};
 pub use error::{ApiError, ErrorBody, ErrorResponse};
 pub use jail::{resolve_in_canonical_jail, resolve_in_jail, JailError};
 pub use listen::{container_local_host, container_local_http_url};
-pub use local_http::{local_get, LocalResponse};
+pub use local_http::{local_get, local_request, LocalResponse};
 pub use request_id::{echo_request_id, new_id, new_prefixed_id, RequestId, REQUEST_ID_HEADER};
 
 /// Where `box-keeper` takes screen requests. Its user alone can open it.

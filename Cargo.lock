@@ -501,11 +501,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "box-egress"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+]
+
+[[package]]
 name = "box-egress-tunnel"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "box-common",
+ "box-egress",
  "clap",
  "futures-util",
  "serde",
@@ -552,6 +565,7 @@ dependencies = [
  "box-common",
  "box-cua",
  "box-desktop",
+ "box-egress",
  "box-egress-tunnel",
  "http",
  "http-body-util",

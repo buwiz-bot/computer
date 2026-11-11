@@ -9,6 +9,7 @@ members = [
     "crates/box-cua",
     "crates/box-a11y",
     "crates/box-browser",
+    "crates/box-egress",
     "crates/box-egress-tunnel",
     "crates/buwiz-computer",
 ]
@@ -45,6 +46,7 @@ ultra-instinct-mcp = { git = "https://github.com/hexuria/ultra-instinct", rev = 
 ultra-instinct-guard = { git = "https://github.com/hexuria/ultra-instinct", rev = "a3e90d080deafb0e5ddad35dcffc53ac743258c0", default-features = false }
 ultra-instinct-cdp = { git = "https://github.com/hexuria/ultra-instinct", rev = "a3e90d080deafb0e5ddad35dcffc53ac743258c0", default-features = false }
 ultra-instinct-core = { git = "https://github.com/hexuria/ultra-instinct", rev = "a3e90d080deafb0e5ddad35dcffc53ac743258c0", default-features = false }
+box-egress = { path = "crates/box-egress" }
 box-egress-tunnel = { path = "crates/box-egress-tunnel" }
 tokio-tungstenite = { version = "0.26", features = ["connect", "rustls-tls-webpki-roots"] }
 axum = { version = "0.8", features = ["json", "macros"] }

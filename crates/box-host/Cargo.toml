@@ -18,6 +18,7 @@ box-common = { workspace = true }
 box-desktop = { workspace = true }
 box-chrome = { workspace = true }
 box-cua = { workspace = true }
+box-egress = { workspace = true }
 box-egress-tunnel = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }

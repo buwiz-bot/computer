@@ -81,16 +81,82 @@ const UNLINK_PATIENCE: Duration = Duration::from_secs(10);
 #[derive(Clone, Copy)]
 struct Features {
     desktop: bool,
+    /// The tunnel (`BOX_EGRESS_TUNNEL`).
     egress: bool,
+    /// The browser's proxy, under the computer's rules: `BOX_EGRESS_PROXY`, or the tunnel.
+    proxy: bool,
+    /// `BOX_EGRESS_PROXY` itself was on. A box with the tunnel and not this, and no rules file,
+    /// keeps what such a box always did: every site, through the tunnel.
+    proxy_asked: bool,
 }
 
 impl Features {
     fn from_env() -> Self {
+        let egress = env_bool("BOX_EGRESS_TUNNEL", false);
+        let proxy_asked = env_bool("BOX_EGRESS_PROXY", false);
         Self {
             desktop: env_bool("BOX_DESKTOP", true),
-            egress: env_bool("BOX_EGRESS_TUNNEL", false),
+            egress,
+            proxy: egress || proxy_asked,
+            proxy_asked,
         }
     }
+}
+
+/// The rules the box starts with, where the proxy reads them and box-host replaces them
+/// (`box-prepare` made the folder, box-host's user's alone). From `BOX_EGRESS_RULES_FILE`, which
+/// whoever started the box staged. None that read is no file, and the proxy refuses every site
+/// until rules are set: never a box that browses with no rules.
+fn stage_rules(features: Features) -> Result<(), String> {
+    let path = PathBuf::from(
+        env_nonempty("BOX_EGRESS_RULES_PATH")
+            .unwrap_or_else(|| box_egress_tunnel::config::DEFAULT_RULES_PATH.into()),
+    );
+    let rules = match env_nonempty("BOX_EGRESS_RULES_FILE") {
+        Some(file) => {
+            let read = fs::File::open(&file)
+                .and_then(|f| {
+                    use std::io::Read;
+                    let mut bytes = Vec::new();
+                    f.take(box_egress::rules::MAX_RULES_BYTES as u64 + 1)
+                        .read_to_end(&mut bytes)
+                        .map(|_| bytes)
+                })
+                .map_err(|err| format!("it could not be read ({})", err.kind()))
+                .and_then(|bytes| box_egress::Rules::parse(&bytes).map_err(|err| err.to_string()));
+            match read {
+                Ok(rules) => Some(rules),
+                Err(why) => {
+                    eprintln!(
+                        "the egress rules in BOX_EGRESS_RULES_FILE were not used: {why}. The browser refuses every site until rules are set."
+                    );
+                    None
+                }
+            }
+        }
+        None if features.egress && !features.proxy_asked => {
+            Some(box_egress_tunnel::config::open_rules())
+        }
+        None => {
+            eprintln!(
+                "BOX_EGRESS_PROXY is on and BOX_EGRESS_RULES_FILE is not set: the browser refuses every site until rules are set (PUT /v1/egress/rules)."
+            );
+            None
+        }
+    };
+    let Some(rules) = rules else {
+        return Ok(());
+    };
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .open(&path)
+        .map_err(|err| format!("egress rules: {err}"))?;
+    file.write_all(rules.to_json().as_bytes())
+        .map_err(|err| format!("egress rules: {err}"))?;
+    std::os::unix::fs::chown(&path, Some(SVC_UID), Some(SVC_UID))
+        .map_err(|err| format!("egress rules: {err}"))
 }
 
 fn flag(on: bool) -> &'static str {
@@ -464,11 +530,20 @@ fn listen(path: PathBuf) -> mpsc::UnboundedReceiver<String> {
     receiver
 }
 
-/// True once the daemons can start: the display takes connections, and the tunnel has unlinked its
-/// bearer, so that no exec child can ever exist while a staged copy does.
+/// True once the daemons can start: the display takes connections, the tunnel has unlinked its
+/// bearer, so that no exec child can ever exist while a staged copy does, and the browser's proxy
+/// listens. Its ports are above the box's port floor: with no command able to run yet, whatever
+/// listens on its admin port is the proxy, and a command can never take a port of its first.
 fn desktop_is_up(features: Features, display: &DesktopConfig, egress_file: Option<&Path>) -> bool {
     let display_up = !features.desktop || UnixStream::connect(display.x11_socket_path()).is_ok();
-    display_up && !egress_file.is_some_and(Path::exists)
+    display_up && !egress_file.is_some_and(Path::exists) && (!features.proxy || proxy_listens())
+}
+
+fn proxy_listens() -> bool {
+    let admin = env_nonempty("BOX_EGRESS_ADMIN_BIND").unwrap_or_else(|| "127.0.0.1:8792".into());
+    admin.parse::<std::net::SocketAddr>().is_ok_and(|addr| {
+        std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok()
+    })
 }
 
 /// Start a daemon on its staged files, then wait until it has unlinked them. `box-exec` goes last,
@@ -596,6 +671,9 @@ async fn run() -> Result<i32, String> {
         egress_bearer,
     } = Secrets::load(features)?;
     prepare()?;
+    if features.proxy {
+        stage_rules(features)?;
+    }
     let staging = Staging::new("secrets", SVC_UID)?;
     let ctl = PathBuf::from(env_nonempty("BOX_VIEWER_CTL").unwrap_or_else(|| DEFAULT_CTL.into()));
     make_fifo(&ctl)?;
@@ -618,7 +696,8 @@ async fn run() -> Result<i32, String> {
         .env("XAUTHORITY", format!("/run/box/x/{main_slot}/auth"))
         .env("BOX_SCREEN_RUN", format!("/run/box/x/{main_slot}/run"))
         .env("BOX_DESKTOP", flag(features.desktop))
-        .env("BOX_EGRESS_TUNNEL", flag(features.egress));
+        .env("BOX_EGRESS_TUNNEL", flag(features.egress))
+        .env("BOX_EGRESS_PROXY", flag(features.proxy));
     let egress_staging = match egress_bearer.as_deref().filter(|_| features.egress) {
         Some(_) => Some(Staging::new("egress-secret", DESKTOP_UID)?),
         None => None,
