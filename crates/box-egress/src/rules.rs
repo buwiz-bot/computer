@@ -18,8 +18,9 @@
 //! - An entry of `*`, an empty entry, and an entry that is an address are refused when the rules
 //!   are set. They never mean "everything".
 //! - Block always wins. With [`Mode::All`] every site but the blocked ones is reached; with
-//!   [`Mode::Listed`] only the allowed ones that aren't blocked. A site reached by its bare address
-//!   matches no name: it is reached under `All` unless something else refuses it, and refused under
+//!   [`Mode::Listed`] only the allowed ones that aren't blocked. A bare address matches no name:
+//!   with any site blocked it is refused (a blocked site isn't reachable by its number); with none
+//!   blocked it is reached under `All` unless something else refuses it, and refused under
 //!   `Listed`.
 //! - No rules at all (never set, unreadable, malformed) is "refuse every site". It never means
 //!   "allow".
@@ -105,6 +106,9 @@ pub enum Verdict {
     NotListed,
     /// Not a valid host name or address.
     BadHost,
+    /// A bare address while some sites are blocked: a rule names sites, and can't tell which
+    /// site an address is, so with a block list an address is refused.
+    Address,
 }
 
 impl Verdict {
@@ -115,6 +119,7 @@ impl Verdict {
             Self::Blocked => "blocked",
             Self::NotListed => "not-listed",
             Self::BadHost => "bad-host",
+            Self::Address => "address",
         }
     }
 }
@@ -167,6 +172,9 @@ impl Rules {
         };
         if name.is_some_and(|name| self.block.iter().any(|entry| covers(entry, name))) {
             return Verdict::Blocked;
+        }
+        if name.is_none() && !self.block.is_empty() {
+            return Verdict::Address;
         }
         match self.mode {
             Mode::All => Verdict::Allowed,
@@ -306,7 +314,7 @@ fn last_label_is_numeric(name: &str) -> bool {
 }
 
 /// `entry` covers `name` when it is the name or a domain above it.
-fn covers(entry: &str, name: &str) -> bool {
+pub(crate) fn covers(entry: &str, name: &str) -> bool {
     name == entry
         || (name.len() > entry.len()
             && name.ends_with(entry)
@@ -391,10 +399,18 @@ mod tests {
     }
 
     #[test]
-    fn all_mode_reaches_bare_addresses_unless_something_else_refuses_them() {
-        let r = rules(Mode::All, &[], &["example.com"]);
-        assert_eq!(r.judge("93.184.216.34"), Verdict::Allowed);
-        assert_eq!(r.judge("::1"), Verdict::Allowed);
+    fn a_bare_address_is_reached_only_when_no_site_is_blocked() {
+        let open = rules(Mode::All, &[], &[]);
+        assert_eq!(open.judge("93.184.216.34"), Verdict::Allowed);
+        assert_eq!(open.judge("[2606:2800:220:1::1]"), Verdict::Allowed);
+        let blocking = rules(Mode::All, &[], &["example.com"]);
+        assert_eq!(
+            blocking.judge("93.184.216.34"),
+            Verdict::Address,
+            "a blocked site isn't reached by its number"
+        );
+        assert_eq!(blocking.judge("::1"), Verdict::Address);
+        assert_eq!(blocking.judge("other.example"), Verdict::Allowed);
     }
 
     #[test]
