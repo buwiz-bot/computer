@@ -72,6 +72,12 @@ enum Commands {
     Chrome,
     /// GET host /v1/egress
     Egress,
+    /// GET host /v1/egress/rules (the browser's rules in force), or with --set FILE, PUT them
+    EgressRules {
+        /// A rules document (JSON) to put in force
+        #[arg(long)]
+        set: Option<std::path::PathBuf>,
+    },
     /// GET host /v1/desktop/windows
     Windows,
     /// GET exec /v1/busy
@@ -492,6 +498,14 @@ async fn main() -> Result<()> {
         Commands::Screens => print_json(&box_client.screens().await?)?,
         Commands::Chrome => print_json(&box_client.chrome().await?)?,
         Commands::Egress => print_json(&box_client.egress().await?)?,
+        Commands::EgressRules { set: None } => print_json(&box_client.egress_rules().await?)?,
+        Commands::EgressRules { set: Some(file) } => {
+            let raw = std::fs::read_to_string(&file)
+                .with_context(|| format!("read {}", file.display()))?;
+            let rules: serde_json::Value =
+                serde_json::from_str(&raw).with_context(|| format!("parse {}", file.display()))?;
+            print_json(&box_client.set_egress_rules(&rules).await?)?;
+        }
         Commands::Windows => print_json(&box_client.windows().await?)?,
         Commands::Busy => print_json(&box_client.busy().await?)?,
         Commands::Metrics => print_json(&box_client.metrics().await?)?,

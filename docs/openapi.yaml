@@ -631,6 +631,66 @@ components:
         proxy:
           type: string
           description: Container-local CONNECT proxy (always loopback; never publish)
+        proxy_enabled:
+          type: boolean
+          description: The browser goes through the proxy (BOX_EGRESS_PROXY, or the tunnel)
+        proxy_up: { type: boolean, description: The proxy answers }
+        rules:
+          nullable: true
+          description: The rules in force, as counts (no site is named). null is no rules, and every site is refused.
+          allOf: [{ $ref: "#/components/schemas/EgressRulesSummary" }]
+        rules_error:
+          type: string
+          nullable: true
+          description: Why the last rules file read failed, if it did
+        can_browse:
+          type: boolean
+          description: Rules are set, and their exit is direct or has a client attached
+        counts:
+          type: object
+          description: Outcomes since the proxy started. No site is named.
+          properties:
+            direct: { type: integer }
+            tunneled: { type: integer }
+            blocked: { type: integer }
+            not_listed: { type: integer }
+            no_rules: { type: integer }
+            no_client: { type: integer }
+            streams_full: { type: integer }
+            destination: { type: integer }
+            failed: { type: integer }
+            plain_http: { type: integer }
+    EgressRules:
+      type: object
+      additionalProperties: false
+      required: [v, exit, mode]
+      description: |
+        A computer's browsing rules. An entry covers the name and every name under it
+        (facebook.com covers www.facebook.com); a leading *. means the same. Lower case, one
+        trailing dot dropped, international names in their xn-- form. `*`, an empty entry, an
+        address, or an entry with a scheme, port or path is refused (422). Block always wins.
+        mode all reaches every site but the blocked ones; listed only the allowed ones.
+      properties:
+        v: { type: integer, enum: [1] }
+        version:
+          type: integer
+          description: The sender's number for this set, echoed back. 0 or absent picks one.
+        exit:
+          type: string
+          enum: [direct, tunnel]
+          description: direct dials from the box; tunnel through the operator's client (503 no-client without one)
+        mode: { type: string, enum: [all, listed] }
+        allow: { type: array, maxItems: 1000, items: { type: string } }
+        block: { type: array, maxItems: 1000, items: { type: string } }
+    EgressRulesSummary:
+      type: object
+      required: [version, exit, mode, allow, block]
+      properties:
+        version: { type: integer }
+        exit: { type: string, enum: [direct, tunnel] }
+        mode: { type: string, enum: [all, listed] }
+        allow: { type: integer, description: Entries on the allow list }
+        block: { type: integer, description: Entries on the block list }
     Screenshot:
       type: object
       required: [encoding, mime, width, height, png_base64, bytes]
@@ -974,6 +1034,14 @@ components:
                 ready:
                   type: boolean
                   description: A laptop client is attached; CONNECT is relayed.
+            egress_proxy:
+              type: object
+              description: Every screen's browser goes through the box's proxy, under the computer's rules (BOX_EGRESS_PROXY, or the tunnel). Absent on older images.
+              properties:
+                enabled: { type: boolean }
+                ready:
+                  type: boolean
+                  description: The proxy answers, with rules set.
         endpoints:
           type: object
           properties:
@@ -1354,11 +1422,12 @@ paths:
   /v1/egress:
     get:
       tags: [host]
-      summary: Egress tunnel status (box-host)
+      summary: The browser's proxy and tunnel status (box-host)
       description: |
-        Laptop CONNECT tunnel. enabled follows BOX_EGRESS_TUNNEL. ready /
-        client_attached mean a box-egress-tunnel client is attached.
-        Fail-closed CONNECT while enabled but not ready. ws/proxy are
+        enabled follows BOX_EGRESS_TUNNEL. ready / client_attached mean a
+        box-egress-tunnel client is attached. proxy_enabled, rules and
+        can_browse say whether the browser can reach a site. No site is
+        named: the rules are counts, counts are outcomes. ws/proxy are
         container-local listens, not SDK connect URLs.
       security: [{ bearer: [] }]
       responses:
@@ -1369,6 +1438,82 @@ paths:
               schema: { $ref: "#/components/schemas/EgressStatus" }
         "401":
           description: Missing or wrong token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+
+  /v1/egress/rules:
+    get:
+      tags: [host]
+      summary: The computer's browsing rules in force (box-host)
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: The rules in force
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EgressRules" }
+        "401":
+          description: Missing or wrong token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "404":
+          description: egress_rules_unset. No rules are set, and the browser reaches no site.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: egress_proxy_off. The box was made without the proxy.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: egress_not_running. The proxy isn't answering.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+    put:
+      tags: [host]
+      summary: Replace the computer's browsing rules while the box runs (box-host)
+      description: |
+        Checks the set, writes it where the proxy reads it, and asks the proxy to read it
+        again. 200 only once the proxy reports this set's version in force. A set that doesn't
+        check out is refused whole and changes nothing.
+      security: [{ bearer: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EgressRules" }
+      responses:
+        "200":
+          description: In force
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [applied, rules]
+                properties:
+                  applied: { type: boolean }
+                  rules: { $ref: "#/components/schemas/EgressRulesSummary" }
+        "401":
+          description: Missing or wrong token
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "409":
+          description: egress_proxy_off (made without the proxy) or egress_tunnel_off (exit tunnel on a box made without the tunnel)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "422":
+          description: invalid_rules, naming the list and position, never the entry
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ErrorResponse" }
+        "503":
+          description: egress_not_running or egress_rules_unwritable
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }

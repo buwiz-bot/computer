@@ -14,24 +14,25 @@ Connect-only CLI for a running buwiz-computer guest
 Usage: buwiz-computer [OPTIONS] --exec-url <EXEC_URL> --host-url <HOST_URL> --token <TOKEN> <COMMAND>
 
 Commands:
-  health       GET exec and host /v1/health
-  ready        GET host /v1/ready
-  info         GET host /v1/info (URLs in the body are container-local)
-  exec         POST /v1/exec
-  exec-status  GET /v1/exec/{id} (detached job)
-  exec-cancel  DELETE /v1/exec/{id} (stop the exec and its process group)
+  health        GET exec and host /v1/health
+  ready         GET host /v1/ready
+  info          GET host /v1/info (URLs in the body are container-local)
+  exec          POST /v1/exec
+  exec-status   GET /v1/exec/{id} (detached job)
+  exec-cancel   DELETE /v1/exec/{id} (stop the exec and its process group)
   files
-  desktop      GET host /v1/desktop
-  screens      GET host /v1/screens (each screen's display, viewer port and state)
-  chrome       GET host /v1/chrome
-  egress       GET host /v1/egress
-  windows      GET host /v1/desktop/windows
-  busy         GET exec /v1/busy
-  metrics      GET exec /v1/metrics
-  shutdown     POST /v1/shutdown (exec, or --host)
+  desktop       GET host /v1/desktop
+  screens       GET host /v1/screens (each screen's display, viewer port and state)
+  chrome        GET host /v1/chrome
+  egress        GET host /v1/egress
+  egress-rules  GET host /v1/egress/rules (the browser's rules in force), or with --set FILE, PUT them
+  windows       GET host /v1/desktop/windows
+  busy          GET exec /v1/busy
+  metrics       GET exec /v1/metrics
+  shutdown      POST /v1/shutdown (exec, or --host)
   cua
-  browser      /v1/browser/*: a screen's Chromium over its DevTools pipe, through ultra-instinct
-  help         Print this message or the help of the given subcommand(s)
+  browser       /v1/browser/*: a screen's Chromium over its DevTools pipe, through ultra-instinct
+  help          Print this message or the help of the given subcommand(s)
 
 Options:
       --exec-url <EXEC_URL>
@@ -257,6 +258,18 @@ Usage: buwiz-computer --exec-url <EXEC_URL> --host-url <HOST_URL> --token <TOKEN
 
 Options:
   -h, --help  Print help
+```
+
+## `buwiz-computer egress-rules`
+
+```text
+GET host /v1/egress/rules (the browser's rules in force), or with --set FILE, PUT them
+
+Usage: buwiz-computer --exec-url <EXEC_URL> --host-url <HOST_URL> --token <TOKEN> egress-rules [OPTIONS]
+
+Options:
+      --set <SET>  A rules document (JSON) to put in force
+  -h, --help       Print help
 ```
 
 ## `buwiz-computer windows`
