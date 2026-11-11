@@ -38,6 +38,9 @@ pub const BACKOFF_FIRST: Duration = Duration::from_secs(1);
 pub const BACKOFF_MAX: Duration = Duration::from_secs(30);
 /// Chunks queued toward one destination before that stream counts as not keeping up.
 const STREAM_QUEUE: usize = 32;
+/// Streams this end dials at once, for one session: the guest's own cap (256), so a box can't
+/// make this Mac open more than it could ever relay. One past it is refused.
+pub const MAX_OPEN: usize = 256;
 
 /// What the client needs. `rules` is read on every stream, so a change to it applies to the next
 /// stream without a reconnect.
@@ -261,6 +264,7 @@ pub async fn run_once(cfg: &TunnelClientConfig) -> Result<(), ClientError> {
     let (mut sink, mut stream) = ws.split();
     let (out_tx, mut out_rx) = mpsc::channel::<WsOut>(256);
     let streams = Arc::new(Streams::new());
+    let opens = Arc::new(tokio::sync::Semaphore::new(MAX_OPEN));
     cfg.state.set_attached(true);
     let _guard = SessionGuard {
         streams: streams.clone(),
@@ -325,6 +329,14 @@ pub async fn run_once(cfg: &TunnelClientConfig) -> Result<(), ClientError> {
                 }
                 match msg {
                     ControlMsg::Open { id, host, port, .. } => {
+                        let Ok(slot) = opens.clone().try_acquire_owned() else {
+                            cfg.state.0.refused.fetch_add(1, Ordering::SeqCst);
+                            send_soon(
+                                &out_tx,
+                                WsOut::Control(ControlMsg::error(id, "too many streams")),
+                            );
+                            continue;
+                        };
                         let job = Open {
                             id,
                             host,
@@ -336,7 +348,10 @@ pub async fn run_once(cfg: &TunnelClientConfig) -> Result<(), ClientError> {
                             streams: streams.clone(),
                             state: cfg.state.clone(),
                         };
-                        tokio::spawn(job.run());
+                        tokio::spawn(async move {
+                            job.run().await;
+                            drop(slot);
+                        });
                     }
                     ControlMsg::Close { id, .. } | ControlMsg::Error { id, .. } => {
                         streams.remove(id);
@@ -359,9 +374,10 @@ pub async fn run_once(cfg: &TunnelClientConfig) -> Result<(), ClientError> {
                         // one stream instead, as the guest does.
                         tracing::warn!(id, "a destination isn't keeping up; closing its stream");
                         streams.remove(id);
-                        let _ = out_tx
-                            .send(WsOut::Control(ControlMsg::close(id, Some("slow consumer"))))
-                            .await;
+                        send_soon(
+                            &out_tx,
+                            WsOut::Control(ControlMsg::close(id, Some("slow consumer"))),
+                        );
                     }
                     Err(mpsc::error::TrySendError::Closed(_)) => streams.remove(id),
                 }
@@ -369,6 +385,18 @@ pub async fn run_once(cfg: &TunnelClientConfig) -> Result<(), ClientError> {
             Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {}
             Message::Close(_) => return Ok(()),
         }
+    }
+}
+
+/// `msg` toward the box without the reader ever waiting on it: at once when the writer's queue has
+/// room, else from a task of its own. The reader parked on a full queue was every stream's and
+/// every control frame's wait behind one.
+fn send_soon(out: &mpsc::Sender<WsOut>, msg: WsOut) {
+    if let Err(mpsc::error::TrySendError::Full(msg)) = out.try_send(msg) {
+        let out = out.clone();
+        tokio::spawn(async move {
+            let _ = out.send(msg).await;
+        });
     }
 }
 
@@ -508,6 +536,105 @@ async fn copy_outbound(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn the_reader_never_waits_on_a_stalled_writer() {
+        let (tx, mut rx) = mpsc::channel::<WsOut>(1);
+        tx.send(WsOut::Ping).await.unwrap();
+        // the writer's queue is full and nobody drains it: this returns at once
+        tokio::time::timeout(Duration::from_millis(100), async {
+            send_soon(
+                &tx,
+                WsOut::Control(ControlMsg::close(7, Some("slow consumer"))),
+            );
+        })
+        .await
+        .expect("send_soon waited on a full queue");
+        // and the close still goes once the writer moves
+        assert!(matches!(rx.recv().await, Some(WsOut::Ping)));
+        assert!(matches!(
+            rx.recv().await,
+            Some(WsOut::Control(ControlMsg::Close { id: 7, .. }))
+        ));
+    }
+
+    // the handshake callback's error is tungstenite's whole HTTP response, its type not a choice
+    #[allow(clippy::result_large_err)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn past_its_cap_an_open_is_refused_and_the_rest_are_dialled() {
+        // a destination that takes every connection and keeps it open
+        let hold = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = hold.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let mut kept = Vec::new();
+            while let Ok((s, _)) = hold.accept().await {
+                kept.push(s);
+            }
+        });
+        // a box that asks for one stream past the cap
+        let ws = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", ws.local_addr().unwrap());
+        let (said_tx, mut said) = mpsc::unbounded_channel::<String>();
+        tokio::spawn(async move {
+            let (s, _) = ws.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_hdr_async(s, |_: &tokio_tungstenite::tungstenite::handshake::server::Request, mut r: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                r.headers_mut().insert("sec-websocket-protocol", PROTOCOL_NAME.parse().unwrap());
+                Ok(r)
+            })
+            .await
+            .unwrap();
+            for id in 1..=(MAX_OPEN as u32 + 1) {
+                let open =
+                    serde_json::to_string(&ControlMsg::open(id, "127.0.0.1".into(), port)).unwrap();
+                ws.send(Message::Text(open.into())).await.unwrap();
+            }
+            while let Some(Ok(m)) = ws.next().await {
+                if let Message::Text(t) = m {
+                    let _ = said_tx.send(t.to_string());
+                }
+            }
+        });
+        let state = ClientState::default();
+        let cfg = TunnelClientConfig {
+            url,
+            bearer: "x".repeat(43),
+            allowlist: Allowlist::any(),
+            destination: DestinationPolicy::default()
+                .with_allow_private(true)
+                .with_ports(Some(Vec::new())),
+            rules: RulesCell::new(Some(
+                crate::rules::Rules::new(
+                    1,
+                    crate::rules::Exit::Tunnel,
+                    crate::rules::Mode::All,
+                    &[],
+                    &[],
+                )
+                .unwrap(),
+            )),
+            reconnect: false,
+            state: state.clone(),
+        };
+        let _client = AbortOnDrop(tokio::spawn(async move {
+            let _ = run(cfg).await;
+        }));
+        let (mut opened, mut refused) = (0, 0);
+        while opened + refused < MAX_OPEN + 1 {
+            let t = tokio::time::timeout(Duration::from_secs(10), said.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            match serde_json::from_str::<ControlMsg>(&t).unwrap() {
+                ControlMsg::Opened { .. } => opened += 1,
+                ControlMsg::Error { message, .. } => {
+                    assert_eq!(message, "too many streams");
+                    refused += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!((opened, refused), (MAX_OPEN, 1));
+    }
 
     #[test]
     fn backoff_doubles_to_its_cap() {
