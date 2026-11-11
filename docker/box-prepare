@@ -26,6 +26,8 @@ install -d -o root -g root -m 0711 /run/box/x
 install -d -o root -g root -m 0700 /run/box/log
 install -d -o boxsvc -g boxsvc -m 0700 /run/box/svc /run/box/recordings
 install -d -o box -g box -m 0755 /run/box/egress
+# The computer's browsing rules: box-host's to write (PUT /v1/egress/rules), the proxy's to read.
+install -d -o boxsvc -g boxsvc -m 0755 /run/box/egress-rules
 install -o root -g boxsvc -m 0640 /dev/null "${SVC_AUTH}"
 
 # Moves what's at $1 aside, as it is. Links stay links, and nothing is deleted.

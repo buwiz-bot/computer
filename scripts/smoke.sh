@@ -1055,6 +1055,158 @@ echo "bot screen state load ${code} ${body}"
 [[ "${code}" == "200" ]]
 spost '{"action":"down","bot":"smoke"}'
 
+echo "==> the browser's proxy: the computer's rules, dialled from the box, then through the tunnel"
+# Every destination is the fixture shop on the box's loopback: the box's proxy and the client may
+# dial loopback and any port here (BOX_EGRESS_ALLOW_PRIVATE, BOX_EGRESS_RELAY_PORTS) and nowhere
+# else, so nothing leaves for the internet. The bearer and the starting rules come in a folder of
+# this run's own, mounted read-only; the bearer is 32 random bytes, written by python, never in
+# argv or the environment.
+egress_dir="$(mktemp -d "${TMPDIR:-/tmp}/buwiz-smoke-egress.XXXXXX")"
+chmod 0755 "${egress_dir}"
+python3 -c 'import secrets, sys; open(sys.argv[1], "w").write(secrets.token_urlsafe(32))' "${egress_dir}/bearer"
+chmod 0644 "${egress_dir}/bearer"
+cat >"${egress_dir}/rules.json" <<'RULES'
+{"v":1,"version":1,"exit":"direct","mode":"listed","allow":["localhost"],"block":["blocked.test"]}
+RULES
+cat >"${egress_dir}/compose.yml" <<YAML
+services:
+  box:
+    volumes:
+      - ${egress_dir}:/run/smoke-egress:ro
+YAML
+# On top of whatever files this run's Compose reads (COMPOSE_FILE, else docker-compose.yml).
+egress_env=("COMPOSE_FILE=${COMPOSE_FILE:-docker-compose.yml}:${egress_dir}/compose.yml"
+  BOX_CHROME=0 BOX_EGRESS_PROXY=1 BOX_EGRESS_TUNNEL=1
+  BOX_EGRESS_TUNNEL_BEARER_FILE=/run/smoke-egress/bearer
+  BOX_EGRESS_RULES_FILE=/run/smoke-egress/rules.json
+  BOX_EGRESS_ALLOW_PRIVATE=1 "BOX_EGRESS_RELAY_PORTS=*")
+"${COMPOSE[@]}" down --remove-orphans >/dev/null 2>&1 || true
+if [[ "${COMPOSE[0]}" == "sudo" ]]; then
+  sudo -n env "${egress_env[@]}" docker compose -p "${PROJECT}" up -d --force-recreate
+else
+  env "${egress_env[@]}" "${COMPOSE[@]}" up -d --force-recreate
+fi
+ok=0
+for _ in $(seq 1 90); do
+  if curl -fsS -H "Authorization: Bearer ${TOKEN}" "${HOST_URL}/v1/ready" 2>/dev/null | grep -q '"desktop_ready":true'; then
+    ok=1
+    break
+  fi
+  sleep 1
+done
+if [[ "${ok}" != "1" ]]; then
+  echo "the box with the proxy never became ready" >&2
+  "${COMPOSE[@]}" logs || true
+  exit 1
+fi
+egress_status() {
+  curl -fsS -H "Authorization: Bearer ${TOKEN}" "${HOST_URL}/v1/egress"
+}
+egress_status | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+assert s["proxy_enabled"] and s["proxy_up"], s
+assert s["rules"] == {"version": 1, "exit": "direct", "mode": "listed", "allow": 1, "block": 1}, s["rules"]
+assert s["can_browse"] is True, s
+assert "localhost" not in json.dumps(s), "a status names no site"
+print("the staged rules are in force before the box answers ready")
+'
+curl -fsS -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+  -d '{"command":["sh","-c","nohup perl /workspace/shared/browser-shop.pl >/dev/null 2>&1 & for i in $(seq 50); do curl -fsS -o /dev/null http://127.0.0.1:6910/ && exit 0; sleep 0.1; done; exit 1"]}' \
+  "${EXEC_URL}/v1/exec" | grep -q '"exit_code":0'
+# through <host>: a CONNECT to <host>:6910 through the box's proxy, as a command; prints the
+# CONNECT's status and, when it passed, the page's.
+through() {
+  curl -fsS -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+    -d "{\"command\":[\"sh\",\"-c\",\"curl -s -o /dev/null -w '%{http_connect} %{http_code}' --noproxy '' -p -x http://127.0.0.1:8791 http://$1:6910/ || true\"]}" \
+    "${EXEC_URL}/v1/exec" | python3 -c 'import json,sys; print(json.load(sys.stdin)["stdout"].strip())'
+}
+got="$(through localhost)"; echo "allowed, direct: ${got}"; [[ "${got}" == "200 200" ]]
+got="$(through blocked.test)"; echo "blocked: ${got}"; [[ "${got}" == 403* ]]
+got="$(through elsewhere.test)"; echo "not listed: ${got}"; [[ "${got}" == 403* ]]
+plain="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+  -d "{\"command\":[\"sh\",\"-c\",\"curl -s -o /dev/null -w '%{http_code}' --noproxy '' -x http://127.0.0.1:8791 http://localhost:6910/ || true\"]}" \
+  "${EXEC_URL}/v1/exec" | python3 -c 'import json,sys; print(json.load(sys.stdin)["stdout"].strip())')"
+echo "plain http through the proxy: ${plain}"; [[ "${plain}" == "405" ]]
+# A Bot's screen's browser goes through the proxy too: a plain http:// page gets the proxy's answer.
+spost '{"action":"up","bot":"smoke"}'
+bot_display="$(printf '%s' "${screen}" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert "error" not in d, d; print(d["display"])')"
+spost '{"action":"open","bot":"smoke","url":"http://blocked.test:6910/"}'
+seen=0
+for _ in $(seq 1 40); do
+  bpost "wait?display=${bot_display}" '{"text":"loads https:// pages only","load":"load","timeout_ms":5000}'
+  if [[ "${code}" == "200" ]] && printf '%s' "${body}" | grep -q '"seen":true'; then
+    seen=1
+    break
+  fi
+  sleep 0.5
+done
+echo "bot screen through the proxy ${code} ${body}"
+[[ "${seen}" == "1" ]]
+spost '{"action":"down","bot":"smoke"}'
+# rules_put <json>: PUT /v1/egress/rules, its status in ${code}. The body goes in a file.
+rules_put() {
+  local file
+  file="$(mktemp "${TMPDIR:-/tmp}/rules.XXXXXX")"
+  printf '%s' "$1" >"${file}"
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -X PUT -H "Authorization: Bearer ${TOKEN}" \
+    -H "Content-Type: application/json" --data-binary "@${file}" "${HOST_URL}/v1/egress/rules")"
+  rm -f "${file}"
+}
+rules_put '{"v":1,"version":2,"exit":"direct","mode":"all","block":["localhost"]}'
+echo "rules changed at runtime: ${code}"; [[ "${code}" == "200" ]]
+got="$(through localhost)"; echo "now blocked: ${got}"; [[ "${got}" == 403* ]]
+rules_put '{"v":1,"version":3,"exit":"direct","mode":"all","block":["*"]}'
+echo "a block of * is refused: ${code}"; [[ "${code}" == "422" ]]
+got="$(through localhost)"; echo "and changed nothing: ${got}"; [[ "${got}" == 403* ]]
+# The tunnel as the exit, with no client attached: refused with 503, never dialled from the box.
+rules_put '{"v":1,"version":4,"exit":"tunnel","mode":"listed","allow":["localhost"],"block":["blocked.test"]}'
+echo "tunnel on: ${code}"; [[ "${code}" == "200" ]]
+got="$(through localhost)"; echo "tunnel, no client: ${got}"; [[ "${got}" == 503* ]]
+egress_status | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+assert s["can_browse"] is False and s["ready"] is False, s
+assert s["counts"]["no_client"] >= 1, s["counts"]
+'
+# A local client attached: the box's own client binary, run as a command, on the published side of
+# 8790 inside the box. It reads the bearer from the read-only folder.
+curl -fsS -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+  -d '{"command":["sh","-c","BOX_EGRESS_ALLOW_PRIVATE=1 BOX_EGRESS_RELAY_PORTS=\"*\" nohup box-egress-tunnel client --url ws://127.0.0.1:8790 --bearer-file /run/smoke-egress/bearer --reconnect >/dev/null 2>&1 & echo $! >/workspace/shared/egress-client.pid"]}' \
+  "${EXEC_URL}/v1/exec" | grep -q '"exit_code":0'
+ok=0
+for _ in $(seq 1 50); do
+  if egress_status | grep -q '"client_attached":true'; then
+    ok=1
+    break
+  fi
+  sleep 0.2
+done
+[[ "${ok}" == "1" ]]
+got="$(through localhost)"; echo "tunnel, client attached: ${got}"; [[ "${got}" == "200 200" ]]
+got="$(through blocked.test)"; echo "tunnel, blocked: ${got}"; [[ "${got}" == 403* ]]
+egress_status | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+assert s["can_browse"] is True and s["counts"]["tunneled"] >= 1, s
+print("relayed through the client:", s["counts"]["tunneled"])
+'
+curl -fsS -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: application/json" \
+  -d '{"command":["sh","-c","kill $(cat /workspace/shared/egress-client.pid)"]}' \
+  "${EXEC_URL}/v1/exec" | grep -q '"exit_code":0'
+ok=0
+for _ in $(seq 1 50); do
+  if egress_status | grep -q '"client_attached":false'; then
+    ok=1
+    break
+  fi
+  sleep 0.2
+done
+[[ "${ok}" == "1" ]]
+got="$(through localhost)"; echo "client gone: ${got}"; [[ "${got}" == 503* ]]
+"${COMPOSE[@]}" down --remove-orphans >/dev/null 2>&1 || true
+rm -rf "${egress_dir}"
+
 echo "==> BOX_DESKTOP=0 still serves exec+host"
 "${COMPOSE[@]}" down --remove-orphans >/dev/null 2>&1 || true
 if [[ "${COMPOSE[0]}" == "sudo" ]]; then

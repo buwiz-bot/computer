@@ -161,6 +161,7 @@ ENV WORKSPACE_ROOT=/workspace \
     BOX_CHROME_PROFILE=/home/box/desktops/main/chrome-profile \
     BOX_CUA=1 \
     BOX_EGRESS_TUNNEL=0 \
+    BOX_EGRESS_PROXY=0 \
     BOX_EGRESS_WS_BIND=0.0.0.0:8790 \
     BOX_EGRESS_PROXY_BIND=127.0.0.1:8791 \
     BOX_EGRESS_ADMIN_BIND=127.0.0.1:8792 \

@@ -5,7 +5,8 @@ set -euo pipefail
 # starts this script and holds every secret, and this script must never read one: a shell cannot be
 # made undumpable. box-keeper watches for the display itself and starts voxl and the daemons, and it
 # decides BOX_DESKTOP and BOX_EGRESS_TUNNEL: it passes them here as 1 or 0. box-prepare, before it,
-# made this screen's cookie (XAUTHORITY), its run folder (BOX_SCREEN_RUN) and the home.
+# made this screen's cookie (XAUTHORITY), its run folder (BOX_SCREEN_RUN) and the home. It passes
+# BOX_EGRESS_PROXY as 1 or 0 too: on with the tunnel, or on its own.
 
 export WORKSPACE_ROOT="${WORKSPACE_ROOT:-/workspace}"
 export BOX_DESKTOP="${BOX_DESKTOP:-1}"
@@ -25,6 +26,8 @@ export BOX_CUA="${BOX_CUA:-1}"
 export BOX_EXEC_BIND="${BOX_EXEC_BIND:-0.0.0.0:1337}"
 export BOX_HOST_BIND="${BOX_HOST_BIND:-0.0.0.0:1340}"
 export BOX_EGRESS_TUNNEL="${BOX_EGRESS_TUNNEL:-0}"
+# The browser's proxy, under the computer's rules. box-keeper turns it on with the tunnel.
+export BOX_EGRESS_PROXY="${BOX_EGRESS_PROXY:-${BOX_EGRESS_TUNNEL}}"
 export BOX_EGRESS_WS_BIND="${BOX_EGRESS_WS_BIND:-0.0.0.0:8790}"
 export BOX_EGRESS_PROXY_BIND="${BOX_EGRESS_PROXY_BIND:-127.0.0.1:8791}"
 export BOX_EGRESS_ADMIN_BIND="${BOX_EGRESS_ADMIN_BIND:-127.0.0.1:8792}"
@@ -162,7 +165,7 @@ start_chrome() {
     launcher=(/usr/local/bin/box-chrome-pipe "${BOX_SCREEN_RUN}/cdp.sock" --)
   fi
   local proxy_args=()
-  if flag_on "${BOX_EGRESS_TUNNEL}" 0; then
+  if flag_on "${BOX_EGRESS_PROXY}" 0; then
     echo "chromium proxy=http://127.0.0.1:${BOX_EGRESS_PROXY_PORT} (box-egress-tunnel)"
     proxy_args+=(
       --proxy-server="http://127.0.0.1:${BOX_EGRESS_PROXY_PORT}"
@@ -226,17 +229,22 @@ start_chrome() {
 
 start_egress() {
   local n admin_port
+  local tunnel_args=()
 
   admin_port="${BOX_EGRESS_ADMIN_BIND##*:}"
-  echo "starting box-egress-tunnel server ws=${BOX_EGRESS_WS_BIND} proxy=${BOX_EGRESS_PROXY_BIND} admin=127.0.0.1:${admin_port}"
+  # The WebSocket only with the tunnel, on box-keeper's staged copy of the bearer, which the server
+  # unlinks. Without it the proxy dials sites itself, by the same rules.
+  if flag_on "${BOX_EGRESS_TUNNEL}" 0; then
+    tunnel_args=(--tunnel --ws-bind "${BOX_EGRESS_WS_BIND}" --staged-bearer-file "${BOX_EGRESS_BEARER_STAGED}")
+  fi
+  echo "starting box-egress-tunnel server tunnel=${BOX_EGRESS_TUNNEL} proxy=${BOX_EGRESS_PROXY_BIND} admin=127.0.0.1:${admin_port}"
   env BOX_EGRESS_WS_BIND="${BOX_EGRESS_WS_BIND}" \
     BOX_EGRESS_PROXY_BIND="${BOX_EGRESS_PROXY_BIND}" \
     BOX_EGRESS_ADMIN_BIND="${BOX_EGRESS_ADMIN_BIND}" \
     box-egress-tunnel server \
-      --ws-bind "${BOX_EGRESS_WS_BIND}" \
       --proxy-bind "${BOX_EGRESS_PROXY_BIND}" \
       --admin-bind "${BOX_EGRESS_ADMIN_BIND}" \
-      --bearer-file "${BOX_EGRESS_BEARER_STAGED}" \
+      "${tunnel_args[@]}" \
       >"${BOX_SCREEN_RUN}/box-egress-tunnel.log" 2>&1 &
   record $!
 
@@ -258,12 +266,12 @@ start_egress() {
   printf '%s\n' "${BOX_EGRESS_PROXY_PORT}" > /run/box/egress/port
 }
 
-echo "buwiz-computer starting box_id=${BOX_ID:-buwiz-computer} workspace=${WORKSPACE_ROOT} desktop=${BOX_DESKTOP} chrome=${BOX_CHROME} cua=${BOX_CUA} egress=${BOX_EGRESS_TUNNEL}"
+echo "buwiz-computer starting box_id=${BOX_ID:-buwiz-computer} workspace=${WORKSPACE_ROOT} desktop=${BOX_DESKTOP} chrome=${BOX_CHROME} cua=${BOX_CUA} egress=${BOX_EGRESS_TUNNEL} proxy=${BOX_EGRESS_PROXY}"
 
 if flag_on "${BOX_DESKTOP}" 1; then
   start_desktop
 fi
-if flag_on "${BOX_EGRESS_TUNNEL}" 0; then
+if flag_on "${BOX_EGRESS_PROXY}" 0; then
   start_egress
 fi
 if flag_on "${BOX_DESKTOP}" 1; then

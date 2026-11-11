@@ -58,6 +58,14 @@ services:
       BOX_EGRESS_ADMIN_BIND: ${BOX_EGRESS_ADMIN_BIND:-127.0.0.1:8792}
       BOX_EGRESS_TUNNEL_BEARER_FILE: ${BOX_EGRESS_TUNNEL_BEARER_FILE:-}
       BOX_EGRESS_RELAY_HOSTS: ${BOX_EGRESS_RELAY_HOSTS:-}
+      # The browser's proxy under the computer's rules, with or without the tunnel (docs/EGRESS.md).
+      # With it on, BOX_EGRESS_RULES_FILE names the rules the box starts with; none is no browsing.
+      BOX_EGRESS_PROXY: ${BOX_EGRESS_PROXY:-0}
+      BOX_EGRESS_RULES_FILE: ${BOX_EGRESS_RULES_FILE:-}
+      # Off unless you mean it: they let the box's proxy and the client dial private addresses
+      # and any port. The image smoke uses them to reach its fixture on loopback.
+      BOX_EGRESS_ALLOW_PRIVATE: ${BOX_EGRESS_ALLOW_PRIVATE:-}
+      BOX_EGRESS_RELAY_PORTS: ${BOX_EGRESS_RELAY_PORTS:-}
     ports:
       - "127.0.0.1:1337:1337"
       - "127.0.0.1:1340:1340"
