@@ -519,3 +519,111 @@ async fn rules_change_at_runtime_from_the_file_and_a_bad_file_refuses_everything
     assert_eq!(got.reason.as_deref(), Some("no-rules"));
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn wrong_bearers_waiting_out_their_delay_never_hold_the_right_one_out() {
+    let t = start_tunnel(Some(every_site(Exit::Tunnel))).await;
+    let ws = t.ws.unwrap();
+    let mut wrong = Vec::new();
+    for _ in 0..80 {
+        let mut cfg = client_cfg(ws, None);
+        cfg.bearer = "a-wrong-bearer-that-is-long-enough-to-pass".to_string();
+        wrong.push(tokio::spawn(async move { client::run_once(&cfg).await }));
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let started = std::time::Instant::now();
+    let _client = attach(ws, Some(every_site(Exit::Tunnel)));
+    wait_admin(&t, true).await;
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "the right bearer waited {:?}",
+        started.elapsed()
+    );
+    for w in wrong {
+        assert!(w.await.unwrap().is_err());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_connection_that_sends_no_request_is_closed_at_the_deadline() {
+    let t = start(
+        false,
+        Some(every_site(Exit::Direct)),
+        loopback_destination(),
+        Allowlist::any(),
+        None,
+    )
+    .await;
+    let mut idle = TcpStream::connect(t.proxy).await.unwrap();
+    let mut got = Vec::new();
+    let read = tokio::time::timeout(Duration::from_secs(8), idle.read_to_end(&mut got)).await;
+    assert!(read.is_ok(), "an idle socket was held past the deadline");
+    let head = String::from_utf8_lossy(&got);
+    assert!(
+        head.starts_with("HTTP/1.1 408") && head.contains("X-Box-Egress-Reason: slow-request"),
+        "{head}"
+    );
+    assert_eq!(status(&t).await.counts.bad_request, 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn every_refusal_is_counted_the_static_list_and_a_bad_host_included() {
+    let t = start(
+        false,
+        Some(every_site(Exit::Direct)),
+        loopback_destination(),
+        Allowlist::parse("only.example"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        connect(t.proxy, "elsewhere.example:443", b"x")
+            .await
+            .reason
+            .as_deref(),
+        Some("relay-hosts")
+    );
+    assert_eq!(
+        connect(t.proxy, "bad..host:443", b"x")
+            .await
+            .reason
+            .as_deref(),
+        Some("bad-host")
+    );
+    let c = status(&t).await.counts;
+    assert_eq!((c.relay_hosts, c.bad_host), (1, 1));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_admin_port_says_how_many_entries_and_never_which() {
+    let t = start(
+        false,
+        Some(rules(
+            Exit::Direct,
+            Mode::Listed,
+            &["secret-site.example"],
+            &["other-site.example"],
+        )),
+        loopback_destination(),
+        Allowlist::any(),
+        None,
+    )
+    .await;
+    let got = box_common::local_request(
+        &t.admin.to_string(),
+        "GET",
+        "/v1/rules",
+        Duration::from_secs(2),
+        4096,
+    )
+    .await
+    .unwrap();
+    let body = String::from_utf8_lossy(&got.body);
+    assert_eq!(got.status, 200);
+    assert!(!body.contains("site.example"), "{body}");
+    let v: serde_json::Value = serde_json::from_slice(&got.body).unwrap();
+    assert_eq!(
+        (v["allow"].as_u64(), v["block"].as_u64(), v["mode"].as_str()),
+        (Some(1), Some(1), Some("listed"))
+    );
+}

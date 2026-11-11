@@ -134,7 +134,7 @@ pub fn client_config(
     })
 }
 
-/// Every site, through the tunnel: what a box with the tunnel and no rules file has always done.
+/// Every site, through the tunnel: what an operator's own client, with no computer behind it, judges by.
 pub fn open_rules() -> Rules {
     Rules::new(0, box_egress::Exit::Tunnel, box_egress::Mode::All, &[], &[])
         .expect("no entries to refuse")

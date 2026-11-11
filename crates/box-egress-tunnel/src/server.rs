@@ -41,6 +41,12 @@ use crate::status::{format_bind, Counts, EgressStatus};
 
 /// Streams at once through the tunnel, and, separately, dialled directly.
 const MAX_STREAMS: usize = 256;
+/// Proxy connections at once, in any state: every stream, and some to spare.
+const MAX_PROXY_CONNECTIONS: usize = 2 * MAX_STREAMS + 64;
+/// Proxy connections whose request head hasn't come yet, and how long one has to send it. Any
+/// process in the box can reach the proxy: idle or slow sockets go, and can't crowd the browser out.
+const MAX_UNREAD: usize = 64;
+const HEAD_TIMEOUT: Duration = Duration::from_secs(5);
 
 enum WsOut {
     Control(ControlMsg),
@@ -118,6 +124,10 @@ struct Counters {
     destination: AtomicU64,
     failed: AtomicU64,
     plain_http: AtomicU64,
+    bad_request: AtomicU64,
+    bad_host: AtomicU64,
+    relay_hosts: AtomicU64,
+    busy: AtomicU64,
 }
 
 impl Counters {
@@ -138,6 +148,10 @@ impl Counters {
             destination: get(&self.destination),
             failed: get(&self.failed),
             plain_http: get(&self.plain_http),
+            bad_request: get(&self.bad_request),
+            bad_host: get(&self.bad_host),
+            relay_hosts: get(&self.relay_hosts),
+            busy: get(&self.busy),
         }
     }
 }
@@ -145,6 +159,11 @@ impl Counters {
 struct Shared {
     cfg: TunnelServerConfig,
     handshakes: Semaphore,
+    /// wrong bearers being held before their 401: apart from `handshakes`, so they never hold a
+    /// right one out
+    refusing: Semaphore,
+    connections: Arc<Semaphore>,
+    unread: Semaphore,
     direct_slots: Semaphore,
     attached: AtomicBool,
     generation: AtomicU64,
@@ -171,6 +190,7 @@ impl Shared {
             proxy_up: true,
             can_browse: EgressStatus::browsable(rules.as_ref(), attached),
             rules,
+            rules_origin: None,
             rules_error: self
                 .rules_error
                 .lock()
@@ -253,6 +273,9 @@ pub async fn run_with_binds(cfg: TunnelServerConfig, binds: ServerBinds) -> anyh
     let shared = Arc::new(Shared {
         cfg,
         handshakes: Semaphore::new(MAX_PENDING_HANDSHAKES),
+        refusing: Semaphore::new(MAX_PENDING_HANDSHAKES),
+        connections: Arc::new(Semaphore::new(MAX_PROXY_CONNECTIONS)),
+        unread: Semaphore::new(MAX_UNREAD),
         direct_slots: Semaphore::new(MAX_STREAMS),
         attached: AtomicBool::new(false),
         generation: AtomicU64::new(0),
@@ -281,9 +304,14 @@ pub async fn run_with_binds(cfg: TunnelServerConfig, binds: ServerBinds) -> anyh
                 });
             }
             accepted = binds.proxy.accept() => {
-                let Some((stream, _)) = accept_or_skip("proxy", accepted).await else { continue };
+                let Some((mut stream, _)) = accept_or_skip("proxy", accepted).await else { continue };
                 let shared = shared.clone();
+                let Ok(held) = shared.connections.clone().try_acquire_owned() else {
+                    tokio::spawn(async move { refuse(&shared, &mut stream, &BUSY).await });
+                    continue;
+                };
                 tokio::spawn(async move {
+                    let _held = held;
                     if let Err(err) = handle_proxy(shared, stream).await {
                         tracing::debug!(error = %err, "proxy session ended");
                     }
@@ -316,8 +344,12 @@ async fn handle_admin(shared: Arc<Shared>, mut stream: TcpStream) -> std::io::Re
             serde_json::to_vec(&shared.snapshot()).unwrap_or_else(|_| b"{}".to_vec()),
         )
     } else if req.starts_with("GET /v1/rules") {
+        // counts only: this port has no login, and any process in the box can ask it
         match shared.cfg.rules.get() {
-            Some(rules) => (200, rules.to_json().into_bytes()),
+            Some(rules) => (
+                200,
+                serde_json::to_vec(&RulesSummary::from(&*rules)).unwrap_or_default(),
+            ),
             None => (404, b"{\"error\":\"no_rules\"}".to_vec()),
         }
     } else if req.starts_with("POST /v1/rules/reload") {
@@ -411,6 +443,12 @@ async fn handle_ws(
     };
     let head = String::from_utf8_lossy(&head).into_owned();
     if !presented_bearer(&head).is_some_and(|token| tokens_equal(token, &bearer)) {
+        // the handshake's place goes now: a wrong bearer waiting out its delay never holds a right
+        // one out. Those waiting are capped apart; past the cap one is closed with no answer
+        drop(permit);
+        let Ok(_refusing) = shared.refusing.try_acquire() else {
+            return Ok(());
+        };
         let failures = shared.auth_failures.fetch_add(1, Ordering::Relaxed) + 1;
         tracing::warn!(
             failures,
@@ -651,19 +689,38 @@ fn on_control(shared: &Shared, generation: u64, msg: ControlMsg) {
     }
 }
 
-/// A refusal: its status, the stable word for `X-Box-Egress-Reason`, and a sentence.
+/// Which count a refusal goes in: every refusal is counted.
+#[derive(Clone, Copy)]
+enum Counter {
+    PlainHttp,
+    BadRequest,
+    NoRules,
+    Blocked,
+    NotListed,
+    BadHost,
+    RelayHosts,
+    NoClient,
+    StreamsFull,
+    Busy,
+    Destination,
+    Failed,
+}
+
+/// A refusal: its status, the stable word for `X-Box-Egress-Reason`, a sentence, and its count.
 struct Refusal {
     status: u16,
     reason: &'static str,
     text: &'static str,
+    counter: Counter,
 }
 
 impl Refusal {
-    const fn new(status: u16, reason: &'static str, text: &'static str) -> Self {
+    const fn new(status: u16, reason: &'static str, text: &'static str, counter: Counter) -> Self {
         Self {
             status,
             reason,
             text,
+            counter,
         }
     }
 }
@@ -672,58 +729,92 @@ const PLAIN_HTTP: Refusal = Refusal::new(
     405,
     "plain-http",
     "this computer's browser loads https:// pages only; plain http:// isn't relayed",
+    Counter::PlainHttp,
 );
-const BAD_REQUEST: Refusal = Refusal::new(400, "bad-request", "bad request");
+const BAD_REQUEST: Refusal = Refusal::new(400, "bad-request", "bad request", Counter::BadRequest);
 const NO_RULES: Refusal = Refusal::new(
     403,
     "no-rules",
     "no browsing rules are set for this computer, so every site is refused",
+    Counter::NoRules,
 );
-const BLOCKED: Refusal = Refusal::new(403, "blocked", "blocked by this computer's rules");
+const BLOCKED: Refusal = Refusal::new(
+    403,
+    "blocked",
+    "blocked by this computer's rules",
+    Counter::Blocked,
+);
 const NOT_LISTED: Refusal = Refusal::new(
     403,
     "not-listed",
     "not on this computer's allow list, and it reaches listed sites only",
+    Counter::NotListed,
 );
-const BAD_HOST: Refusal = Refusal::new(400, "bad-host", "that isn't a valid host");
-const RELAY_HOSTS: Refusal = Refusal::new(403, "relay-hosts", "host not allowed");
+const BAD_HOST: Refusal =
+    Refusal::new(400, "bad-host", "that isn't a valid host", Counter::BadHost);
+const RELAY_HOSTS: Refusal =
+    Refusal::new(403, "relay-hosts", "host not allowed", Counter::RelayHosts);
 const NO_CLIENT: Refusal = Refusal::new(
     503,
     "no-client",
     "box-egress-tunnel: no client attached; this computer browses through the tunnel only",
+    Counter::NoClient,
 );
 const STREAMS_FULL: Refusal = Refusal::new(
     503,
     "streams-full",
     "box-egress-tunnel: too many streams at once",
+    Counter::StreamsFull,
 );
 const DESTINATION: Refusal = Refusal::new(
     403,
     "destination",
     "destination refused: not a public address, or a port that isn't relayed",
+    Counter::Destination,
 );
-const RESOLVE: Refusal = Refusal::new(502, "resolve", "the name didn't resolve");
-const CONNECT: Refusal = Refusal::new(502, "connect", "the site didn't answer");
-const TIMEOUT: Refusal = Refusal::new(504, "timeout", "the site didn't answer in time");
-const OPEN_TIMED_OUT: Refusal = Refusal::new(504, "open-timeout", "client did not open the stream");
+const RESOLVE: Refusal = Refusal::new(502, "resolve", "the name didn't resolve", Counter::Failed);
+const CONNECT: Refusal = Refusal::new(502, "connect", "the site didn't answer", Counter::Failed);
+const TIMEOUT: Refusal = Refusal::new(
+    504,
+    "timeout",
+    "the site didn't answer in time",
+    Counter::Failed,
+);
+const SLOW_HEAD: Refusal = Refusal::new(
+    408,
+    "slow-request",
+    "the request didn't come in time",
+    Counter::BadRequest,
+);
+const BUSY: Refusal = Refusal::new(
+    503,
+    "busy",
+    "box-egress-tunnel: too many connections waiting to be read",
+    Counter::Busy,
+);
+const OPEN_TIMED_OUT: Refusal = Refusal::new(
+    504,
+    "open-timeout",
+    "client did not open the stream",
+    Counter::Failed,
+);
 
 async fn refuse(shared: &Shared, stream: &mut TcpStream, refusal: &Refusal) {
-    let counter = match refusal.reason {
-        "plain-http" => Some(&shared.counts.plain_http),
-        "no-rules" => Some(&shared.counts.no_rules),
-        "blocked" => Some(&shared.counts.blocked),
-        "not-listed" => Some(&shared.counts.not_listed),
-        "no-client" => Some(&shared.counts.no_client),
-        "streams-full" => Some(&shared.counts.streams_full),
-        "destination" => Some(&shared.counts.destination),
-        "resolve" | "connect" | "timeout" | "open-timeout" | "client-error" => {
-            Some(&shared.counts.failed)
-        }
-        _ => None,
-    };
-    if let Some(counter) = counter {
-        Counters::bump(counter);
-    }
+    let c = &shared.counts;
+    Counters::bump(match refusal.counter {
+        Counter::PlainHttp => &c.plain_http,
+        Counter::BadRequest => &c.bad_request,
+        Counter::NoRules => &c.no_rules,
+        Counter::Blocked => &c.blocked,
+        Counter::NotListed => &c.not_listed,
+        Counter::BadHost => &c.bad_host,
+        Counter::RelayHosts => &c.relay_hosts,
+        Counter::NoClient => &c.no_client,
+        Counter::StreamsFull => &c.streams_full,
+        Counter::Busy => &c.busy,
+        Counter::Destination => &c.destination,
+        Counter::Failed => &c.failed,
+    });
     tracing::info!(
         status = refusal.status,
         reason = refusal.reason,
@@ -739,10 +830,20 @@ async fn refuse(shared: &Shared, stream: &mut TcpStream, refusal: &Refusal) {
 }
 
 async fn handle_proxy(shared: Arc<Shared>, mut stream: TcpStream) -> anyhow::Result<()> {
-    let (head, rest) = match read_http_head(&mut stream).await {
-        Ok(v) => v,
-        Err(_) => {
+    let Ok(unread) = shared.unread.try_acquire() else {
+        refuse(&shared, &mut stream, &BUSY).await;
+        return Ok(());
+    };
+    let read = tokio::time::timeout(HEAD_TIMEOUT, read_http_head(&mut stream)).await;
+    drop(unread);
+    let (head, rest) = match read {
+        Ok(Ok(v)) => v,
+        Ok(Err(_)) => {
             refuse(&shared, &mut stream, &BAD_REQUEST).await;
+            return Ok(());
+        }
+        Err(_) => {
+            refuse(&shared, &mut stream, &SLOW_HEAD).await;
             return Ok(());
         }
     };

@@ -93,6 +93,14 @@ pub struct Counts {
     pub failed: u64,
     /// Plain `http://` (absolute-form) requests, which are refused.
     pub plain_http: u64,
+    /// Requests the proxy couldn't read, or that didn't come in time.
+    pub bad_request: u64,
+    /// Not a valid host name or address.
+    pub bad_host: u64,
+    /// Not in the operator's static `BOX_EGRESS_RELAY_HOSTS`.
+    pub relay_hosts: u64,
+    /// Turned away because too many connections were open or waiting to be read.
+    pub busy: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -118,6 +126,10 @@ pub struct EgressStatus {
     /// Why the last rules file read failed, if it did. Names no site.
     #[serde(default)]
     pub rules_error: Option<String>,
+    /// Where the rules in force came from: `staged` (the file the box started with) or `set` (a
+    /// `PUT /v1/egress/rules` since). box-host fills it; a restart is back to `staged`.
+    #[serde(default)]
+    pub rules_origin: Option<String>,
     /// A page can load: rules are set, and their exit is direct or has a client attached.
     #[serde(default)]
     pub can_browse: bool,
@@ -138,6 +150,7 @@ impl EgressStatus {
             proxy_up: false,
             rules: None,
             rules_error: None,
+            rules_origin: None,
             can_browse: false,
             counts: Counts::default(),
         }
