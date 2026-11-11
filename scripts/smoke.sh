@@ -1129,9 +1129,10 @@ plain="$(curl -fsS -H "Authorization: Bearer ${TOKEN}" -H "Content-Type: applica
   "${EXEC_URL}/v1/exec" | python3 -c 'import json,sys; print(json.load(sys.stdin)["stdout"].strip())')"
 echo "plain http through the proxy: ${plain}"; [[ "${plain}" == "405" ]]
 # A Bot's screen's browser goes through the proxy too: a plain http:// page gets the proxy's answer.
-spost '{"action":"up","bot":"smoke"}'
+# A Bot of its own: the last one's browser profile still holds the lock of the container before.
+spost '{"action":"up","bot":"smokenet"}'
 bot_display="$(printf '%s' "${screen}" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert "error" not in d, d; print(d["display"])')"
-spost '{"action":"open","bot":"smoke","url":"http://blocked.test:6910/"}'
+spost '{"action":"open","bot":"smokenet","url":"http://blocked.test:6910/"}'
 seen=0
 for _ in $(seq 1 40); do
   bpost "wait?display=${bot_display}" '{"text":"loads https:// pages only","load":"load","timeout_ms":5000}'
@@ -1143,7 +1144,7 @@ for _ in $(seq 1 40); do
 done
 echo "bot screen through the proxy ${code} ${body}"
 [[ "${seen}" == "1" ]]
-spost '{"action":"down","bot":"smoke"}'
+spost '{"action":"down","bot":"smokenet"}'
 # rules_put <json>: PUT /v1/egress/rules, its status in ${code}. The body goes in a file.
 rules_put() {
   local file
