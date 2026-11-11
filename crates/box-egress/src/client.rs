@@ -148,31 +148,60 @@ enum WsOut {
     Ping,
 }
 
+/// The session's streams, by id. Each holds a generation, so a stream's task removes only its own
+/// entry: an id reused by a newer stream is never dropped by an older one's ending.
+type Slots = HashMap<u32, (u64, Option<mpsc::Sender<Vec<u8>>>)>;
+
 struct Streams {
-    map: Mutex<HashMap<u32, mpsc::Sender<Vec<u8>>>>,
+    map: Mutex<Slots>,
+    next: AtomicU64,
 }
 
 impl Streams {
     fn new() -> Self {
         Self {
             map: Mutex::new(HashMap::new()),
+            next: AtomicU64::new(1),
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<u32, mpsc::Sender<Vec<u8>>>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Slots> {
         self.map.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn insert(&self, id: u32, tx: mpsc::Sender<Vec<u8>>) {
-        self.lock().insert(id, tx);
+    /// Takes `id` for a new stream: its generation, or `None` while another stream holds it.
+    fn reserve(&self, id: u32) -> Option<u64> {
+        let mut map = self.lock();
+        if map.contains_key(&id) {
+            return None;
+        }
+        let gen = self.next.fetch_add(1, Ordering::SeqCst);
+        map.insert(id, (gen, None));
+        Some(gen)
+    }
+
+    /// The reserved stream's queue toward its destination, once it's dialled.
+    fn open(&self, id: u32, gen: u64, tx: mpsc::Sender<Vec<u8>>) {
+        if let Some(slot) = self.lock().get_mut(&id).filter(|(g, _)| *g == gen) {
+            slot.1 = Some(tx);
+        }
     }
 
     fn get(&self, id: u32) -> Option<mpsc::Sender<Vec<u8>>> {
-        self.lock().get(&id).cloned()
+        self.lock().get(&id).and_then(|(_, tx)| tx.clone())
     }
 
+    /// The box closed `id`, whichever stream holds it now.
     fn remove(&self, id: u32) {
         self.lock().remove(&id);
+    }
+
+    /// The stream of generation `gen` ended: its entry goes, and only its own.
+    fn release(&self, id: u32, gen: u64) {
+        let mut map = self.lock();
+        if map.get(&id).is_some_and(|(g, _)| *g == gen) {
+            map.remove(&id);
+        }
     }
 }
 
@@ -329,7 +358,16 @@ pub async fn run_once(cfg: &TunnelClientConfig) -> Result<(), ClientError> {
                 }
                 match msg {
                     ControlMsg::Open { id, host, port, .. } => {
+                        let Some(gen) = streams.reserve(id) else {
+                            cfg.state.0.refused.fetch_add(1, Ordering::SeqCst);
+                            send_soon(
+                                &out_tx,
+                                WsOut::Control(ControlMsg::error(id, "stream id in use")),
+                            );
+                            continue;
+                        };
                         let Ok(slot) = opens.clone().try_acquire_owned() else {
+                            streams.release(id, gen);
                             cfg.state.0.refused.fetch_add(1, Ordering::SeqCst);
                             send_soon(
                                 &out_tx,
@@ -339,6 +377,7 @@ pub async fn run_once(cfg: &TunnelClientConfig) -> Result<(), ClientError> {
                         };
                         let job = Open {
                             id,
+                            gen,
                             host,
                             port,
                             allow: cfg.allowlist.clone(),
@@ -410,6 +449,7 @@ impl Drop for AbortOnDrop {
 
 struct Open {
     id: u32,
+    gen: u64,
     host: String,
     port: u16,
     allow: Allowlist,
@@ -422,6 +462,7 @@ struct Open {
 
 impl Open {
     async fn refuse(&self, why: &str) {
+        self.streams.release(self.id, self.gen);
         self.state.0.refused.fetch_add(1, Ordering::SeqCst);
         let _ = self
             .outgoing
@@ -445,7 +486,8 @@ impl Open {
             let why = match verdict {
                 Verdict::Blocked => "blocked by this computer's rules",
                 Verdict::NotListed => "not on this computer's allow list",
-                _ => "not a valid host",
+                Verdict::Address => "an address, and this computer blocks sites by name",
+                Verdict::BadHost | Verdict::Allowed => "not a valid host",
             };
             return self.refuse(why).await;
         }
@@ -457,20 +499,20 @@ impl Open {
             Ok(stream) => {
                 let _ = stream.set_nodelay(true);
                 let (from_tx, from_rx) = mpsc::channel(STREAM_QUEUE);
-                self.streams.insert(id, from_tx);
+                self.streams.open(id, self.gen, from_tx);
                 if self
                     .outgoing
                     .send(WsOut::Control(ControlMsg::opened(id)))
                     .await
                     .is_err()
                 {
-                    self.streams.remove(id);
+                    self.streams.release(id, self.gen);
                     return;
                 }
                 self.state.0.opened.fetch_add(1, Ordering::SeqCst);
                 tracing::debug!(id, "outbound stream open");
                 copy_outbound(stream, from_rx, &self.outgoing, id).await;
-                self.streams.remove(id);
+                self.streams.release(id, self.gen);
             }
             Err(err) => {
                 // Logged at warn without the host: on the operator's own machine a refused address
@@ -479,6 +521,7 @@ impl Open {
                 if matches!(err, crate::dial::DialError::Refused(_)) {
                     self.refuse(&err.to_string()).await;
                 } else {
+                    self.streams.release(id, self.gen);
                     self.state.0.failed.fetch_add(1, Ordering::SeqCst);
                     let _ = self
                         .outgoing
@@ -536,6 +579,26 @@ async fn copy_outbound(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stream_ending_never_takes_a_newer_streams_place() {
+        let streams = Streams::new();
+        let old = streams.reserve(7).unwrap();
+        assert_eq!(
+            streams.reserve(7),
+            None,
+            "an id in use can't be opened again"
+        );
+        // the box closes 7 and opens it again: the old stream's end leaves the new one alone
+        streams.remove(7);
+        let new = streams.reserve(7).unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        streams.open(7, new, tx);
+        streams.release(7, old);
+        assert!(streams.get(7).is_some(), "the newer stream is still there");
+        streams.release(7, new);
+        assert!(streams.get(7).is_none());
+    }
 
     #[tokio::test]
     async fn the_reader_never_waits_on_a_stalled_writer() {
