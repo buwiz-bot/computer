@@ -55,8 +55,11 @@ Matching, exactly:
 - An entry of `*`, an empty entry, an address (`10.0.0.1`, `::1`), and one with a scheme, port or
   path are **refused** when the rules are set (`422 invalid_rules`, naming the list and position).
   They never mean "everything".
-- **Block always wins.** A site reached by its bare address matches no name: under `all` it is
-  reached unless something else refuses it; under `listed` it is refused.
+- **Block always wins.** A bare address (`93.184.216.34`, `[2606::1]`) matches no name, and a
+  rule can't tell which site an address is. So **with any site blocked, every bare address is
+  refused** (`403 address`), at the box's proxy and at the client alike: a blocked site isn't
+  reachable by its number. With nothing blocked, under `all` an address is reached unless the
+  address policy refuses it; under `listed` it is refused.
 - **No rules** (never set, or a file that doesn't read) refuses every site (`403 no-rules`). It
   never means "allow".
 
@@ -82,6 +85,7 @@ Every refusal carries `X-Box-Egress-Reason`, one stable word:
 | `403` | `no-rules` | No rules are set |
 | `403` | `blocked` | On the block list |
 | `403` | `not-listed` | `listed` mode, not on the allow list |
+| `403` | `address` | A bare address, and some site is blocked |
 | `403` | `relay-hosts` | Not in the operator's static `BOX_EGRESS_RELAY_HOSTS` |
 | `403` | `destination` | The address it resolved to is refused, or the port isn't relayed (direct exit) |
 | `405` | `plain-http` | Absolute-form `http://`: CONNECT only |
@@ -117,7 +121,10 @@ box started with) or `set` (a `PUT` since), beside the set's `version`.
 `PUT` takes one set at a time. It answers `200` only once this version is in force; if the proxy
 has another version in force it's `409 rules_superseded` (with that version), if the proxy refuses
 the file `422 rules_refused`, and with no proxy answering `503 egress_not_running`. In each of those
-the file is put back as it was: it's never ahead of what's in force.
+the file is put back as it was: it's never ahead of what's in force. When the proxy's answer to the
+reload doesn't come, box-host asks it what's in force before answering: the new set is a `200`,
+another is answered as above, and a proxy that can't be asked at all is `503 rules_state_unknown`,
+with the file left at the last set the proxy was known to hold.
 
 ## Turning it on
 
@@ -132,8 +139,8 @@ the file is put back as it was: it's never ahead of what's in force.
 | `BOX_EGRESS_PROXY_PORT` | port of `PROXY_BIND` | Used in `--proxy-server` |
 | `BOX_EGRESS_TUNNEL_BEARER_FILE` | unset | The WS bearer, as a file. Preferred. |
 | `BOX_EGRESS_TUNNEL_BEARER` | | The bearer as a value. Avoid: it stays in `/proc/1/environ`. |
-| `BOX_EGRESS_RELAY_HOSTS` | empty | The operator's static name filter, on top of the rules, at both ends. Empty is no extra filter. |
-| `BOX_EGRESS_RELAY_PORTS` | `80,443` | Ports either end will dial; `*` is any. |
+| `BOX_EGRESS_RELAY_HOSTS` | empty | The operator's static name filter, on top of the rules, at both ends. A name covers itself and every name under it, as in the rules (`*.x` means `x`). Unset or empty is no extra filter; `*` alone is none on purpose; a value that names nothing usable (`*.`, a lone comma) stops the process at start. |
+| `BOX_EGRESS_RELAY_PORTS` | `80,443` | Ports either end will dial; `*` is any. An entry that isn't a port stops the process at start. |
 | `BOX_EGRESS_ALLOW_PRIVATE` | unset | `1` lets either end dial loopback, private and other non-public addresses. Leave it off; the image smoke uses it to reach its fixture on loopback. |
 | `BOX_EGRESS_BEARER_STAGED` | set by `box-keeper` | The staged copy of the bearer the entrypoint hands to the server, which unlinks it. Do not set it. |
 | `BOX_EGRESS_RULES_PATH` | `/run/box/egress-rules/rules.json` | Where the rules live in the box. Leave it. |

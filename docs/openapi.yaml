@@ -1522,7 +1522,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "503":
-          description: egress_not_running or egress_rules_unwritable
+          description: egress_not_running (nothing changed), egress_rules_unwritable, or rules_state_unknown (the proxy couldn't be asked what's in force; the file is the last set it was known to hold)
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
