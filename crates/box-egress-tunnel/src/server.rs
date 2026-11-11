@@ -379,26 +379,87 @@ async fn handle_admin(shared: Arc<Shared>, mut stream: TcpStream) -> std::io::Re
     Ok(())
 }
 
-/// The upgrade's head, read without taking it off the socket, so the handshake reads it again.
-/// `None` when it doesn't come in time or is too large.
-async fn peek_head(stream: &TcpStream) -> Option<Vec<u8>> {
-    let mut buf = vec![0u8; MAX_UPGRADE_HEAD];
+/// `msg` toward the client without the reader ever waiting on it: at once when the writer's
+/// queue has room, else from a task of its own.
+fn send_soon(out: &mpsc::Sender<WsOut>, msg: WsOut) {
+    if let Err(mpsc::error::TrySendError::Full(msg)) = out.try_send(msg) {
+        let out = out.clone();
+        tokio::spawn(async move {
+            let _ = out.send(msg).await;
+        });
+    }
+}
+
+/// A socket whose first bytes, already read, are given back first: the upgrade's head is read
+/// once here to judge its bearer, then handed whole to the handshake.
+struct Prefixed {
+    head: Vec<u8>,
+    at: usize,
+    inner: TcpStream,
+}
+
+impl tokio::io::AsyncRead for Prefixed {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.at < self.head.len() {
+            let n = (self.head.len() - self.at).min(buf.remaining());
+            let at = self.at;
+            buf.put_slice(&self.head[at..at + n]);
+            self.at += n;
+            return std::task::Poll::Ready(Ok(()));
+        }
+        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl tokio::io::AsyncWrite for Prefixed {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+/// The upgrade's head, and whatever came after it, read as it arrives (no polling), within the
+/// handshake's time. `None` when it doesn't come in time, ends, or is too large.
+async fn read_head(stream: &mut TcpStream) -> Option<Vec<u8>> {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 2048];
     let deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT;
     loop {
-        let n = tokio::time::timeout_at(deadline, stream.peek(&mut buf))
+        let n = tokio::time::timeout_at(deadline, stream.read(&mut chunk))
             .await
             .ok()?
             .ok()?;
         if n == 0 {
             return None;
         }
-        if let Some(end) = buf[..n].windows(4).position(|w| w == b"\r\n\r\n") {
-            return Some(buf[..end + 4].to_vec());
+        buf.extend_from_slice(&chunk[..n]);
+        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+            return Some(buf);
         }
-        if n == buf.len() || tokio::time::Instant::now() >= deadline {
+        if buf.len() > MAX_UPGRADE_HEAD {
             return None;
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 
@@ -438,10 +499,14 @@ async fn handle_ws(
     };
     // The bearer is checked here first, so a wrong one waits before it is told: guessing used to
     // be as fast as the loopback port answered, and left no line in the log.
-    let Some(head) = peek_head(&stream).await else {
+    let Some(read) = read_head(&mut stream).await else {
         return Ok(());
     };
-    let head = String::from_utf8_lossy(&head).into_owned();
+    let end = read
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map_or(read.len(), |at| at + 4);
+    let head = String::from_utf8_lossy(&read[..end]).into_owned();
     if !presented_bearer(&head).is_some_and(|token| tokens_equal(token, &bearer)) {
         // the handshake's place goes now: a wrong bearer waiting out its delay never holds a right
         // one out. Those waiting are capped apart; past the cap one is closed with no answer
@@ -462,6 +527,11 @@ async fn handle_ws(
             .await;
         return Ok(());
     }
+    let stream = Prefixed {
+        head: read,
+        at: 0,
+        inner: stream,
+    };
     let handshake = accept_hdr_async_with_config(
         stream,
         |req: &Request, mut response: Response| {
@@ -611,12 +681,7 @@ where
                                         // reading. Close that one stream instead.
                                         tracing::warn!(id, "stream consumer not keeping up; closing it");
                                         drop_stream(&shared, generation, id);
-                                        let _ = out_tx
-                                            .send(WsOut::Control(ControlMsg::close(
-                                                id,
-                                                Some("slow consumer"),
-                                            )))
-                                            .await;
+                                        send_soon(&out_tx, WsOut::Control(ControlMsg::close(id, Some("slow consumer"))));
                                     }
                                     Err(mpsc::error::TrySendError::Closed(_)) => {}
                                 }
@@ -641,7 +706,8 @@ where
                     break;
                 }
                 silent_ticks += 1;
-                if out_tx.send(WsOut::Ping).await.is_err() {
+                // a full queue is traffic, which is proof enough the link works: no ping then
+                if let Err(mpsc::error::TrySendError::Closed(_)) = out_tx.try_send(WsOut::Ping) {
                     break;
                 }
             }
@@ -749,6 +815,12 @@ const NOT_LISTED: Refusal = Refusal::new(
     "not-listed",
     "not on this computer's allow list, and it reaches listed sites only",
     Counter::NotListed,
+);
+const ADDRESS: Refusal = Refusal::new(
+    403,
+    "address",
+    "an address typed as numbers, and this computer blocks sites by name, so addresses aren't reached",
+    Counter::Blocked,
 );
 const BAD_HOST: Refusal =
     Refusal::new(400, "bad-host", "that isn't a valid host", Counter::BadHost);
@@ -877,6 +949,10 @@ async fn handle_proxy(shared: Arc<Shared>, mut stream: TcpStream) -> anyhow::Res
         }
         Verdict::BadHost => {
             refuse(&shared, &mut stream, &BAD_HOST).await;
+            return Ok(());
+        }
+        Verdict::Address => {
+            refuse(&shared, &mut stream, &ADDRESS).await;
             return Ok(());
         }
     }
@@ -1127,6 +1203,25 @@ async fn write_http(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn the_reader_never_waits_on_a_slow_clients_full_queue() {
+        let (tx, mut rx) = mpsc::channel::<WsOut>(1);
+        tx.send(WsOut::Ping).await.unwrap();
+        tokio::time::timeout(Duration::from_millis(100), async {
+            send_soon(
+                &tx,
+                WsOut::Control(ControlMsg::close(3, Some("slow consumer"))),
+            );
+        })
+        .await
+        .expect("send_soon waited on a full queue");
+        assert!(matches!(rx.recv().await, Some(WsOut::Ping)));
+        assert!(matches!(
+            rx.recv().await,
+            Some(WsOut::Control(ControlMsg::Close { id: 3, .. }))
+        ));
+    }
 
     #[test]
     fn the_bearer_is_read_from_either_header() {

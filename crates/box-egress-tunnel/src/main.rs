@@ -126,8 +126,8 @@ fn prepare() -> Result<Job> {
                 tunnel,
                 proxy_bind,
                 admin_bind,
-                allowlist: merge_allowlist(relay_hosts, Vec::new()),
-                destination: DestinationPolicy::from_env(),
+                allowlist: merge_allowlist(relay_hosts, Vec::new())?,
+                destination: DestinationPolicy::from_env().map_err(anyhow::Error::msg)?,
                 rules_path: Some(rules_path),
                 rules: RulesCell::default(),
             };
@@ -142,7 +142,7 @@ fn prepare() -> Result<Job> {
             reconnect,
         } => {
             let bearer = load_bearer(bearer_file.as_deref(), false)?;
-            let allowlist = merge_allowlist(relay_hosts, allow_host);
+            let allowlist = merge_allowlist(relay_hosts, allow_host)?;
             Job::Client(client_config(url, bearer, allowlist, reconnect)?)
         }
     };
@@ -196,7 +196,8 @@ async fn run(job: Job) -> Result<()> {
     }
 }
 
-fn merge_allowlist(csv: Option<String>, extra: Vec<String>) -> Allowlist {
+/// `BOX_EGRESS_RELAY_HOSTS` (and `--allow-host`): a value that names nothing is an error naming it.
+fn merge_allowlist(csv: Option<String>, extra: Vec<String>) -> Result<Allowlist> {
     let mut raw = csv.unwrap_or_default();
     for host in extra {
         if raw.is_empty() {
@@ -206,5 +207,5 @@ fn merge_allowlist(csv: Option<String>, extra: Vec<String>) -> Allowlist {
             raw.push_str(&host);
         }
     }
-    Allowlist::parse(&raw)
+    Allowlist::parse(&raw).map_err(|why| anyhow::anyhow!("BOX_EGRESS_RELAY_HOSTS {why}"))
 }

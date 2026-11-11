@@ -310,7 +310,7 @@ async fn the_static_relay_hosts_list_still_applies_on_top_of_the_rules() {
         true,
         Some(every_site(Exit::Tunnel)),
         DestinationPolicy::default(),
-        Allowlist::parse("only.example"),
+        Allowlist::parse("only.example").unwrap(),
         None,
     )
     .await;
@@ -357,15 +357,15 @@ async fn direct_exit_dials_from_the_box_by_the_same_rules() {
     let bare = connect(t.proxy, &echo.to_string(), b"x").await;
     assert_eq!(
         (bare.status, bare.reason.as_deref()),
-        (403, Some("not-listed")),
-        "a bare address matches no name in listed mode"
+        (403, Some("address")),
+        "a bare address, with a site blocked, is refused as an address"
     );
     let st = status(&t).await;
     assert!(!st.enabled, "no tunnel on this box");
     assert!(st.can_browse);
     assert_eq!(st.counts.direct, 1);
-    assert_eq!(st.counts.blocked, 1);
-    assert_eq!(st.counts.not_listed, 2);
+    assert_eq!(st.counts.blocked, 2);
+    assert_eq!(st.counts.not_listed, 1);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -572,7 +572,7 @@ async fn every_refusal_is_counted_the_static_list_and_a_bad_host_included() {
         false,
         Some(every_site(Exit::Direct)),
         loopback_destination(),
-        Allowlist::parse("only.example"),
+        Allowlist::parse("only.example").unwrap(),
         None,
     )
     .await;
@@ -626,4 +626,68 @@ async fn the_admin_port_says_how_many_entries_and_never_which() {
         (v["allow"].as_u64(), v["block"].as_u64(), v["mode"].as_str()),
         (Some(1), Some(1), Some("listed"))
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn with_a_site_blocked_an_address_is_refused_at_both_ends() {
+    let (_echo, echo) = echo_server().await;
+    // the box's proxy: direct exit, one site blocked, the echo by its number
+    let t = start(
+        false,
+        Some(rules(Exit::Direct, Mode::All, &[], &["blocked.test"])),
+        loopback_destination(),
+        Allowlist::any(),
+        None,
+    )
+    .await;
+    let got = connect(t.proxy, &echo.to_string(), b"x").await;
+    assert_eq!((got.status, got.reason.as_deref()), (403, Some("address")));
+    // with nothing blocked it's reached, as before
+    t.rules.set(Some(every_site(Exit::Direct)));
+    assert_eq!(connect(t.proxy, &echo.to_string(), b"hi").await.status, 200);
+    // the operator's client, judging the same way though the box let it through
+    let t = start_tunnel(Some(every_site(Exit::Tunnel))).await;
+    let _client = attach(
+        t.ws.unwrap(),
+        Some(rules(Exit::Tunnel, Mode::All, &[], &["blocked.test"])),
+    );
+    wait_admin(&t, true).await;
+    let got = connect(t.proxy, &echo.to_string(), b"x").await;
+    assert_eq!(got.status, 502);
+    assert!(String::from_utf8_lossy(&got.body)
+        .contains("an address, and this computer blocks sites by name"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_upgrade_head_in_parts_is_read_as_it_comes_and_the_bearer_gets_in() {
+    // the upgrade's head comes in two pieces: read as it arrives, then handed whole to the handshake
+    let t = start_tunnel(Some(every_site(Exit::Tunnel))).await;
+    let mut s = TcpStream::connect(t.ws.unwrap()).await.unwrap();
+    let head = format!("GET / HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nAuthorization: Bearer {BEARER}\r\n\r\n");
+    let (a, b) = head.split_at(20);
+    s.write_all(a.as_bytes()).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    s.write_all(b.as_bytes()).await.unwrap();
+    let mut buf = [0u8; 512];
+    let n = tokio::time::timeout(Duration::from_secs(3), s.read(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 101"),
+        "{}",
+        String::from_utf8_lossy(&buf[..n])
+    );
+    wait_admin(&t, true).await;
+}
+
+#[test]
+fn a_rules_file_past_its_size_is_refused_without_being_read_whole() {
+    let dir = std::env::temp_dir().join(format!("egress-big-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("rules.json");
+    std::fs::write(&path, vec![b' '; box_egress::rules::MAX_RULES_BYTES + 4096]).unwrap();
+    let err = crate::config::read_rules(&path).unwrap_err();
+    assert!(err.contains("larger than"), "{err}");
+    std::fs::remove_dir_all(&dir).unwrap();
 }

@@ -64,7 +64,14 @@ impl TunnelServerConfig {
 /// Read the rules file. Missing is no rules (`Ok(None)`); unreadable or malformed is an error,
 /// which the server also treats as no rules.
 pub fn read_rules(path: &Path) -> Result<Option<Rules>, String> {
-    match std::fs::read(path) {
+    use std::io::Read;
+    let read = std::fs::File::open(path).and_then(|f| {
+        let mut bytes = Vec::new();
+        f.take(box_egress::rules::MAX_RULES_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map(|_| bytes)
+    });
+    match read {
         Ok(bytes) => Rules::parse(&bytes)
             .map(Some)
             .map_err(|err| err.to_string()),
@@ -125,7 +132,7 @@ pub fn client_config(
         url,
         bearer,
         allowlist,
-        destination: DestinationPolicy::from_env(),
+        destination: DestinationPolicy::from_env().map_err(ConfigError)?,
         // An operator's own client has no computer behind it to set rules: every site, as before,
         // with the address policy and `BOX_EGRESS_RELAY_HOSTS` still applied.
         rules: RulesCell::new(Some(open_rules())),
