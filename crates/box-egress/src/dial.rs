@@ -70,17 +70,26 @@ pub async fn resolve_and_dial(
         Ok(Ok(addrs)) => addrs.collect(),
         Ok(Err(_)) | Err(_) => return Err(DialError::Resolve),
     };
-    let first_refusal = resolved
-        .first()
-        .and_then(|addr| policy.refuse_reason(addr))
-        .unwrap_or("no address");
+    dial(judge(resolved, policy)?, DIAL_TIMEOUT, ATTEMPT_FLOOR)
+        .await
+        .map_err(DialError::Connect)
+}
+
+/// The addresses a name resolved to that `policy` lets be dialled. None at all is a resolve
+/// failure; only addresses that were all refused are a refusal.
+fn judge(
+    resolved: Vec<SocketAddr>,
+    policy: &DestinationPolicy,
+) -> Result<Vec<SocketAddr>, DialError> {
+    let Some(first) = resolved.first() else {
+        return Err(DialError::Resolve);
+    };
+    let first_refusal = policy.refuse_reason(first).unwrap_or("refused");
     let vetted = policy.vet(resolved);
     if vetted.is_empty() {
         return Err(DialError::Refused(first_refusal));
     }
-    dial(vetted, DIAL_TIMEOUT, ATTEMPT_FLOOR)
-        .await
-        .map_err(DialError::Connect)
+    Ok(vetted)
 }
 
 /// Connect to the first of `addrs` that answers, all within `budget`. Each address gets its share
@@ -176,6 +185,21 @@ mod tests {
         assert_eq!(err.to_string(), "destination refused");
         let opted_in = policy.with_allow_private(true);
         assert!(resolve_and_dial("127.0.0.1", port, &opted_in).await.is_ok());
+    }
+
+    #[test]
+    fn a_name_with_no_address_is_a_resolve_failure_and_all_refused_is_a_refusal() {
+        let policy = DestinationPolicy::default();
+        assert!(matches!(
+            judge(Vec::new(), &policy),
+            Err(DialError::Resolve)
+        ));
+        assert_eq!(DialError::Resolve.reason(), "resolve");
+        let loopback = vec!["127.0.0.1:443".parse().unwrap()];
+        assert!(matches!(
+            judge(loopback, &policy),
+            Err(DialError::Refused("loopback"))
+        ));
     }
 
     #[test]
