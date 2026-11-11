@@ -85,66 +85,41 @@ struct Features {
     egress: bool,
     /// The browser's proxy, under the computer's rules: `BOX_EGRESS_PROXY`, or the tunnel.
     proxy: bool,
-    /// `BOX_EGRESS_PROXY` itself was on. A box with the tunnel and not this, and no rules file,
-    /// keeps what such a box always did: every site, through the tunnel.
-    proxy_asked: bool,
 }
 
 impl Features {
     fn from_env() -> Self {
         let egress = env_bool("BOX_EGRESS_TUNNEL", false);
-        let proxy_asked = env_bool("BOX_EGRESS_PROXY", false);
         Self {
             desktop: env_bool("BOX_DESKTOP", true),
             egress,
-            proxy: egress || proxy_asked,
-            proxy_asked,
+            proxy: egress || env_bool("BOX_EGRESS_PROXY", false),
         }
     }
 }
 
 /// The rules the box starts with, where the proxy reads them and box-host replaces them
 /// (`box-prepare` made the folder, box-host's user's alone). From `BOX_EGRESS_RULES_FILE`, which
-/// whoever started the box staged. None that read is no file, and the proxy refuses every site
-/// until rules are set: never a box that browses with no rules.
-fn stage_rules(features: Features) -> Result<(), String> {
+/// whoever started the box staged. None that reads, or none at all, is no file, and the proxy
+/// refuses every site until rules are set, whichever the exit: never a box that browses with no
+/// rules.
+fn stage_rules() -> Result<(), String> {
     let path = PathBuf::from(
         env_nonempty("BOX_EGRESS_RULES_PATH")
             .unwrap_or_else(|| box_egress_tunnel::config::DEFAULT_RULES_PATH.into()),
     );
-    let rules = match env_nonempty("BOX_EGRESS_RULES_FILE") {
-        Some(file) => {
-            let read = fs::File::open(&file)
-                .and_then(|f| {
-                    use std::io::Read;
-                    let mut bytes = Vec::new();
-                    f.take(box_egress::rules::MAX_RULES_BYTES as u64 + 1)
-                        .read_to_end(&mut bytes)
-                        .map(|_| bytes)
-                })
-                .map_err(|err| format!("it could not be read ({})", err.kind()))
-                .and_then(|bytes| box_egress::Rules::parse(&bytes).map_err(|err| err.to_string()));
-            match read {
-                Ok(rules) => Some(rules),
-                Err(why) => {
-                    eprintln!(
-                        "the egress rules in BOX_EGRESS_RULES_FILE were not used: {why}. The browser refuses every site until rules are set."
-                    );
-                    None
-                }
-            }
-        }
-        None if features.egress && !features.proxy_asked => {
-            Some(box_egress_tunnel::config::open_rules())
-        }
-        None => {
-            eprintln!(
-                "BOX_EGRESS_PROXY is on and BOX_EGRESS_RULES_FILE is not set: the browser refuses every site until rules are set (PUT /v1/egress/rules)."
-            );
-            None
-        }
-    };
-    let Some(rules) = rules else {
+    let staged = env_nonempty("BOX_EGRESS_RULES_FILE").map(|file| {
+        fs::File::open(&file)
+            .and_then(|f| {
+                use std::io::Read;
+                let mut bytes = Vec::new();
+                f.take(box_egress::rules::MAX_RULES_BYTES as u64 + 1)
+                    .read_to_end(&mut bytes)
+                    .map(|_| bytes)
+            })
+            .map_err(|err| format!("it could not be read ({})", err.kind()))
+    });
+    let Some(rules) = starting_rules(staged) else {
         return Ok(());
     };
     let mut file = OpenOptions::new()
@@ -157,6 +132,29 @@ fn stage_rules(features: Features) -> Result<(), String> {
         .map_err(|err| format!("egress rules: {err}"))?;
     std::os::unix::fs::chown(&path, Some(SVC_UID), Some(SVC_UID))
         .map_err(|err| format!("egress rules: {err}"))
+}
+
+/// The rules a box starts with, from what was staged: `None` (no site) when nothing was, or what
+/// was doesn't read, and said so.
+fn starting_rules(staged: Option<Result<Vec<u8>, String>>) -> Option<box_egress::Rules> {
+    let read = match staged {
+        None => {
+            eprintln!(
+                "the browser's proxy is on and BOX_EGRESS_RULES_FILE is not set: the browser refuses every site until rules are set (PUT /v1/egress/rules)."
+            );
+            return None;
+        }
+        Some(read) => read,
+    };
+    match read.and_then(|bytes| box_egress::Rules::parse(&bytes).map_err(|err| err.to_string())) {
+        Ok(rules) => Some(rules),
+        Err(why) => {
+            eprintln!(
+                "the egress rules in BOX_EGRESS_RULES_FILE were not used: {why}. The browser refuses every site until rules are set."
+            );
+            None
+        }
+    }
 }
 
 fn flag(on: bool) -> &'static str {
@@ -672,7 +670,7 @@ async fn run() -> Result<i32, String> {
     } = Secrets::load(features)?;
     prepare()?;
     if features.proxy {
-        stage_rules(features)?;
+        stage_rules()?;
     }
     let staging = Staging::new("secrets", SVC_UID)?;
     let ctl = PathBuf::from(env_nonempty("BOX_VIEWER_CTL").unwrap_or_else(|| DEFAULT_CTL.into()));
@@ -802,4 +800,25 @@ async fn main() {
         1
     });
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::starting_rules;
+
+    #[test]
+    fn a_box_with_no_rules_file_starts_with_none_whichever_the_exit() {
+        // nothing staged, for a box with the tunnel or the proxy alone: no rules, no site
+        assert!(starting_rules(None).is_none());
+        assert!(starting_rules(Some(Err("gone".into()))).is_none());
+        assert!(starting_rules(Some(Ok(
+            br#"{"v":1,"exit":"tunnel","mode":"all","block":["*"]}"#.to_vec()
+        )))
+        .is_none());
+        let rules = starting_rules(Some(Ok(
+            br#"{"v":1,"version":3,"exit":"tunnel","mode":"all"}"#.to_vec(),
+        )))
+        .unwrap();
+        assert_eq!(rules.version, 3);
+    }
 }
