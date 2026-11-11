@@ -193,6 +193,14 @@ class BuwizComputer:
     def egress(self) -> Any:
         return self._auth("GET", f"{self.host_url}/v1/egress")
 
+    def egress_rules(self) -> Any:
+        """The browser's rules in force (GET /v1/egress/rules)."""
+        return self._auth("GET", f"{self.host_url}/v1/egress/rules")
+
+    def set_egress_rules(self, rules: dict[str, Any]) -> Any:
+        """Put a rules document in force (PUT /v1/egress/rules); answers once it is."""
+        return self._auth("PUT", f"{self.host_url}/v1/egress/rules", json=rules)
+
     def windows(self) -> Any:
         return self._auth("GET", f"{self.host_url}/v1/desktop/windows")
 

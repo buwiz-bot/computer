@@ -31,6 +31,7 @@ need=(
   "/v1/chrome:"
   "/v1/chrome/active-tab:"
   "/v1/egress:"
+  "/v1/egress/rules:"
   "/v1/cua/screenshot:"
   "/v1/cua/click:"
   "/v1/cua/press:"

@@ -95,6 +95,16 @@ export type ScreenshotResponse = {
 export type CuaOk = { ok: boolean };
 
 /** The page in front of Chromium, as the box's extension last reported it. */
+/** A computer's browsing rules. See docs/EGRESS.md for the matching. */
+export type EgressRules = {
+  v: 1;
+  version?: number;
+  exit: "direct" | "tunnel";
+  mode: "all" | "listed";
+  allow?: string[];
+  block?: string[];
+};
+
 export type ActiveTab = {
   /** `null` when nothing has reported (no Chromium, or one without the extension). */
   url: string | null;
@@ -620,6 +630,16 @@ export class BuwizComputer {
 
   async egress(): Promise<unknown> {
     return this.authJson("GET", `${this.hostUrl}/v1/egress`);
+  }
+
+  /** The browser's rules in force (`GET /v1/egress/rules`). */
+  async egressRules(): Promise<EgressRules> {
+    return this.authJson("GET", `${this.hostUrl}/v1/egress/rules`);
+  }
+
+  /** Put a rules document in force (`PUT /v1/egress/rules`); answers once it is. */
+  async setEgressRules(rules: EgressRules): Promise<unknown> {
+    return this.authJson("PUT", `${this.hostUrl}/v1/egress/rules`, rules);
   }
 
   async windows(): Promise<unknown> {

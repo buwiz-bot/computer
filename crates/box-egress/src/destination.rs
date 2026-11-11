@@ -1,4 +1,5 @@
-//! What the laptop end is willing to dial.
+//! What either end is willing to dial: the operator's client in tunnel mode, and the box's own
+//! proxy when it dials directly.
 //!
 //! The allowlist in [`crate::allowlist`] matches the CONNECT host *string*.
 //! That is not a security boundary: the string is chosen by whatever is running
@@ -29,17 +30,23 @@ pub struct DestinationPolicy {
 }
 
 impl DestinationPolicy {
-    pub fn from_env() -> Self {
+    /// From `BOX_EGRESS_ALLOW_PRIVATE` and `BOX_EGRESS_RELAY_PORTS`. A port list that doesn't read
+    /// is an error naming the variable and the bad entry, never a different set of ports.
+    pub fn from_env() -> Result<Self, String> {
         let allow_private = matches!(
             std::env::var("BOX_EGRESS_ALLOW_PRIVATE")
                 .unwrap_or_default()
                 .trim(),
             "1" | "true" | "yes"
         );
-        Self {
+        let ports = parse_ports(&std::env::var("BOX_EGRESS_RELAY_PORTS").unwrap_or_default())
+            .map_err(|bad| {
+                format!("BOX_EGRESS_RELAY_PORTS has {bad:?}, which isn't a port (1-65535) or `*`")
+            })?;
+        Ok(Self {
             allow_private,
-            ports: parse_ports(&std::env::var("BOX_EGRESS_RELAY_PORTS").unwrap_or_default()),
-        }
+            ports,
+        })
     }
 
     #[must_use]
@@ -82,23 +89,24 @@ impl DestinationPolicy {
     }
 }
 
-fn parse_ports(raw: &str) -> Option<Vec<u16>> {
+/// `None` for unset (80 and 443), `Some([])` for `*` (any), else the ports. An entry that isn't a
+/// port is the error, as written.
+fn parse_ports(raw: &str) -> Result<Option<Vec<u16>>, String> {
     let raw = raw.trim();
     if raw.is_empty() {
-        return None;
+        return Ok(None);
     }
     if raw == "*" {
-        return Some(Vec::new());
+        return Ok(Some(Vec::new()));
     }
-    let list: Vec<u16> = raw
-        .split(',')
-        .filter_map(|p| p.trim().parse::<u16>().ok())
-        .collect();
-    if list.is_empty() {
-        None
-    } else {
-        Some(list)
+    let mut list = Vec::new();
+    for entry in raw.split(',').map(str::trim) {
+        match entry.parse::<u16>() {
+            Ok(port) if port != 0 => list.push(port),
+            _ => return Err(entry.to_owned()),
+        }
     }
+    Ok(Some(list))
 }
 
 /// Why this address is not public unicast, if it isn't.
@@ -127,7 +135,7 @@ fn classify(ip: &IpAddr) -> Option<&'static str> {
             if v4.is_documentation() {
                 return Some("documentation");
             }
-            let [a, b, ..] = v4.octets();
+            let [a, b, c, _] = v4.octets();
             if a == 100 && (64..128).contains(&b) {
                 return Some("carrier-grade NAT");
             }
@@ -135,6 +143,14 @@ fn classify(ip: &IpAddr) -> Option<&'static str> {
                 return Some("this-network");
             }
             if a >= 240 {
+                return Some("reserved");
+            }
+            // 192.0.0.0/24, IETF protocol assignments (DS-Lite, NAT64 discovery, ...).
+            if a == 192 && b == 0 && c == 0 {
+                return Some("reserved");
+            }
+            // 198.18.0.0/15, benchmarking: Buwiz Bot's network wall blackholes it too.
+            if a == 198 && (b == 18 || b == 19) {
                 return Some("reserved");
             }
             None
@@ -156,9 +172,29 @@ fn classify(ip: &IpAddr) -> Option<&'static str> {
             if (seg[0] & 0xffc0) == 0xfe80 {
                 return Some("link-local");
             }
-            // An IPv4 address wearing an IPv6 hat is still that address.
+            // An IPv4 address wearing an IPv6 hat is still that address: mapped (::ffff:0:0/96),
+            // and the deprecated compatible form (::/96, past :: and ::1 above).
             if let Some(v4) = v6.to_ipv4_mapped() {
                 return classify(&IpAddr::V4(v4));
+            }
+            if seg[..6].iter().all(|s| *s == 0) {
+                return Some("IPv4-compatible");
+            }
+            // NAT64 (64:ff9b::/96 and the local-use 64:ff9b:1::/48): the far side dials the
+            // embedded IPv4 address, which could be anything, so these are refused whole.
+            if seg[0] == 0x0064 && seg[1] == 0xff9b && (seg[2] == 0x0001 || seg[2..6] == [0; 4]) {
+                return Some("NAT64");
+            }
+            // 6to4 (2002::/16) and Teredo (2001::/32) carry an IPv4 address too.
+            if seg[0] == 0x2002 || (seg[0] == 0x2001 && seg[1] == 0x0000) {
+                return Some("IPv4 tunnel");
+            }
+            // Discard-only (100::/64) and the deprecated site-local block (fec0::/10).
+            if seg[0] == 0x0100 && seg[1..4] == [0; 3] {
+                return Some("discard");
+            }
+            if (seg[0] & 0xffc0) == 0xfec0 {
+                return Some("site-local");
             }
             if seg[0] == 0x2001 && seg[1] == 0x0db8 {
                 return Some("documentation");
@@ -191,6 +227,26 @@ mod tests {
             ("fd00::1", "unique local"),
             ("fe80::1", "link-local"),
             ("::ffff:127.0.0.1", "loopback"),
+            ("::ffff:10.1.2.3", "private"),
+            ("192.0.0.170", "reserved"),
+            ("198.18.0.1", "reserved"),
+            ("198.19.255.254", "reserved"),
+            ("192.0.2.1", "documentation"),
+            ("198.51.100.1", "documentation"),
+            ("203.0.113.1", "documentation"),
+            ("224.0.0.1", "multicast"),
+            ("240.0.0.1", "reserved"),
+            ("255.255.255.255", "broadcast"),
+            ("::10.0.0.1", "IPv4-compatible"),
+            ("64:ff9b::a00:1", "NAT64"),
+            ("64:ff9b::5db8:d822", "NAT64"),
+            ("64:ff9b:1::1", "NAT64"),
+            ("2002:c0a8:101::1", "IPv4 tunnel"),
+            ("2001:0:4136:e378::1", "IPv4 tunnel"),
+            ("100::1", "discard"),
+            ("fec0::1", "site-local"),
+            ("2001:db8::1", "documentation"),
+            ("ff02::1", "multicast"),
         ] {
             assert_eq!(
                 p.refuse_reason(&sock(addr, 443)),
@@ -206,6 +262,12 @@ mod tests {
         assert_eq!(p.refuse_reason(&sock("93.184.216.34", 443)), None);
         assert_eq!(p.refuse_reason(&sock("93.184.216.34", 80)), None);
         assert_eq!(p.refuse_reason(&sock("2606:2800:220:1::1", 443)), None);
+        // Neighbours of the refused ranges stay public.
+        assert_eq!(p.refuse_reason(&sock("198.17.255.1", 443)), None);
+        assert_eq!(p.refuse_reason(&sock("198.20.0.1", 443)), None);
+        assert_eq!(p.refuse_reason(&sock("192.0.1.1", 443)), None);
+        assert_eq!(p.refuse_reason(&sock("100.128.0.1", 443)), None);
+        assert_eq!(p.refuse_reason(&sock("2001:4860::8888", 443)), None);
     }
 
     #[test]
@@ -254,11 +316,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_ports_reads_a_list_a_star_and_junk() {
-        assert_eq!(parse_ports(""), None);
-        assert_eq!(parse_ports("  "), None);
-        assert_eq!(parse_ports("*"), Some(Vec::new()));
-        assert_eq!(parse_ports("80,443, 8443"), Some(vec![80, 443, 8443]));
-        assert_eq!(parse_ports("nonsense"), None);
+    fn parse_ports_reads_a_list_a_star_and_refuses_junk() {
+        assert_eq!(parse_ports(""), Ok(None));
+        assert_eq!(parse_ports("  "), Ok(None));
+        assert_eq!(parse_ports("*"), Ok(Some(Vec::new())));
+        assert_eq!(parse_ports("80,443, 8443"), Ok(Some(vec![80, 443, 8443])));
+        assert_eq!(parse_ports("nonsense"), Err("nonsense".into()));
+        assert_eq!(
+            parse_ports("443,44x3"),
+            Err("44x3".into()),
+            "a typo is an error, not a smaller list"
+        );
+        assert_eq!(parse_ports("0"), Err("0".into()));
+        assert_eq!(parse_ports("80,"), Err("".into()));
     }
 }

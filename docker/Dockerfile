@@ -35,7 +35,11 @@ FROM debian:bookworm-slim AS runtime
 LABEL org.opencontainers.image.source="https://github.com/buwiz-bot/computer" \
       org.opencontainers.image.title="buwiz-computer" \
       app.buwiz.box.desktop="1" \
-      app.buwiz.box.users="1"
+      app.buwiz.box.users="1" \
+      app.buwiz.box.egress="1"
+# app.buwiz.box.egress: this image's browser can go through its own proxy, under the computer's
+# rules (BOX_EGRESS_PROXY, PUT /v1/egress/rules). Buwiz Bot makes a computer with the proxy only
+# on an image that says so.
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -161,6 +165,7 @@ ENV WORKSPACE_ROOT=/workspace \
     BOX_CHROME_PROFILE=/home/box/desktops/main/chrome-profile \
     BOX_CUA=1 \
     BOX_EGRESS_TUNNEL=0 \
+    BOX_EGRESS_PROXY=0 \
     BOX_EGRESS_WS_BIND=0.0.0.0:8790 \
     BOX_EGRESS_PROXY_BIND=127.0.0.1:8791 \
     BOX_EGRESS_ADMIN_BIND=127.0.0.1:8792 \

@@ -12,6 +12,19 @@ pub const WIRE_VERSION: u8 = 1;
 /// Protocol name used as `Sec-WebSocket-Protocol` and in status JSON.
 pub const PROTOCOL_NAME: &str = "box-egress-v1";
 
+/// How long the guest waits for the client's `opened` or `error` after an `open`.
+pub const OPEN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Both ends ping an idle peer this often, and drop one silent for [`KEEPALIVE_MISSES`] intervals.
+pub const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+pub const KEEPALIVE_MISSES: u8 = 2;
+
+/// Frame and message caps for both directions.
+pub const MAX_FRAME: usize = 256 << 10;
+pub const MAX_MESSAGE: usize = 1 << 20;
+/// Bytes per data frame, at most.
+pub const CHUNK: usize = 32 * 1024;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ControlMsg {

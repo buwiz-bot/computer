@@ -5,8 +5,9 @@
 # --no-sandbox, and --test-type hides the banner about it. --force-renderer-accessibility puts its
 # buttons and pages on the screen's accessibility bus (POST /v1/cua/tree), as the entrypoint's does.
 #
-# When BOX_EGRESS_TUNNEL is on, pass the same CONNECT proxy flags as the
-# entrypoint so a cold start (no running instance) still exits via the laptop.
+# When the box's proxy is on (BOX_EGRESS_PROXY, or BOX_EGRESS_TUNNEL), pass the same CONNECT proxy
+# flags as the entrypoint, so a cold start (no running instance) still goes through the proxy and
+# the computer's rules. A Bot's screen starts this under `env -i`: the port file decides there.
 
 # flag_on VALUE [DEFAULT]: the box's on/off rule, the same as the entrypoint's and the daemons'.
 # shellcheck source-path=SCRIPTDIR source=box-flag.sh
@@ -24,9 +25,9 @@ port="${BOX_EGRESS_PROXY_PORT:-}"
 tunnel_default=0
 if [ -r "${port_file}" ]; then tunnel_default=1; fi
 if [ -z "${port}" ] && [ -r "${port_file}" ]; then port="$(cat "${port_file}")"; fi
-if flag_on "${BOX_EGRESS_TUNNEL:-}" "${tunnel_default}"; then
+if flag_on "${BOX_EGRESS_PROXY:-}" "${tunnel_default}" || flag_on "${BOX_EGRESS_TUNNEL:-}" "${tunnel_default}"; then
   if [ -z "${port}" ]; then
-    echo "box-chromium: the egress tunnel is on but its proxy port is unknown; refusing to start unproxied" >&2
+    echo "box-chromium: the box's proxy is on but its port is unknown; refusing to start unproxied" >&2
     exit 1
   fi
   proxy_server="--proxy-server=http://127.0.0.1:${port}"

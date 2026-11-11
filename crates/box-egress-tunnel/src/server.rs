@@ -1,4 +1,15 @@
-//! Guest tunnel server: WebSocket mux + HTTP CONNECT proxy + loopback admin.
+//! Guest server: the HTTP CONNECT proxy for Chromium, the tunnel's WebSocket, and the loopback
+//! admin port.
+//!
+//! Every CONNECT is judged by the computer's rules first (`box_egress::rules`). No rules is no
+//! browsing. Then the rules' exit decides who dials: the box itself (`direct`, every resolved
+//! address judged by the address policy, with a DNS timeout), or the operator's client over the
+//! WebSocket (`tunnel`, which judges the name and the address again on its side). With the tunnel
+//! as the exit and no client attached the proxy answers 503, and never falls back to dialling
+//! itself.
+//!
+//! Every refusal carries `X-Box-Egress-Reason`, one stable word, so "no client" and "too many
+//! streams" (both 503) are told apart. No log line, status or reply names a site.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -17,15 +28,25 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{accept_hdr_async_with_config, WebSocketStream};
 
 use box_common::{parse_bearer, tokens_equal};
+use box_egress::dial::{resolve_and_dial, DialError};
+use box_egress::rules::{Exit, RulesSummary, Verdict};
 
-use crate::config::TunnelServerConfig;
+use crate::config::{read_rules, TunnelServerConfig};
 use crate::http1::{parse_proxy_request, read_http_head};
-use crate::protocol::{decode_data, encode_data, ControlMsg, PROTOCOL_NAME};
-use crate::status::{format_bind, EgressStatus};
+use crate::protocol::{
+    decode_data, encode_data, ControlMsg, CHUNK, KEEPALIVE_INTERVAL, KEEPALIVE_MISSES, MAX_FRAME,
+    MAX_MESSAGE, OPEN_TIMEOUT, PROTOCOL_NAME,
+};
+use crate::status::{format_bind, Counts, EgressStatus};
 
-pub(crate) const OPEN_TIMEOUT: Duration = Duration::from_secs(15);
+/// Streams at once through the tunnel, and, separately, dialled directly.
 const MAX_STREAMS: usize = 256;
-const CHUNK: usize = 32 * 1024;
+/// Proxy connections at once, in any state: every stream, and some to spare.
+const MAX_PROXY_CONNECTIONS: usize = 2 * MAX_STREAMS + 64;
+/// Proxy connections whose request head hasn't come yet, and how long one has to send it. Any
+/// process in the box can reach the proxy: idle or slow sockets go, and can't crowd the browser out.
+const MAX_UNREAD: usize = 64;
+const HEAD_TIMEOUT: Duration = Duration::from_secs(5);
 
 enum WsOut {
     Control(ControlMsg),
@@ -33,26 +54,25 @@ enum WsOut {
     Ping,
 }
 
-/// How often the server pings an idle client, and how many silent intervals
-/// it tolerates before dropping the session. Without this, `attached` only
-/// flipped on a clean FIN or an RST: a laptop that went to sleep stayed
-/// `ready: true` for as long as TCP keepalive took to notice, which is hours.
-const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
-const KEEPALIVE_MISSES: u8 = 2;
-
 /// A peer that opens a socket and never sends the upgrade used to pin a task
 /// and a file descriptor forever, with no bearer needed — auth happens after
 /// accept. Bound both the wait and how many may wait at once.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_PENDING_HANDSHAKES: usize = 64;
+/// How long a handshake with a wrong or missing bearer is held before its 401. With at most
+/// [`MAX_PENDING_HANDSHAKES`] waiting, that bounds guessing at 64 a second, against a bearer of 32
+/// random bytes; the published port is loopback on the operator's machine.
+const AUTH_FAIL_DELAY: Duration = Duration::from_secs(1);
+/// The request head of an upgrade, at most.
+const MAX_UPGRADE_HEAD: usize = 16 * 1024;
 
 /// Frame and message caps for both directions. The defaults (16 MiB per frame,
 /// 64 MiB per message) are sized for a server with headroom, not a 4 GB guest
 /// relaying byte streams that are chunked at the TCP layer anyway.
 fn ws_config() -> WebSocketConfig {
     WebSocketConfig::default()
-        .max_message_size(Some(1 << 20))
-        .max_frame_size(Some(256 << 10))
+        .max_message_size(Some(MAX_MESSAGE))
+        .max_frame_size(Some(MAX_FRAME))
 }
 
 /// One accept failure must not end the listener: `ECONNABORTED` is routine, and
@@ -92,39 +112,135 @@ struct ClientSession {
     next_id: u32,
 }
 
+#[derive(Default)]
+struct Counters {
+    direct: AtomicU64,
+    tunneled: AtomicU64,
+    blocked: AtomicU64,
+    not_listed: AtomicU64,
+    no_rules: AtomicU64,
+    no_client: AtomicU64,
+    streams_full: AtomicU64,
+    destination: AtomicU64,
+    failed: AtomicU64,
+    plain_http: AtomicU64,
+    bad_request: AtomicU64,
+    bad_host: AtomicU64,
+    relay_hosts: AtomicU64,
+    busy: AtomicU64,
+}
+
+impl Counters {
+    fn bump(counter: &AtomicU64) {
+        counter.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn snapshot(&self) -> Counts {
+        let get = |c: &AtomicU64| c.load(Ordering::Relaxed);
+        Counts {
+            direct: get(&self.direct),
+            tunneled: get(&self.tunneled),
+            blocked: get(&self.blocked),
+            not_listed: get(&self.not_listed),
+            no_rules: get(&self.no_rules),
+            no_client: get(&self.no_client),
+            streams_full: get(&self.streams_full),
+            destination: get(&self.destination),
+            failed: get(&self.failed),
+            plain_http: get(&self.plain_http),
+            bad_request: get(&self.bad_request),
+            bad_host: get(&self.bad_host),
+            relay_hosts: get(&self.relay_hosts),
+            busy: get(&self.busy),
+        }
+    }
+}
+
 struct Shared {
     cfg: TunnelServerConfig,
     handshakes: Semaphore,
+    /// wrong bearers being held before their 401: apart from `handshakes`, so they never hold a
+    /// right one out
+    refusing: Semaphore,
+    connections: Arc<Semaphore>,
+    unread: Semaphore,
+    direct_slots: Semaphore,
     attached: AtomicBool,
     generation: AtomicU64,
     session: Mutex<Option<ClientSession>>,
-    ws_addr: std::net::SocketAddr,
+    ws_addr: Option<std::net::SocketAddr>,
     proxy_addr: std::net::SocketAddr,
+    counts: Counters,
+    rules_error: Mutex<Option<String>>,
+    auth_failures: AtomicU64,
 }
 
 impl Shared {
     fn snapshot(&self) -> EgressStatus {
         let attached = self.attached.load(Ordering::SeqCst);
+        let rules = self.cfg.rules.get().map(|r| RulesSummary::from(&*r));
         EgressStatus {
-            enabled: true,
+            enabled: self.cfg.tunnel.is_some(),
             ready: attached,
             client_attached: attached,
             protocol: PROTOCOL_NAME.to_string(),
-            ws: format_bind(self.ws_addr),
+            ws: self.ws_addr.map(format_bind).unwrap_or_default(),
             proxy: format_bind(self.proxy_addr),
+            proxy_enabled: true,
+            proxy_up: true,
+            can_browse: EgressStatus::browsable(rules.as_ref(), attached),
+            rules,
+            rules_origin: None,
+            rules_error: self
+                .rules_error
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+            counts: self.counts.snapshot(),
+        }
+    }
+
+    /// Read the rules file again. A missing, unreadable or malformed file leaves no rules, which
+    /// refuses every site: a set that didn't read is never kept in force by mistake.
+    fn reload(&self) -> Result<Option<u64>, String> {
+        let Some(path) = &self.cfg.rules_path else {
+            return Err("this proxy has no rules file".into());
+        };
+        let read = read_rules(path);
+        let mut error = self.rules_error.lock().unwrap_or_else(|e| e.into_inner());
+        match read {
+            Ok(rules) => {
+                let version = rules.as_ref().map(|r| r.version);
+                self.cfg.rules.set(rules);
+                *error = None;
+                match version {
+                    Some(version) => tracing::info!(version, "egress rules loaded"),
+                    None => tracing::warn!("no egress rules are set; every site is refused"),
+                }
+                Ok(version)
+            }
+            Err(why) => {
+                self.cfg.rules.set(None);
+                tracing::warn!(error = %why, "egress rules unreadable; every site is refused");
+                *error = Some(why.clone());
+                Err(why)
+            }
         }
     }
 }
 
 pub struct ServerBinds {
-    pub ws: TcpListener,
+    pub ws: Option<TcpListener>,
     pub proxy: TcpListener,
     pub admin: TcpListener,
 }
 
 impl ServerBinds {
     pub async fn bind(cfg: &TunnelServerConfig) -> std::io::Result<Self> {
-        let ws = TcpListener::bind(cfg.ws_bind).await?;
+        let ws = match &cfg.tunnel {
+            Some(side) => Some(TcpListener::bind(side.bind).await?),
+            None => None,
+        };
         let proxy = TcpListener::bind(cfg.proxy_bind).await?;
         let admin = TcpListener::bind(cfg.admin_bind).await?;
         Ok(Self { ws, proxy, admin })
@@ -136,12 +252,19 @@ pub async fn run(cfg: TunnelServerConfig) -> anyhow::Result<()> {
     run_with_binds(cfg, binds).await
 }
 
+async fn accept_ws(ws: &Option<TcpListener>) -> std::io::Result<(TcpStream, std::net::SocketAddr)> {
+    match ws {
+        Some(listener) => listener.accept().await,
+        None => std::future::pending().await,
+    }
+}
+
 pub async fn run_with_binds(cfg: TunnelServerConfig, binds: ServerBinds) -> anyhow::Result<()> {
-    let ws_addr = binds.ws.local_addr()?;
+    let ws_addr = binds.ws.as_ref().map(|l| l.local_addr()).transpose()?;
     let proxy_addr = binds.proxy.local_addr()?;
     let admin_addr = binds.admin.local_addr()?;
     tracing::info!(
-        %ws_addr,
+        ?ws_addr,
         %proxy_addr,
         %admin_addr,
         protocol = PROTOCOL_NAME,
@@ -150,16 +273,28 @@ pub async fn run_with_binds(cfg: TunnelServerConfig, binds: ServerBinds) -> anyh
     let shared = Arc::new(Shared {
         cfg,
         handshakes: Semaphore::new(MAX_PENDING_HANDSHAKES),
+        refusing: Semaphore::new(MAX_PENDING_HANDSHAKES),
+        connections: Arc::new(Semaphore::new(MAX_PROXY_CONNECTIONS)),
+        unread: Semaphore::new(MAX_UNREAD),
+        direct_slots: Semaphore::new(MAX_STREAMS),
         attached: AtomicBool::new(false),
         generation: AtomicU64::new(0),
         session: Mutex::new(None),
         ws_addr,
         proxy_addr,
+        counts: Counters::default(),
+        rules_error: Mutex::new(None),
+        auth_failures: AtomicU64::new(0),
     });
+    if shared.cfg.rules_path.is_some() {
+        let _ = shared.reload();
+    } else if shared.cfg.rules.get().is_none() {
+        tracing::warn!("no egress rules are set; every site is refused");
+    }
 
     loop {
         tokio::select! {
-            accepted = binds.ws.accept() => {
+            accepted = accept_ws(&binds.ws) => {
                 let Some((stream, peer)) = accept_or_skip("ws", accepted).await else { continue };
                 let shared = shared.clone();
                 tokio::spawn(async move {
@@ -169,11 +304,16 @@ pub async fn run_with_binds(cfg: TunnelServerConfig, binds: ServerBinds) -> anyh
                 });
             }
             accepted = binds.proxy.accept() => {
-                let Some((stream, peer)) = accept_or_skip("proxy", accepted).await else { continue };
+                let Some((mut stream, _)) = accept_or_skip("proxy", accepted).await else { continue };
                 let shared = shared.clone();
+                let Ok(held) = shared.connections.clone().try_acquire_owned() else {
+                    tokio::spawn(async move { refuse(&shared, &mut stream, &BUSY).await });
+                    continue;
+                };
                 tokio::spawn(async move {
+                    let _held = held;
                     if let Err(err) = handle_proxy(shared, stream).await {
-                        tracing::debug!(error = %err, %peer, "proxy session ended");
+                        tracing::debug!(error = %err, "proxy session ended");
                     }
                 });
             }
@@ -188,9 +328,13 @@ pub async fn run_with_binds(cfg: TunnelServerConfig, binds: ServerBinds) -> anyh
     }
 }
 
+/// Loopback only, no login, so nothing here can change what the proxy does except reading the
+/// rules file again, which only box-host's user can write.
 async fn handle_admin(shared: Arc<Shared>, mut stream: TcpStream) -> std::io::Result<()> {
     let mut buf = vec![0u8; 1024];
-    let n = stream.read(&mut buf).await?;
+    let n = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buf))
+        .await
+        .unwrap_or(Ok(0))?;
     let req = String::from_utf8_lossy(&buf[..n]);
     let (status, body) = if req.starts_with("GET /v1/health") {
         (200, b"{\"status\":\"ok\"}".to_vec())
@@ -199,11 +343,31 @@ async fn handle_admin(shared: Arc<Shared>, mut stream: TcpStream) -> std::io::Re
             200,
             serde_json::to_vec(&shared.snapshot()).unwrap_or_else(|_| b"{}".to_vec()),
         )
+    } else if req.starts_with("GET /v1/rules") {
+        // counts only: this port has no login, and any process in the box can ask it
+        match shared.cfg.rules.get() {
+            Some(rules) => (
+                200,
+                serde_json::to_vec(&RulesSummary::from(&*rules)).unwrap_or_default(),
+            ),
+            None => (404, b"{\"error\":\"no_rules\"}".to_vec()),
+        }
+    } else if req.starts_with("POST /v1/rules/reload") {
+        match shared.reload() {
+            Ok(Some(version)) => (200, format!("{{\"version\":{version}}}").into_bytes()),
+            Ok(None) => (404, b"{\"error\":\"no_rules\"}".to_vec()),
+            Err(why) => (
+                422,
+                serde_json::to_vec(&serde_json::json!({"error": "bad_rules", "message": why}))
+                    .unwrap_or_default(),
+            ),
+        }
     } else {
         (404, b"{\"error\":\"not_found\"}".to_vec())
     };
     let reason = match status {
         200 => "OK",
+        422 => "Unprocessable Entity",
         _ => "Not Found",
     };
     let header = format!(
@@ -215,18 +379,158 @@ async fn handle_admin(shared: Arc<Shared>, mut stream: TcpStream) -> std::io::Re
     Ok(())
 }
 
+/// `msg` toward the client without the reader ever waiting on it: at once when the writer's
+/// queue has room, else from a task of its own.
+fn send_soon(out: &mpsc::Sender<WsOut>, msg: WsOut) {
+    if let Err(mpsc::error::TrySendError::Full(msg)) = out.try_send(msg) {
+        let out = out.clone();
+        tokio::spawn(async move {
+            let _ = out.send(msg).await;
+        });
+    }
+}
+
+/// A socket whose first bytes, already read, are given back first: the upgrade's head is read
+/// once here to judge its bearer, then handed whole to the handshake.
+struct Prefixed {
+    head: Vec<u8>,
+    at: usize,
+    inner: TcpStream,
+}
+
+impl tokio::io::AsyncRead for Prefixed {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.at < self.head.len() {
+            let n = (self.head.len() - self.at).min(buf.remaining());
+            let at = self.at;
+            buf.put_slice(&self.head[at..at + n]);
+            self.at += n;
+            return std::task::Poll::Ready(Ok(()));
+        }
+        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl tokio::io::AsyncWrite for Prefixed {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+/// The upgrade's head, and whatever came after it, read as it arrives (no polling), within the
+/// handshake's time. `None` when it doesn't come in time, ends, or is too large.
+async fn read_head(stream: &mut TcpStream) -> Option<Vec<u8>> {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 2048];
+    let deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT;
+    loop {
+        let n = tokio::time::timeout_at(deadline, stream.read(&mut chunk))
+            .await
+            .ok()?
+            .ok()?;
+        if n == 0 {
+            return None;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+            return Some(buf);
+        }
+        if buf.len() > MAX_UPGRADE_HEAD {
+            return None;
+        }
+    }
+}
+
+fn presented_bearer(head: &str) -> Option<&str> {
+    let mut x_box = None;
+    for line in head.split("\r\n").skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        if name.eq_ignore_ascii_case("authorization") {
+            if let Some(token) = parse_bearer(value.trim()) {
+                return Some(token);
+            }
+        } else if name.eq_ignore_ascii_case("x-box-egress-bearer") {
+            x_box = Some(value.trim()).filter(|s| !s.is_empty());
+        }
+    }
+    x_box
+}
+
 // The handshake callback's error type is tungstenite's `ErrorResponse`, a whole HTTP response: its
 // size is the crate's signature, not a choice made here.
 #[allow(clippy::result_large_err)]
 async fn handle_ws(
     shared: Arc<Shared>,
-    stream: TcpStream,
-    peer: std::net::SocketAddr,
+    mut stream: TcpStream,
+    _peer: std::net::SocketAddr,
 ) -> anyhow::Result<()> {
-    let bearer = shared.cfg.bearer.clone();
-    let Ok(permit) = shared.handshakes.try_acquire() else {
-        tracing::warn!(%peer, "too many pending handshakes; dropping the connection");
+    let Some(side) = shared.cfg.tunnel.clone() else {
         return Ok(());
+    };
+    let bearer = side.bearer;
+    let Ok(permit) = shared.handshakes.try_acquire() else {
+        tracing::warn!("too many pending handshakes; dropping the connection");
+        return Ok(());
+    };
+    // The bearer is checked here first, so a wrong one waits before it is told: guessing used to
+    // be as fast as the loopback port answered, and left no line in the log.
+    let Some(read) = read_head(&mut stream).await else {
+        return Ok(());
+    };
+    let end = read
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map_or(read.len(), |at| at + 4);
+    let head = String::from_utf8_lossy(&read[..end]).into_owned();
+    if !presented_bearer(&head).is_some_and(|token| tokens_equal(token, &bearer)) {
+        // the handshake's place goes now: a wrong bearer waiting out its delay never holds a right
+        // one out. Those waiting are capped apart; past the cap one is closed with no answer
+        drop(permit);
+        let Ok(_refusing) = shared.refusing.try_acquire() else {
+            return Ok(());
+        };
+        let failures = shared.auth_failures.fetch_add(1, Ordering::Relaxed) + 1;
+        tracing::warn!(
+            failures,
+            "egress tunnel handshake refused: wrong or missing bearer"
+        );
+        tokio::time::sleep(AUTH_FAIL_DELAY).await;
+        let _ = stream
+            .write_all(
+                b"HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 13\r\nConnection: close\r\n\r\nunauthorized\n",
+            )
+            .await;
+        return Ok(());
+    }
+    let stream = Prefixed {
+        head: read,
+        at: 0,
+        inner: stream,
     };
     let handshake = accept_hdr_async_with_config(
         stream,
@@ -257,9 +561,9 @@ async fn handle_ws(
     // (one at a time, by eviction).
     drop(permit);
 
-    tracing::info!(%peer, "egress client attached");
+    tracing::info!("egress client attached");
     serve_client(shared, ws).await;
-    tracing::info!(%peer, "egress client detached");
+    tracing::info!("egress client detached");
     Ok(())
 }
 
@@ -377,12 +681,7 @@ where
                                         // reading. Close that one stream instead.
                                         tracing::warn!(id, "stream consumer not keeping up; closing it");
                                         drop_stream(&shared, generation, id);
-                                        let _ = out_tx
-                                            .send(WsOut::Control(ControlMsg::close(
-                                                id,
-                                                Some("slow consumer"),
-                                            )))
-                                            .await;
+                                        send_soon(&out_tx, WsOut::Control(ControlMsg::close(id, Some("slow consumer"))));
                                     }
                                     Err(mpsc::error::TrySendError::Closed(_)) => {}
                                 }
@@ -407,7 +706,8 @@ where
                     break;
                 }
                 silent_ticks += 1;
-                if out_tx.send(WsOut::Ping).await.is_err() {
+                // a full queue is traffic, which is proof enough the link works: no ping then
+                if let Err(mpsc::error::TrySendError::Closed(_)) = out_tx.try_send(WsOut::Ping) {
                     break;
                 }
             }
@@ -455,111 +755,321 @@ fn on_control(shared: &Shared, generation: u64, msg: ControlMsg) {
     }
 }
 
+/// Which count a refusal goes in: every refusal is counted.
+#[derive(Clone, Copy)]
+enum Counter {
+    PlainHttp,
+    BadRequest,
+    NoRules,
+    Blocked,
+    NotListed,
+    BadHost,
+    RelayHosts,
+    NoClient,
+    StreamsFull,
+    Busy,
+    Destination,
+    Failed,
+}
+
+/// A refusal: its status, the stable word for `X-Box-Egress-Reason`, a sentence, and its count.
+struct Refusal {
+    status: u16,
+    reason: &'static str,
+    text: &'static str,
+    counter: Counter,
+}
+
+impl Refusal {
+    const fn new(status: u16, reason: &'static str, text: &'static str, counter: Counter) -> Self {
+        Self {
+            status,
+            reason,
+            text,
+            counter,
+        }
+    }
+}
+
+const PLAIN_HTTP: Refusal = Refusal::new(
+    405,
+    "plain-http",
+    "this computer's browser loads https:// pages only; plain http:// isn't relayed",
+    Counter::PlainHttp,
+);
+const BAD_REQUEST: Refusal = Refusal::new(400, "bad-request", "bad request", Counter::BadRequest);
+const NO_RULES: Refusal = Refusal::new(
+    403,
+    "no-rules",
+    "no browsing rules are set for this computer, so every site is refused",
+    Counter::NoRules,
+);
+const BLOCKED: Refusal = Refusal::new(
+    403,
+    "blocked",
+    "blocked by this computer's rules",
+    Counter::Blocked,
+);
+const NOT_LISTED: Refusal = Refusal::new(
+    403,
+    "not-listed",
+    "not on this computer's allow list, and it reaches listed sites only",
+    Counter::NotListed,
+);
+const ADDRESS: Refusal = Refusal::new(
+    403,
+    "address",
+    "an address typed as numbers, and this computer blocks sites by name, so addresses aren't reached",
+    Counter::Blocked,
+);
+const BAD_HOST: Refusal =
+    Refusal::new(400, "bad-host", "that isn't a valid host", Counter::BadHost);
+const RELAY_HOSTS: Refusal =
+    Refusal::new(403, "relay-hosts", "host not allowed", Counter::RelayHosts);
+const NO_CLIENT: Refusal = Refusal::new(
+    503,
+    "no-client",
+    "box-egress-tunnel: no client attached; this computer browses through the tunnel only",
+    Counter::NoClient,
+);
+const STREAMS_FULL: Refusal = Refusal::new(
+    503,
+    "streams-full",
+    "box-egress-tunnel: too many streams at once",
+    Counter::StreamsFull,
+);
+const DESTINATION: Refusal = Refusal::new(
+    403,
+    "destination",
+    "destination refused: not a public address, or a port that isn't relayed",
+    Counter::Destination,
+);
+const RESOLVE: Refusal = Refusal::new(502, "resolve", "the name didn't resolve", Counter::Failed);
+const CONNECT: Refusal = Refusal::new(502, "connect", "the site didn't answer", Counter::Failed);
+const TIMEOUT: Refusal = Refusal::new(
+    504,
+    "timeout",
+    "the site didn't answer in time",
+    Counter::Failed,
+);
+const SLOW_HEAD: Refusal = Refusal::new(
+    408,
+    "slow-request",
+    "the request didn't come in time",
+    Counter::BadRequest,
+);
+const BUSY: Refusal = Refusal::new(
+    503,
+    "busy",
+    "box-egress-tunnel: too many connections waiting to be read",
+    Counter::Busy,
+);
+const OPEN_TIMED_OUT: Refusal = Refusal::new(
+    504,
+    "open-timeout",
+    "client did not open the stream",
+    Counter::Failed,
+);
+
+async fn refuse(shared: &Shared, stream: &mut TcpStream, refusal: &Refusal) {
+    let c = &shared.counts;
+    Counters::bump(match refusal.counter {
+        Counter::PlainHttp => &c.plain_http,
+        Counter::BadRequest => &c.bad_request,
+        Counter::NoRules => &c.no_rules,
+        Counter::Blocked => &c.blocked,
+        Counter::NotListed => &c.not_listed,
+        Counter::BadHost => &c.bad_host,
+        Counter::RelayHosts => &c.relay_hosts,
+        Counter::NoClient => &c.no_client,
+        Counter::StreamsFull => &c.streams_full,
+        Counter::Busy => &c.busy,
+        Counter::Destination => &c.destination,
+        Counter::Failed => &c.failed,
+    });
+    tracing::info!(
+        status = refusal.status,
+        reason = refusal.reason,
+        "CONNECT refused"
+    );
+    let _ = write_http(
+        stream,
+        refusal.status,
+        refusal.reason,
+        &format!("{}\n", refusal.text),
+    )
+    .await;
+}
+
 async fn handle_proxy(shared: Arc<Shared>, mut stream: TcpStream) -> anyhow::Result<()> {
-    let (head, rest) = match read_http_head(&mut stream).await {
-        Ok(v) => v,
+    let Ok(unread) = shared.unread.try_acquire() else {
+        refuse(&shared, &mut stream, &BUSY).await;
+        return Ok(());
+    };
+    let read = tokio::time::timeout(HEAD_TIMEOUT, read_http_head(&mut stream)).await;
+    drop(unread);
+    let (head, rest) = match read {
+        Ok(Ok(v)) => v,
+        Ok(Err(_)) => {
+            refuse(&shared, &mut stream, &BAD_REQUEST).await;
+            return Ok(());
+        }
         Err(_) => {
-            let _ = write_http(&mut stream, 400, "Bad Request", "bad request\n").await;
+            refuse(&shared, &mut stream, &SLOW_HEAD).await;
             return Ok(());
         }
     };
     let Some(req) = parse_proxy_request(&head, &rest) else {
-        let _ = write_http(&mut stream, 400, "Bad Request", "bad request\n").await;
+        refuse(&shared, &mut stream, &BAD_REQUEST).await;
         return Ok(());
     };
 
     if !req.connect {
-        // CONNECT only. Absolute-form proxying read one request head, opened one
-        // upstream, then relayed every later byte on the client socket to that
-        // first upstream -- and Chromium keys plain-http proxy sockets on the
-        // proxy, not the origin, so a second site's request went to the first
-        // site, cookies and all. Encrypted traffic never used this path.
-        let _ = write_http(&mut stream, 405, "Method Not Allowed", "CONNECT only\n").await;
+        // CONNECT only, whichever the exit. Absolute-form proxying read one request head, opened
+        // one upstream, then relayed every later byte on the client socket to that first
+        // upstream -- and Chromium keys plain-http proxy sockets on the proxy, not the origin, so
+        // a second site's request went to the first site, cookies and all.
+        refuse(&shared, &mut stream, &PLAIN_HTTP).await;
         return Ok(());
     }
 
+    let Some(rules) = shared.cfg.rules.get() else {
+        refuse(&shared, &mut stream, &NO_RULES).await;
+        return Ok(());
+    };
+    match rules.judge(&req.host) {
+        Verdict::Allowed => {}
+        Verdict::Blocked => {
+            refuse(&shared, &mut stream, &BLOCKED).await;
+            return Ok(());
+        }
+        Verdict::NotListed => {
+            refuse(&shared, &mut stream, &NOT_LISTED).await;
+            return Ok(());
+        }
+        Verdict::BadHost => {
+            refuse(&shared, &mut stream, &BAD_HOST).await;
+            return Ok(());
+        }
+        Verdict::Address => {
+            refuse(&shared, &mut stream, &ADDRESS).await;
+            return Ok(());
+        }
+    }
     if !shared.cfg.allowlist.allows(&req.host) {
-        tracing::info!(host = %req.host, port = req.port, "CONNECT host not in allowlist");
-        let _ = write_http(&mut stream, 403, "Forbidden", "host not allowed\n").await;
+        refuse(&shared, &mut stream, &RELAY_HOSTS).await;
         return Ok(());
     }
 
-    let prepared = {
-        let mut g = shared.session.lock().unwrap_or_else(|e| e.into_inner());
-        match g.as_mut() {
-            Some(session) if session.streams.len() < MAX_STREAMS => alloc_id(session).map(|id| {
-                let (from_tx, from_rx) = mpsc::channel(256);
-                let (opened_tx, opened_rx) = oneshot::channel();
-                session.streams.insert(
-                    id,
-                    StreamSlot {
-                        from_client: from_tx,
-                        opened: Some(opened_tx),
-                    },
-                );
-                (
-                    id,
-                    from_rx,
-                    opened_rx,
-                    session.outgoing.clone(),
-                    session.generation,
-                )
-            }),
-            _ => None,
+    match rules.exit {
+        Exit::Direct => direct(&shared, stream, req.host, req.port, req.initial).await,
+        Exit::Tunnel => tunnel(&shared, stream, req.host, req.port, req.initial).await,
+    }
+    Ok(())
+}
+
+/// Dial the site from the box, judging every address it resolved to first.
+async fn direct(shared: &Shared, mut stream: TcpStream, host: String, port: u16, initial: Vec<u8>) {
+    let Ok(_slot) = shared.direct_slots.try_acquire() else {
+        refuse(shared, &mut stream, &STREAMS_FULL).await;
+        return;
+    };
+    let mut upstream = match resolve_and_dial(&host, port, &shared.cfg.destination).await {
+        Ok(upstream) => upstream,
+        Err(err) => {
+            let refusal = match &err {
+                DialError::Refused(_) => &DESTINATION,
+                DialError::Resolve => &RESOLVE,
+                err if err.timed_out() => &TIMEOUT,
+                DialError::Connect(_) => &CONNECT,
+            };
+            refuse(shared, &mut stream, refusal).await;
+            return;
         }
     };
-    let Some((id, from_client_rx, opened_rx, outgoing, generation)) = prepared else {
-        let _ = write_http(
-            &mut stream,
-            503,
-            "Service Unavailable",
-            "box-egress-tunnel: no client attached\n",
-        )
-        .await;
-        return Ok(());
-    };
-
-    if outgoing
-        .send(WsOut::Control(ControlMsg::open(
-            id,
-            req.host.clone(),
-            req.port,
-        )))
+    if stream
+        .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
         .await
         .is_err()
     {
-        drop_stream(&shared, generation, id);
-        let _ = write_http(
-            &mut stream,
-            503,
-            "Service Unavailable",
-            "box-egress-tunnel: no client attached\n",
-        )
-        .await;
-        return Ok(());
+        return;
+    }
+    Counters::bump(&shared.counts.direct);
+    tracing::debug!("relaying CONNECT directly");
+    let _ = stream.set_nodelay(true);
+    let _ = upstream.set_nodelay(true);
+    if !initial.is_empty() && upstream.write_all(&initial).await.is_err() {
+        return;
+    }
+    let _ = tokio::io::copy_bidirectional(&mut stream, &mut upstream).await;
+}
+
+/// Hand the stream to the operator's client. No client is a 503, never a direct dial.
+async fn tunnel(shared: &Shared, mut stream: TcpStream, host: String, port: u16, initial: Vec<u8>) {
+    let prepared = {
+        let mut g = shared.session.lock().unwrap_or_else(|e| e.into_inner());
+        match g.as_mut() {
+            None => Err(&NO_CLIENT),
+            Some(session) if session.streams.len() >= MAX_STREAMS => Err(&STREAMS_FULL),
+            Some(session) => match alloc_id(session) {
+                None => Err(&STREAMS_FULL),
+                Some(id) => {
+                    let (from_tx, from_rx) = mpsc::channel(256);
+                    let (opened_tx, opened_rx) = oneshot::channel();
+                    session.streams.insert(
+                        id,
+                        StreamSlot {
+                            from_client: from_tx,
+                            opened: Some(opened_tx),
+                        },
+                    );
+                    Ok((
+                        id,
+                        from_rx,
+                        opened_rx,
+                        session.outgoing.clone(),
+                        session.generation,
+                    ))
+                }
+            },
+        }
+    };
+    let (id, from_client_rx, opened_rx, outgoing, generation) = match prepared {
+        Ok(prepared) => prepared,
+        Err(refusal) => {
+            refuse(shared, &mut stream, refusal).await;
+            return;
+        }
+    };
+
+    if outgoing
+        .send(WsOut::Control(ControlMsg::open(id, host, port)))
+        .await
+        .is_err()
+    {
+        drop_stream(shared, generation, id);
+        refuse(shared, &mut stream, &NO_CLIENT).await;
+        return;
     }
 
     let opened = tokio::time::timeout(OPEN_TIMEOUT, opened_rx).await;
     match opened {
         Ok(Ok(Ok(()))) => {}
         Ok(Ok(Err(message))) => {
-            drop_stream(&shared, generation, id);
-            let _ = write_http(&mut stream, 502, "Bad Gateway", &format!("{message}\n")).await;
-            return Ok(());
+            drop_stream(shared, generation, id);
+            Counters::bump(&shared.counts.failed);
+            tracing::info!(status = 502, reason = "client-error", "CONNECT refused");
+            // The client's own words: they name no site (box_egress::client).
+            let _ = write_http(&mut stream, 502, "client-error", &format!("{message}\n")).await;
+            return;
         }
         Ok(Err(_)) | Err(_) => {
             let _ = outgoing
                 .send(WsOut::Control(ControlMsg::close(id, Some("open-timeout"))))
                 .await;
-            drop_stream(&shared, generation, id);
-            let _ = write_http(
-                &mut stream,
-                504,
-                "Gateway Timeout",
-                "client did not open the stream\n",
-            )
-            .await;
-            return Ok(());
+            drop_stream(shared, generation, id);
+            refuse(shared, &mut stream, &OPEN_TIMED_OUT).await;
+            return;
         }
     }
 
@@ -574,15 +1084,15 @@ async fn handle_proxy(shared: Arc<Shared>, mut stream: TcpStream) -> anyhow::Res
         let _ = outgoing
             .send(WsOut::Control(ControlMsg::close(id, Some("client gone"))))
             .await;
-        drop_stream(&shared, generation, id);
-        return Ok(());
+        drop_stream(shared, generation, id);
+        return;
     }
 
-    tracing::info!(host = %req.host, port = req.port, id, "relaying CONNECT");
+    Counters::bump(&shared.counts.tunneled);
+    tracing::debug!(id, "relaying CONNECT through the tunnel");
     let _ = stream.set_nodelay(true);
-    copy_proxy_stream(stream, from_client_rx, outgoing, id, req.initial).await;
-    drop_stream(&shared, generation, id);
-    Ok(())
+    copy_proxy_stream(stream, from_client_rx, outgoing, id, initial).await;
+    drop_stream(shared, generation, id);
 }
 
 fn alloc_id(session: &mut ClientSession) -> Option<u32> {
@@ -662,6 +1172,18 @@ async fn copy_proxy_stream(
         .await;
 }
 
+fn reason_phrase(status: u16) -> &'static str {
+    match status {
+        400 => "Bad Request",
+        403 => "Forbidden",
+        405 => "Method Not Allowed",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        _ => "Error",
+    }
+}
+
 async fn write_http(
     stream: &mut TcpStream,
     status: u16,
@@ -669,10 +1191,45 @@ async fn write_http(
     body: &str,
 ) -> std::io::Result<()> {
     let header = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {}\r\nContent-Type: text/plain\r\nX-Box-Egress-Reason: {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        reason_phrase(status),
         body.len()
     );
     stream.write_all(header.as_bytes()).await?;
     stream.write_all(body.as_bytes()).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn the_reader_never_waits_on_a_slow_clients_full_queue() {
+        let (tx, mut rx) = mpsc::channel::<WsOut>(1);
+        tx.send(WsOut::Ping).await.unwrap();
+        tokio::time::timeout(Duration::from_millis(100), async {
+            send_soon(
+                &tx,
+                WsOut::Control(ControlMsg::close(3, Some("slow consumer"))),
+            );
+        })
+        .await
+        .expect("send_soon waited on a full queue");
+        assert!(matches!(rx.recv().await, Some(WsOut::Ping)));
+        assert!(matches!(
+            rx.recv().await,
+            Some(WsOut::Control(ControlMsg::Close { id: 3, .. }))
+        ));
+    }
+
+    #[test]
+    fn the_bearer_is_read_from_either_header() {
+        let head = "GET / HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer abc\r\n\r\n";
+        assert_eq!(presented_bearer(head), Some("abc"));
+        let head = "GET / HTTP/1.1\r\nX-Box-Egress-Bearer:  def \r\n\r\n";
+        assert_eq!(presented_bearer(head), Some("def"));
+        let head = "GET / HTTP/1.1\r\nHost: x\r\n\r\n";
+        assert_eq!(presented_bearer(head), None);
+    }
 }

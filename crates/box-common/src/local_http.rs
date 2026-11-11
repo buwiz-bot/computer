@@ -1,4 +1,4 @@
-//! A GET to a peer on the box's own loopback (another daemon's health or status), with a deadline
+//! A GET (or a bodiless POST) to a peer on the box's own loopback (another daemon's health or status), with a deadline
 //! on the whole exchange and a cap on what is read. A peer that hangs, trickles, or never stops
 //! talking costs the caller at most `deadline` and `cap` bytes.
 
@@ -27,9 +27,22 @@ pub async fn local_get(
     deadline: Duration,
     cap: usize,
 ) -> io::Result<LocalResponse> {
+    local_request(addr, "GET", path, deadline, cap).await
+}
+
+/// [`local_get`] with another method, and no body.
+pub async fn local_request(
+    addr: &str,
+    method: &str,
+    path: &str,
+    deadline: Duration,
+    cap: usize,
+) -> io::Result<LocalResponse> {
     let exchange = async {
         let mut stream = TcpStream::connect(addr).await?;
-        let request = format!("GET {path} HTTP/1.0\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+        let request = format!(
+            "{method} {path} HTTP/1.0\r\nHost: {addr}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
         stream.write_all(request.as_bytes()).await?;
         let mut buf = Vec::new();
         let mut chunk = [0u8; 4096];

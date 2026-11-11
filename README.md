@@ -153,15 +153,17 @@ Compose also sets `cap_drop: [ALL]`, `security_opt: [no-new-privileges:true]`, `
 | `BOX_BROWSER` | `1` | Start each screen's Chromium on a DevTools pipe only `box-exec` holds, and serve `/v1/browser/*` (also needs `BOX_DESKTOP`; the main screen also needs `BOX_CHROME`, a Bot's own screen doesn't; a screen with no browser on a pipe answers `503 browser_unavailable`). `0`: `/v1/browser/*` answers `503 browser_disabled` on every screen, and the main screen's Chromium (and any screen's `box-chromium` that sees the flag) starts with no pipe |
 | `BOX_BROWSER_CONFIRM_PRESS` | `Pay*,Delete*,Buy*,Place order*,Checkout*,Submit order*,Confirm purchase*,Remove*,Order*,Purchase*,Subscribe*` | Label globs whose browser press (a click, a key, or an Enter that sends their form) needs a person's confirm (`409 confirm_required`). A glob matches the whole label, case and spacing aside, so `Order*` also asks about "Order history" and `Remove*` about "Remove filter". Empty confirms nothing |
 | `BOX_BROWSER_STATE_DIR` | `/home/box/browser-state` | Saved browser logins, a 0700 folder per screen, `box-exec`'s alone |
-| `BOX_EGRESS_TUNNEL` | `0` | `1` starts `box-egress-tunnel` before Chromium and sets `--proxy-server`. See [EGRESS.md](docs/EGRESS.md). |
+| `BOX_EGRESS_PROXY` | `0` | `1` starts `box-egress-tunnel`'s proxy before Chromium and puts every screen's browser behind it, under the computer's rules (`PUT /v1/egress/rules`), dialling sites from the box. See [EGRESS.md](docs/EGRESS.md). |
+| `BOX_EGRESS_RULES_FILE` | unset | The rules the box starts with. None is no browsing. |
+| `BOX_EGRESS_TUNNEL` | `0` | `1` adds the tunnel's WebSocket for a laptop client (and turns the proxy on). See [EGRESS.md](docs/EGRESS.md). |
 | `BOX_EGRESS_WS_BIND` | `0.0.0.0:8790` in image; `127.0.0.1:8790` native | WebSocket for the laptop client |
-| `BOX_EGRESS_PROXY_BIND` | `127.0.0.1:8791` | HTTP CONNECT for Chromium. Never publish. |
-| `BOX_EGRESS_ADMIN_BIND` | `127.0.0.1:8792` | Loopback status for box-host |
+| `BOX_EGRESS_PROXY_BIND` | `127.0.0.1:8791` | HTTP CONNECT for Chromium. Loopback only (refused otherwise). Never publish. |
+| `BOX_EGRESS_ADMIN_BIND` | `127.0.0.1:8792` | Loopback status and rule reloads for box-host. Loopback only. |
 | `BOX_EGRESS_TUNNEL_BEARER` | required when tunnel on | WS Bearer. Prefer `_FILE`. Independent of `BOX_TOKEN`. |
 | `BOX_EGRESS_TUNNEL_BEARER_FILE` | unset | Preferred file form (same story as `BOX_TOKEN_FILE`) |
-| `BOX_EGRESS_RELAY_HOSTS` | empty = all | Optional CONNECT host allowlist (`*.example.com` ok) |
-| `BOX_EGRESS_RELAY_PORTS` | `80,443` | Ports the egress client will dial; `*` is any. See [EGRESS.md](docs/EGRESS.md). |
-| `BOX_EGRESS_ALLOW_PRIVATE` | unset | `1` lets the egress client dial non-public addresses. Leave off. See [EGRESS.md](docs/EGRESS.md). |
+| `BOX_EGRESS_RELAY_HOSTS` | empty | Optional static CONNECT host filter on top of the rules (`*.example.com` ok) |
+| `BOX_EGRESS_RELAY_PORTS` | `80,443` | Ports the proxy and the client will dial; `*` is any. See [EGRESS.md](docs/EGRESS.md). |
+| `BOX_EGRESS_ALLOW_PRIVATE` | unset | `1` lets the proxy and the client dial non-public addresses. Leave off. See [EGRESS.md](docs/EGRESS.md). |
 | `BOX_MAX_CONCURRENT_EXECS` | `8` | Max simultaneous `POST /v1/exec` (and stream/detach). Extra calls get `429 busy`. |
 | `BOX_MAX_DIR_ENTRIES` | `4096` | Cap on directory listings (`truncated: true` if hit) |
 | `BOX_EXEC_KILL_GRACE_MS` | `2000` | After exec timeout, wait this long after SIGTERM before SIGKILL |
@@ -208,7 +210,8 @@ crates/box-host      identity / ready / capabilities / desktop + chrome status
 crates/box-desktop   Xvfb probe, 1280×800 geometry, viewer ports, screen list
 crates/box-chrome    Chromium profile and process probe
 crates/box-cua       screenshot / click / type / key / scroll / double-click / drag / move / recipe / voxl wait + record
-crates/box-egress-tunnel  guest WS mux + Chromium CONNECT proxy (laptop client is the same binary)
+crates/box-egress         the wire, the browsing rules, the address policy, the laptop client
+crates/box-egress-tunnel  guest CONNECT proxy under the rules + tunnel WS (and the client CLI)
 crates/buwiz-computer      typed client + CLI (workspace only, not published)
 sdk/typescript       TypeScript client (workspace only)
 sdk/python           Python client (workspace only)
@@ -249,7 +252,7 @@ Compose used to mount `./chrome-profile` at the main profile and nothing else un
 ## Docs
 
 - [Deploy](docs/DEPLOY.md) — test-deploy on **Akamai Cloud** (Linode; not Vultr), then the same pattern on AWS/GCP/Azure. First test is one VM, guest Compose only, private SSH tunnel or Tailscale; CLI/SDK from your laptop. Do not expose 1337/1340/6901-6905 on the public internet.
-- [Egress](docs/EGRESS.md) — laptop CONNECT tunnel for Chromium in prod (no host-network)
+- [Egress](docs/EGRESS.md) — the browser's proxy, its per-computer rules, and the laptop tunnel
 - [Architecture](docs/ARCHITECTURE.md)
 - [Startup](docs/STARTUP.md)
 - [Request processing](docs/PROCESSING.md)

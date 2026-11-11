@@ -418,6 +418,28 @@ impl BuwizComputer {
             .await
     }
 
+    /// The browser's rules in force (`GET /v1/egress/rules`).
+    pub async fn egress_rules(&self) -> Result<Value, Error> {
+        self.send_json(
+            "GET",
+            &format!("{}/v1/egress/rules", self.host_url),
+            None,
+            true,
+        )
+        .await
+    }
+
+    /// Put a rules document in force (`PUT /v1/egress/rules`).
+    pub async fn set_egress_rules(&self, rules: &Value) -> Result<Value, Error> {
+        self.send_json(
+            "PUT",
+            &format!("{}/v1/egress/rules", self.host_url),
+            Some(rules.clone()),
+            true,
+        )
+        .await
+    }
+
     pub async fn windows(&self) -> Result<Value, Error> {
         self.send_json(
             "GET",

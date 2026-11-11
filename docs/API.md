@@ -582,7 +582,8 @@ Uses `BOX_HOST_TOKEN` if set, else `BOX_TOKEN`.
     "chrome": { "enabled": true, "ready": true },
     "browser": { "enabled": true, "ready": true },
     "cua": { "enabled": true, "ready": true },
-    "egress_tunnel": { "enabled": false, "ready": false }
+    "egress_tunnel": { "enabled": false, "ready": false },
+    "egress_proxy": { "enabled": false, "ready": false }
   },
   "endpoints": {
     "exec": "http://127.0.0.1:1337",
@@ -692,7 +693,7 @@ Trust limit. The report is a file in that screen's run folder (`/run/box/x/<slot
 
 ### `GET /v1/egress` (bearer)
 
-Laptop CONNECT tunnel. `ready` / `client_attached` mean a `box-egress-tunnel client` is attached right now. When enabled but not ready, Chromium CONNECT fail-closes (`503`). `ws` / `proxy` are container-local listen addresses — not the URL to dial. See [EGRESS.md](EGRESS.md).
+The browser's proxy and the tunnel. `ready` / `client_attached` mean a `box-egress-tunnel client` is attached right now. `proxy_enabled`, `rules` and `can_browse` say whether the browser can reach a site: with no rules, or the tunnel as the exit and no client, it reaches none (`403 no-rules`, `503 no-client`). Nothing here names a site: `rules` are counts and `counts` are outcomes. `ws` / `proxy` are container-local listen addresses, not the URL to dial. See [EGRESS.md](EGRESS.md).
 
 ```json
 {
@@ -701,9 +702,31 @@ Laptop CONNECT tunnel. `ready` / `client_attached` mean a `box-egress-tunnel cli
   "client_attached": false,
   "protocol": "box-egress-v1",
   "ws": "127.0.0.1:8790",
-  "proxy": "127.0.0.1:8791"
+  "proxy": "127.0.0.1:8791",
+  "proxy_enabled": true,
+  "proxy_up": true,
+  "rules": { "version": 7, "exit": "direct", "mode": "all", "allow": 0, "block": 1 },
+  "rules_error": null,
+  "can_browse": true,
+  "counts": { "direct": 4, "tunneled": 0, "blocked": 1, "not_listed": 0, "no_rules": 0, "no_client": 0, "streams_full": 0, "destination": 0, "failed": 0, "plain_http": 0 }
 }
 ```
+
+### `GET /v1/egress/rules`, `PUT /v1/egress/rules` (bearer)
+
+The computer's browsing rules, read and replaced while the box runs. One set per box: every screen's browser goes through the same proxy. They cover the browser only; commands (`/v1/exec`) are not proxied.
+
+```json
+{ "v": 1, "version": 7, "exit": "direct", "mode": "listed", "allow": ["example.com"], "block": ["ads.example.com"] }
+```
+
+- `exit`: `direct` (the box dials) or `tunnel` (through the operator's client; `503 no-client` without one).
+- `mode`: `all` (every site but the blocked ones) or `listed` (only the allowed ones). Block always wins.
+- An entry covers the name and every name under it (`facebook.com` covers `www.facebook.com`). `*`, an empty entry, an address, or an entry with a scheme, port or path is refused, `422 invalid_rules`, naming the list and position. The whole set is refused and nothing changes.
+- `PUT` answers `200 {"applied": true, "rules": {counts}}` only once the proxy has this set's version in force. One `PUT` at a time; when the proxy has another version in force it's `409 rules_superseded` (with that version), when it refuses the set `422 rules_refused`, and in both the file is put back: it's never ahead of what's in force. `409 egress_proxy_off`: the box was made without the proxy (`BOX_EGRESS_PROXY`). `409 egress_tunnel_off`: `exit: tunnel` on a box made without the tunnel. `503 egress_not_running`: the proxy isn't answering, and nothing was changed.
+- `GET` answers the set in force, read from the file box-host wrote (the proxy's own loopback port gives counts only), or `404 egress_rules_unset` (the browser reaches no site), or `409 egress_proxy_off`. `GET /v1/egress` says where the rules in force came from (`rules_origin`: `staged` or `set`); a restart is back to the staged file.
+
+A box with the proxy answers `GET /v1/ready` only once the proxy does.
 
 ### `GET /v1/desktop/windows` (bearer)
 

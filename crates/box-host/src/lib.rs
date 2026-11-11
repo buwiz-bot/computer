@@ -6,6 +6,7 @@
 //! mimalloc feature as `box-exec`.
 
 pub mod active_tab;
+pub mod egress_rules;
 pub mod keeper;
 
 use std::net::SocketAddr;
@@ -16,7 +17,7 @@ use std::time::{Duration, Instant};
 use axum::extract::{Query, Request, State};
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use box_chrome::{probe_chrome, ChromeConfig, ChromeStatus};
 use box_common::{
@@ -45,6 +46,7 @@ pub struct AppState {
     pub browser: bool,
     pub cua: CuaConfig,
     pub egress: EgressConfig,
+    pub rules_turn: egress_rules::RulesTurn,
     pub shutdown: Arc<Notify>,
     pub shutting_down: Arc<AtomicBool>,
     pub started_at: Instant,
@@ -65,6 +67,7 @@ impl AppState {
             browser: box_common::browser_layer_on(),
             cua: CuaConfig::from_env(),
             egress: EgressConfig::from_env()?,
+            rules_turn: Default::default(),
             shutdown: Arc::new(Notify::new()),
             shutting_down: Arc::new(AtomicBool::new(false)),
             started_at: Instant::now(),
@@ -133,6 +136,9 @@ struct Capabilities {
     browser: Capability,
     cua: Capability,
     egress_tunnel: Capability,
+    /// The browser goes through the box's proxy, under the computer's rules
+    /// (`BOX_EGRESS_PROXY`, or the tunnel). Ready once the proxy answers with rules set.
+    egress_proxy: Capability,
 }
 
 #[derive(Serialize)]
@@ -153,6 +159,10 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/chrome", get(chrome))
         .route("/v1/chrome/active-tab", get(active_tab_now))
         .route("/v1/egress", get(egress))
+        .route(
+            "/v1/egress/rules",
+            get(egress_rules::get_rules).merge(put(egress_rules::put_rules)),
+        )
         .route("/v1/busy", get(busy))
         .route("/v1/shutdown", post(shutdown))
         .route("/v1/metrics", get(metrics))
@@ -247,6 +257,15 @@ async fn ready(State(state): State<AppState>) -> Result<Json<ReadyResponse>, Api
             "desktop display is not up",
         ));
     }
+    // A box with the proxy isn't ready until the proxy answers, so whoever waits for ready can
+    // change the rules at once. Its browser refuses every site until then either way.
+    if state.egress.proxy && !probe_egress(&state.egress).await.proxy_up {
+        return Err(ApiError::new(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "not_ready",
+            "the browser's network proxy is not up",
+        ));
+    }
     Ok(Json(ReadyResponse {
         status: "ready",
         service: "box-host",
@@ -257,7 +276,8 @@ async fn ready(State(state): State<AppState>) -> Result<Json<ReadyResponse>, Api
 }
 
 async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
-    let (desktop_ready, viewer_ready) = desktop_probe(&state.desktop).await;
+    let ((desktop_ready, viewer_ready), egress) =
+        tokio::join!(desktop_probe(&state.desktop), probe_egress(&state.egress));
     Json(InfoResponse {
         box_id: state.box_id.clone(),
         service: "box-host",
@@ -298,12 +318,13 @@ async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
                 enabled: state.cua.enabled,
                 ready: state.cua.capability_ready(),
             },
-            egress_tunnel: {
-                let st = probe_egress(&state.egress).await;
-                Capability {
-                    enabled: st.enabled,
-                    ready: st.ready,
-                }
+            egress_tunnel: Capability {
+                enabled: egress.enabled,
+                ready: egress.ready,
+            },
+            egress_proxy: Capability {
+                enabled: egress.proxy_enabled,
+                ready: egress.proxy_up && egress.rules.is_some(),
             },
         },
         endpoints: Endpoints {
@@ -339,7 +360,10 @@ async fn chrome(State(state): State<AppState>) -> Json<ChromeStatus> {
 }
 
 async fn egress(State(state): State<AppState>) -> Json<EgressStatus> {
-    Json(probe_egress(&state.egress).await)
+    let mut st = probe_egress(&state.egress).await;
+    st.rules_origin =
+        egress_rules::origin(&state, st.rules.as_ref().map(|r| r.version)).map(str::to_owned);
+    Json(st)
 }
 
 /// `?display=:N`: one of the box's other screens (a Bot's own, `box-screen`).
@@ -517,6 +541,7 @@ mod tests {
             browser: false,
             cua: CuaConfig::disabled(),
             egress: EgressConfig::disabled(),
+            rules_turn: Default::default(),
             shutdown: Arc::new(Notify::new()),
             shutting_down: Arc::new(AtomicBool::new(false)),
             started_at: Instant::now(),
@@ -685,6 +710,437 @@ mod tests {
         assert_eq!(body["ready"], false);
         assert_eq!(body["client_attached"], false);
         assert_eq!(body["protocol"], "box-egress-v1");
+    }
+
+    async fn send_to(state: AppState, req: Request<Body>) -> (StatusCode, Value) {
+        let response = app(state).oneshot(req).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    fn rules_put(body: &str) -> Request<Body> {
+        Request::builder()
+            .method("PUT")
+            .uri("/v1/egress/rules")
+            .header("authorization", "Bearer host-secret")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    fn rules_put_owned(body: String) -> Request<Body> {
+        Request::builder()
+            .method("PUT")
+            .uri("/v1/egress/rules")
+            .header("authorization", "Bearer host-secret")
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    fn egress_get() -> Request<Body> {
+        Request::builder()
+            .uri("/v1/egress")
+            .header("authorization", "Bearer host-secret")
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    fn rules_get() -> Request<Body> {
+        Request::builder()
+            .uri("/v1/egress/rules")
+            .header("authorization", "Bearer host-secret")
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn rules_are_refused_on_a_box_without_the_proxy() {
+        let (status, body) = send(rules_put(r#"{"v":1,"exit":"direct","mode":"all"}"#)).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"]["code"], "egress_proxy_off");
+        let (status, body) = send(rules_get()).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"]["code"], "egress_proxy_off");
+        let unauthenticated = Request::builder()
+            .method("PUT")
+            .uri("/v1/egress/rules")
+            .body(Body::from("{}"))
+            .unwrap();
+        assert_eq!(send(unauthenticated).await.0, StatusCode::UNAUTHORIZED);
+    }
+
+    /// box-host against a real proxy on loopback, its rules file in a temp folder.
+    async fn with_proxy(
+        tunnel: bool,
+    ) -> (AppState, tempfile::TempDir, tokio::task::JoinHandle<()>) {
+        use box_egress_tunnel::{server, TunnelServerConfig};
+        let dir = tempfile::tempdir().unwrap();
+        let rules_path = dir.path().join("rules.json");
+        let cfg = TunnelServerConfig {
+            tunnel: None,
+            proxy_bind: "127.0.0.1:0".parse().unwrap(),
+            admin_bind: "127.0.0.1:0".parse().unwrap(),
+            allowlist: box_egress::Allowlist::any(),
+            destination: box_egress::destination::DestinationPolicy::default(),
+            rules_path: Some(rules_path.clone()),
+            rules: box_egress::RulesCell::default(),
+        };
+        let binds = server::ServerBinds::bind(&cfg).await.unwrap();
+        let proxy_bind = binds.proxy.local_addr().unwrap();
+        let admin_bind = binds.admin.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let _ = server::run_with_binds(cfg, binds).await;
+        });
+        let mut st = state();
+        st.egress = EgressConfig {
+            enabled: tunnel,
+            proxy: true,
+            ws_bind: "127.0.0.1:8790".parse().unwrap(),
+            proxy_bind,
+            admin_bind,
+            rules_path,
+        };
+        (st, dir, task)
+    }
+
+    #[tokio::test]
+    async fn rules_set_at_runtime_are_in_force_when_the_put_answers() {
+        let (st, _dir, task) = with_proxy(false).await;
+        let (status, body) = send_to(st.clone(), rules_get()).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert_eq!(body["error"]["code"], "egress_rules_unset");
+        let (_, info) = send_to(
+            st.clone(),
+            Request::builder()
+                .uri("/v1/info")
+                .header("authorization", "Bearer host-secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(info["capabilities"]["egress_proxy"]["enabled"], true);
+        assert_eq!(info["capabilities"]["egress_proxy"]["ready"], false);
+
+        let (status, body) = send_to(
+            st.clone(),
+            rules_put(
+                r#"{"v":1,"version":9,"exit":"direct","mode":"listed","allow":["Example.com"],"block":["ads.example.com"]}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["applied"], true);
+        assert_eq!(body["rules"]["version"], 9);
+        assert_eq!(body["rules"]["allow"], 1);
+
+        let (status, body) = send_to(st.clone(), rules_get()).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["allow"], serde_json::json!(["example.com"]));
+        assert_eq!(body["mode"], "listed");
+
+        let (_, egress) = send_to(
+            st.clone(),
+            Request::builder()
+                .uri("/v1/egress")
+                .header("authorization", "Bearer host-secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(egress["proxy_up"], true);
+        assert_eq!(egress["can_browse"], true);
+        assert_eq!(egress["rules"]["block"], 1);
+        assert!(
+            !egress.to_string().contains("example.com"),
+            "a status names no site: {egress}"
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn two_puts_at_once_each_told_the_truth_and_one_set_stands() {
+        let (st, _dir, task) = with_proxy(false).await;
+        let put = |v: u64| {
+            rules_put_owned(format!(
+                r#"{{"v":1,"version":{v},"exit":"direct","mode":"all","block":["b{v}.test"]}}"#
+            ))
+        };
+        let (a, b) = tokio::join!(send_to(st.clone(), put(10)), send_to(st.clone(), put(11)));
+        assert_eq!(
+            (a.0, b.0),
+            (StatusCode::OK, StatusCode::OK),
+            "{} {}",
+            a.1,
+            b.1
+        );
+        let (_, body) = send_to(st.clone(), rules_get()).await;
+        let v = body["version"].as_u64().unwrap();
+        assert!(v == 10 || v == 11, "{body}");
+        assert_eq!(
+            body["block"],
+            serde_json::json!([format!("b{v}.test")]),
+            "the file and what's in force are one set"
+        );
+        let (_, egress) = send_to(st.clone(), egress_get()).await;
+        assert_eq!(egress["rules"]["version"].as_u64(), Some(v));
+        assert_eq!(egress["rules_origin"], "set");
+        task.abort();
+    }
+
+    /// box-host against an admin port that answers every reload with `answer`.
+    async fn with_admin(answer: &'static str) -> (AppState, tempfile::TempDir) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = tempfile::tempdir().unwrap();
+        let admin = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let admin_bind = admin.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = admin.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = s.read(&mut buf).await;
+                let _ = s.write_all(answer.as_bytes()).await;
+            }
+        });
+        let mut st = state();
+        st.egress = EgressConfig {
+            enabled: false,
+            proxy: true,
+            ws_bind: "127.0.0.1:8790".parse().unwrap(),
+            proxy_bind: "127.0.0.1:8791".parse().unwrap(),
+            admin_bind,
+            rules_path: dir.path().join("rules.json"),
+        };
+        (st, dir)
+    }
+
+    #[tokio::test]
+    async fn a_set_the_proxy_refuses_or_supersedes_leaves_the_file_as_it_was() {
+        let before = r#"{"v":1,"version":2,"exit":"direct","mode":"all"}"#;
+        for (answer, status, code) in [
+            ("HTTP/1.1 422 Unprocessable Entity\r\nContent-Length: 47\r\n\r\n{\"error\":\"bad_rules\",\"message\":\"unreadable\"}", StatusCode::UNPROCESSABLE_ENTITY, "rules_refused"),
+            ("HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\n{\"version\":999}", StatusCode::CONFLICT, "rules_superseded"),
+        ] {
+            let (st, dir) = with_admin(answer).await;
+            std::fs::write(dir.path().join("rules.json"), before).unwrap();
+            let (got, body) = send_to(st, rules_put(r#"{"v":1,"version":7,"exit":"direct","mode":"all","block":["x.test"]}"#)).await;
+            assert_eq!(got, status, "{body}");
+            assert_eq!(body["error"]["code"], code);
+            assert_eq!(std::fs::read_to_string(dir.path().join("rules.json")).unwrap(), before, "never ahead of the proxy");
+        }
+        // no proxy answering at all: nothing changed either, and said so
+        let (mut st, dir) = with_admin("").await;
+        st.egress.admin_bind = "127.0.0.1:1".parse().unwrap();
+        std::fs::write(dir.path().join("rules.json"), before).unwrap();
+        let (got, body) = send_to(
+            st,
+            rules_put(r#"{"v":1,"version":8,"exit":"direct","mode":"all"}"#),
+        )
+        .await;
+        // no proxy to ask: what's in force isn't known, and the answer says that, not "unchanged"
+        assert_eq!(got, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"]["code"], "rules_state_unknown");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("rules.json")).unwrap(),
+            before
+        );
+    }
+
+    /// box-host against an admin port that answers `GET /v1/rules` with `in_force` after `get_ms`,
+    /// and every reload after `reload_ms`, with the version asked for in force.
+    async fn with_slow_admin(
+        in_force: u64,
+        get_ms: u64,
+        reload_ms: u64,
+    ) -> (AppState, tempfile::TempDir) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = tempfile::tempdir().unwrap();
+        let admin = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let admin_bind = admin.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = admin.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let n = s.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    let (wait, body) = if req.starts_with("GET /v1/rules") {
+                        (
+                            get_ms,
+                            format!(
+                                r#"{{"version":{in_force},"exit":"direct","mode":"all","allow":0,"block":1}}"#
+                            ),
+                        )
+                    } else {
+                        (reload_ms, format!(r#"{{"version":{in_force}}}"#))
+                    };
+                    tokio::time::sleep(Duration::from_millis(wait)).await;
+                    let _ = s
+                        .write_all(
+                            format!(
+                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                                body.len()
+                            )
+                            .as_bytes(),
+                        )
+                        .await;
+                });
+            }
+        });
+        let mut st = state();
+        st.egress = EgressConfig {
+            enabled: false,
+            proxy: true,
+            ws_bind: "127.0.0.1:8790".parse().unwrap(),
+            proxy_bind: "127.0.0.1:8791".parse().unwrap(),
+            admin_bind,
+            rules_path: dir.path().join("rules.json"),
+        };
+        (st, dir)
+    }
+
+    #[tokio::test]
+    async fn a_reload_that_timed_out_after_it_took_is_found_out_and_answered_truly() {
+        let before = r#"{"v":1,"version":2,"exit":"direct","mode":"all"}"#;
+        let new = r#"{"v":1,"version":7,"exit":"direct","mode":"all","block":["x.test"]}"#;
+        // the reload's answer comes too late, but the proxy has the new set in force
+        let (st, dir) = with_slow_admin(7, 0, 3000).await;
+        std::fs::write(dir.path().join("rules.json"), before).unwrap();
+        let (got, body) = send_to(st, rules_put(new)).await;
+        assert_eq!(got, StatusCode::OK, "{body}");
+        assert!(
+            std::fs::read_to_string(dir.path().join("rules.json"))
+                .unwrap()
+                .contains("x.test"),
+            "the file is the set in force"
+        );
+        // and when the proxy can't be asked at all: unknown, said so, the file the last known set
+        let (st, dir) = with_slow_admin(7, 3000, 3000).await;
+        std::fs::write(dir.path().join("rules.json"), before).unwrap();
+        let (got, body) = send_to(st, rules_put(new)).await;
+        assert_eq!(got, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["error"]["code"], "rules_state_unknown");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("rules.json")).unwrap(),
+            before
+        );
+    }
+
+    #[tokio::test]
+    async fn a_staged_file_with_no_version_is_said_to_be_staged() {
+        let (st, dir, task) = with_proxy(false).await;
+        std::fs::write(
+            dir.path().join("rules.json"),
+            r#"{"v":1,"exit":"direct","mode":"all"}"#,
+        )
+        .unwrap();
+        let reload = box_common::local_request(
+            &st.egress.admin_bind.to_string(),
+            "POST",
+            "/v1/rules/reload",
+            Duration::from_secs(2),
+            4096,
+        )
+        .await
+        .unwrap();
+        assert_eq!(reload.status, 200);
+        let (_, egress) = send_to(st, egress_get()).await;
+        assert_eq!(egress["rules_origin"], "staged", "{egress}");
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn rules_the_box_started_with_are_said_to_be_staged() {
+        let (st, dir, task) = with_proxy(false).await;
+        std::fs::write(
+            dir.path().join("rules.json"),
+            r#"{"v":1,"version":77,"exit":"direct","mode":"all"}"#,
+        )
+        .unwrap();
+        let reload = box_common::local_request(
+            &st.egress.admin_bind.to_string(),
+            "POST",
+            "/v1/rules/reload",
+            Duration::from_secs(2),
+            4096,
+        )
+        .await
+        .unwrap();
+        assert_eq!(reload.status, 200);
+        let (_, egress) = send_to(st, egress_get()).await;
+        assert_eq!(
+            (
+                egress["rules"]["version"].as_u64(),
+                egress["rules_origin"].as_str()
+            ),
+            (Some(77), Some("staged")),
+            "{egress}"
+        );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_bad_set_is_refused_whole_and_changes_nothing() {
+        let (st, _dir, task) = with_proxy(false).await;
+        let good = r#"{"v":1,"version":3,"exit":"direct","mode":"all","block":["a.test"]}"#;
+        assert_eq!(send_to(st.clone(), rules_put(good)).await.0, StatusCode::OK);
+        for bad in [
+            r#"{"v":1,"exit":"direct","mode":"all","block":["*"]}"#,
+            r#"{"v":1,"exit":"direct","mode":"all","allow":[""]}"#,
+            r#"{"v":1,"exit":"direct","mode":"everything"}"#,
+            r#"not json"#,
+        ] {
+            let (status, body) = send_to(st.clone(), rules_put(bad)).await;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{bad}: {body}");
+            assert_eq!(body["error"]["code"], "invalid_rules");
+        }
+        let (status, body) = send_to(
+            st.clone(),
+            rules_put(r#"{"v":1,"exit":"tunnel","mode":"all"}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["error"]["code"], "egress_tunnel_off");
+        let (_, body) = send_to(st.clone(), rules_get()).await;
+        assert_eq!(body["version"], 3);
+        assert_eq!(body["block"], serde_json::json!(["a.test"]));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_box_with_the_proxy_is_not_ready_while_the_proxy_is_down() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // A box-exec that answers its health route.
+        let exec = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let exec_addr = exec.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = exec.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = s.read(&mut buf).await;
+                let _ = s
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+                    .await;
+            }
+        });
+        let ready = || {
+            Request::builder()
+                .uri("/v1/ready")
+                .header("authorization", "Bearer host-secret")
+                .body(Body::empty())
+                .unwrap()
+        };
+        let (mut st, _dir, task) = with_proxy(false).await;
+        st.exec_url = format!("http://{exec_addr}");
+        assert_eq!(send_to(st.clone(), ready()).await.0, StatusCode::OK);
+        task.abort();
+        st.egress.admin_bind = "127.0.0.1:1".parse().unwrap();
+        let (status, body) = send_to(st, ready()).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"]["code"], "not_ready");
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("network proxy"));
     }
 
     #[tokio::test]
