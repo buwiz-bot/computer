@@ -30,17 +30,23 @@ pub struct DestinationPolicy {
 }
 
 impl DestinationPolicy {
-    pub fn from_env() -> Self {
+    /// From `BOX_EGRESS_ALLOW_PRIVATE` and `BOX_EGRESS_RELAY_PORTS`. A port list that doesn't read
+    /// is an error naming the variable and the bad entry, never a different set of ports.
+    pub fn from_env() -> Result<Self, String> {
         let allow_private = matches!(
             std::env::var("BOX_EGRESS_ALLOW_PRIVATE")
                 .unwrap_or_default()
                 .trim(),
             "1" | "true" | "yes"
         );
-        Self {
+        let ports = parse_ports(&std::env::var("BOX_EGRESS_RELAY_PORTS").unwrap_or_default())
+            .map_err(|bad| {
+                format!("BOX_EGRESS_RELAY_PORTS has {bad:?}, which isn't a port (1-65535) or `*`")
+            })?;
+        Ok(Self {
             allow_private,
-            ports: parse_ports(&std::env::var("BOX_EGRESS_RELAY_PORTS").unwrap_or_default()),
-        }
+            ports,
+        })
     }
 
     #[must_use]
@@ -83,23 +89,24 @@ impl DestinationPolicy {
     }
 }
 
-fn parse_ports(raw: &str) -> Option<Vec<u16>> {
+/// `None` for unset (80 and 443), `Some([])` for `*` (any), else the ports. An entry that isn't a
+/// port is the error, as written.
+fn parse_ports(raw: &str) -> Result<Option<Vec<u16>>, String> {
     let raw = raw.trim();
     if raw.is_empty() {
-        return None;
+        return Ok(None);
     }
     if raw == "*" {
-        return Some(Vec::new());
+        return Ok(Some(Vec::new()));
     }
-    let list: Vec<u16> = raw
-        .split(',')
-        .filter_map(|p| p.trim().parse::<u16>().ok())
-        .collect();
-    if list.is_empty() {
-        None
-    } else {
-        Some(list)
+    let mut list = Vec::new();
+    for entry in raw.split(',').map(str::trim) {
+        match entry.parse::<u16>() {
+            Ok(port) if port != 0 => list.push(port),
+            _ => return Err(entry.to_owned()),
+        }
     }
+    Ok(Some(list))
 }
 
 /// Why this address is not public unicast, if it isn't.
@@ -309,11 +316,18 @@ mod tests {
     }
 
     #[test]
-    fn parse_ports_reads_a_list_a_star_and_junk() {
-        assert_eq!(parse_ports(""), None);
-        assert_eq!(parse_ports("  "), None);
-        assert_eq!(parse_ports("*"), Some(Vec::new()));
-        assert_eq!(parse_ports("80,443, 8443"), Some(vec![80, 443, 8443]));
-        assert_eq!(parse_ports("nonsense"), None);
+    fn parse_ports_reads_a_list_a_star_and_refuses_junk() {
+        assert_eq!(parse_ports(""), Ok(None));
+        assert_eq!(parse_ports("  "), Ok(None));
+        assert_eq!(parse_ports("*"), Ok(Some(Vec::new())));
+        assert_eq!(parse_ports("80,443, 8443"), Ok(Some(vec![80, 443, 8443])));
+        assert_eq!(parse_ports("nonsense"), Err("nonsense".into()));
+        assert_eq!(
+            parse_ports("443,44x3"),
+            Err("44x3".into()),
+            "a typo is an error, not a smaller list"
+        );
+        assert_eq!(parse_ports("0"), Err("0".into()));
+        assert_eq!(parse_ports("80,"), Err("".into()));
     }
 }
