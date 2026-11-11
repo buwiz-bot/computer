@@ -723,8 +723,8 @@ The computer's browsing rules, read and replaced while the box runs. One set per
 - `exit`: `direct` (the box dials) or `tunnel` (through the operator's client; `503 no-client` without one).
 - `mode`: `all` (every site but the blocked ones) or `listed` (only the allowed ones). Block always wins.
 - An entry covers the name and every name under it (`facebook.com` covers `www.facebook.com`). `*`, an empty entry, an address, or an entry with a scheme, port or path is refused, `422 invalid_rules`, naming the list and position. The whole set is refused and nothing changes.
-- `PUT` answers `200 {"applied": true, "rules": {counts}}` only once the proxy has this set's version in force. `409 egress_proxy_off`: the box was made without the proxy (`BOX_EGRESS_PROXY`). `409 egress_tunnel_off`: `exit: tunnel` on a box made without the tunnel. `503 egress_not_running`: the proxy isn't answering (the set was saved; it reads it when it starts).
-- `GET` answers the set in force, or `404 egress_rules_unset` (the browser reaches no site), or `409 egress_proxy_off`.
+- `PUT` answers `200 {"applied": true, "rules": {counts}}` only once the proxy has this set's version in force. One `PUT` at a time; when the proxy has another version in force it's `409 rules_superseded` (with that version), when it refuses the set `422 rules_refused`, and in both the file is put back: it's never ahead of what's in force. `409 egress_proxy_off`: the box was made without the proxy (`BOX_EGRESS_PROXY`). `409 egress_tunnel_off`: `exit: tunnel` on a box made without the tunnel. `503 egress_not_running`: the proxy isn't answering, and nothing was changed.
+- `GET` answers the set in force, read from the file box-host wrote (the proxy's own loopback port gives counts only), or `404 egress_rules_unset` (the browser reaches no site), or `409 egress_proxy_off`. `GET /v1/egress` says where the rules in force came from (`rules_origin`: `staged` or `set`); a restart is back to the staged file.
 
 A box with the proxy answers `GET /v1/ready` only once the proxy does.
 

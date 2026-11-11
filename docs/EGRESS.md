@@ -78,6 +78,7 @@ Every refusal carries `X-Box-Egress-Reason`, one stable word:
 | --- | --- | --- |
 | `200 Connection Established` | | The stream is up |
 | `400` | `bad-request`, `bad-host` | Not a request the proxy reads; not a valid host |
+| `408` | `slow-request` | The request head didn't come within 5 s |
 | `403` | `no-rules` | No rules are set |
 | `403` | `blocked` | On the block list |
 | `403` | `not-listed` | `listed` mode, not on the allow list |
@@ -87,6 +88,7 @@ Every refusal carries `X-Box-Egress-Reason`, one stable word:
 | `502` | `resolve`, `connect`, `client-error` | The name didn't resolve; the site didn't answer; the client couldn't open it (its words, which name no site) |
 | `503` | `no-client` | The exit is the tunnel and no client is attached. Never dialled from the box instead. |
 | `503` | `streams-full` | 256 streams in use |
+| `503` | `busy` | Too many connections open (576), or waiting to be read (64) |
 | `504` | `timeout`, `open-timeout` | The site, or the client, didn't answer in time |
 
 ### Changing the rules while the box runs
@@ -101,10 +103,21 @@ The box **starts** with the rules in `BOX_EGRESS_RULES_FILE`, which whoever star
 (Buwiz Bot's broker stages it beside the box's token, from its own copy, on every start). box-keeper
 copies it into place before anything else runs, so there is no moment with a browser and no rules.
 A staged file that doesn't read leaves no rules: every site is refused until a `PUT` sets some. A
-box with `BOX_EGRESS_PROXY=1` and no rules file starts the same way.
+box with the proxy on (`BOX_EGRESS_PROXY=1`, or `BOX_EGRESS_TUNNEL=1`) and **no** rules file
+starts the same way, whichever the exit: no rules is no site. To browse every site through the
+tunnel as such a box did before, stage `{"v":1,"exit":"tunnel","mode":"all"}`.
 
-A box made with only `BOX_EGRESS_TUNNEL=1` and no rules file keeps what it always did: every site,
-through the tunnel (`{"exit":"tunnel","mode":"all"}`).
+**A restart returns to the staged file.** Rules set with `PUT` live in `/run/box`, which the box
+makes afresh at every start, so a box restarted by anything else comes back on whatever
+`BOX_EGRESS_RULES_FILE` holds then (or with no rules, if nothing is staged). Buwiz Bot's broker
+stages its latest set before every start it makes, and puts it in force again after every wake.
+`GET /v1/egress` says where the rules in force came from: `rules_origin` is `staged` (the file the
+box started with) or `set` (a `PUT` since), beside the set's `version`.
+
+`PUT` takes one set at a time. It answers `200` only once this version is in force; if the proxy
+has another version in force it's `409 rules_superseded` (with that version), if the proxy refuses
+the file `422 rules_refused`, and with no proxy answering `503 egress_not_running`. In each of those
+the file is put back as it was: it's never ahead of what's in force.
 
 ## Turning it on
 
@@ -148,8 +161,10 @@ command, only once the proxy listens: a command can never take one of its ports 
 
 The WS (8790) is published on the host's **loopback** only. Anything on that host that can reach
 loopback can try it; the bearer guards it. A wrong or missing bearer is held 1 s before its `401`
-and logged (without what was presented), and at most 64 handshakes wait at once, which bounds
-guessing at 64 a second against a bearer of 32 random bytes. One client at a time: a newer
+and logged (without what was presented). It is held apart from the handshakes still under way, so
+however many wrong bearers wait out their second, a right one gets in at once; at most 64 are held
+at a time, and past that one is closed with no answer, which bounds guessing at 64 a second
+against a bearer of 32 random bytes. One client at a time: a newer
 successful attach replaces the older and is logged. The proxy and admin ports are never published.
 
 ## Capability JSON (box-host)
@@ -173,7 +188,7 @@ successful attach replaces the older and is logged. The proxy and admin ports ar
 A box with the proxy answers `GET /v1/ready` only once the proxy does.
 
 `GET /v1/egress` (Bearer) is the full status. It names **no site**: the rules are counts, and
-`counts` are outcomes since the proxy started.
+`counts` are outcomes since the proxy started, every refusal counted.
 
 ```json
 {
@@ -182,6 +197,7 @@ A box with the proxy answers `GET /v1/ready` only once the proxy does.
   "proxy_enabled": true, "proxy_up": true,
   "rules": { "version": 7, "exit": "tunnel", "mode": "all", "allow": 0, "block": 1 },
   "rules_error": null,
+  "rules_origin": "set",
   "can_browse": false,
   "counts": { "direct": 0, "tunneled": 12, "blocked": 3, "not_listed": 0, "no_rules": 0,
               "no_client": 2, "streams_full": 0, "destination": 0, "failed": 1, "plain_http": 0 }
@@ -217,7 +233,8 @@ The client judges every stream again before it dials: by the computer's rules (t
 client holds the computer's own; the command's has every site), by the static filter, then by the
 resolved address, as above. On the operator's machine it is the authority for traffic leaving
 that network. A stream whose destination stops reading is closed on its own; it never holds up the
-others. When a session ends, every stream of it ends.
+others, and the reader never waits on the box. It dials at most 256 streams at once for a
+session, the guest's own cap; one past that is refused (`too many streams`). When a session ends, every stream of it ends.
 
 Auth: `Authorization: Bearer …` on the WS handshake. `X-Box-Egress-Bearer` is accepted if a proxy
 eats `Authorization`. No query-string token (logs).

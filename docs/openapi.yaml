@@ -643,6 +643,11 @@ components:
           type: string
           nullable: true
           description: Why the last rules file read failed, if it did
+        rules_origin:
+          type: string
+          nullable: true
+          enum: [staged, set]
+          description: Where the rules in force came from - the file the box started with, or a PUT since. A restart is back to staged.
         can_browse:
           type: boolean
           description: Rules are set, and their exit is direct or has a client attached
@@ -660,6 +665,10 @@ components:
             destination: { type: integer }
             failed: { type: integer }
             plain_http: { type: integer }
+            bad_request: { type: integer }
+            bad_host: { type: integer }
+            relay_hosts: { type: integer }
+            busy: { type: integer }
     EgressRules:
       type: object
       additionalProperties: false
@@ -1503,12 +1512,12 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "409":
-          description: egress_proxy_off (made without the proxy) or egress_tunnel_off (exit tunnel on a box made without the tunnel)
+          description: egress_proxy_off (made without the proxy), egress_tunnel_off (exit tunnel on a box made without the tunnel), or rules_superseded (the proxy has another version in force; error.details.version). Nothing was changed.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
         "422":
-          description: invalid_rules, naming the list and position, never the entry
+          description: invalid_rules, naming the list and position, never the entry; or rules_refused, the proxy refused the set. Nothing was changed.
           content:
             application/json:
               schema: { $ref: "#/components/schemas/ErrorResponse" }
